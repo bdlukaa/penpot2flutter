@@ -1,4 +1,4 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrNode, IrToken, IrTokenSet, IrTokenTheme, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrNode, IrResponsiveScreen, IrToken, IrTokenSet, IrTokenTheme, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
 let declaredParameters: ReadonlySet<string> = new Set();
@@ -60,28 +60,74 @@ export function generateFlutterTokens(
   return lines.join("\n");
 }
 
-export function generateFlutterWidget(root: IrNode, components: readonly IrComponentDefinition[] = [], tokens: readonly IrToken[] = []): string {
+export function generateFlutterWidget(
+  root: IrNode,
+  components: readonly IrComponentDefinition[] = [],
+  tokens: readonly IrToken[] = [],
+  responsiveScreen?: IrResponsiveScreen,
+): string {
   componentNames = buildNameMap(components);
   tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
   declaredParameters = new Set();
-  const className = toPascalCase(root.name) || "GeneratedWidget";
+  const roots = responsiveScreen?.variants.map((variant) => variant.root) ?? [root];
+  const className = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedWidget";
   return [
-    ...(containsRotation(root) ? ["import 'dart:math' as math;", ""] : []),
+    ...(roots.some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
-    ...(containsSvg(root) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
-    ...(containsTokens(root) ? ["import '../app_tokens.dart';"] : []),
-    ...componentImports(collectInstanceComponentIds(root), components, "../components/"),
+    ...(roots.some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
+    ...(roots.some(containsTokens) ? ["import '../app_tokens.dart';"] : []),
+    ...componentImports(roots.flatMap((variantRoot) => [...collectInstanceComponentIds(variantRoot)]), components, "../components/"),
     "",
     `class ${className} extends StatelessWidget {`,
     `  const ${className}({super.key});`,
     "",
     "  @override",
     "  Widget build(BuildContext context) {",
-    `    // ${root.sourceName}`,
-    `    return ${renderNode(root, 2, false)};`,
+    `    // ${responsiveScreen?.name ?? root.sourceName}`,
+    ...(responsiveScreen === undefined
+      ? [`    return ${renderNode(root, 2, false)};`]
+      : renderResponsiveScreen(responsiveScreen)),
     "  }",
     "}",
     "",
+  ].join("\n");
+}
+
+function renderResponsiveScreen(screen: IrResponsiveScreen): string[] {
+  const variants = [...screen.variants].sort((left, right) => (left.minWidth ?? 0) - (right.minWidth ?? 0) || left.sourceBoardId.localeCompare(right.sourceBoardId));
+  const lines = [
+    "    return LayoutBuilder(",
+    "      builder: (context, constraints) {",
+  ];
+  variants.forEach((variant, index) => {
+    const upperBound = variant.maxWidth ?? variants[index + 1]?.minWidth;
+    const conditional = index < variants.length - 1 && upperBound !== undefined;
+    const rendered = renderResponsiveRoot(variant.root, conditional ? 5 : 4);
+    if (conditional) {
+      lines.push(`        if (constraints.maxWidth < ${number(upperBound)}) {`, `          // ${variant.sourceName}`, `          return ${rendered};`, "        }");
+    } else {
+      lines.push(`        // ${variant.sourceName}`, `        return ${rendered};`);
+    }
+  });
+  lines.push("      },", "    );");
+  return lines;
+}
+
+function renderResponsiveRoot(root: IrNode, depth: number): string {
+  if (root.kind !== "board") return renderNode(root, depth, false);
+  const clipBehavior = root.clipContent ? "Clip.hardEdge" : "Clip.none";
+  const child = root.flex !== undefined
+    ? renderFlex(root, depth, clipBehavior)
+    : root.grid?.supported === true
+      ? renderGrid(root, root.grid, root.children, depth)
+      : renderStack(root.children, depth, clipBehavior);
+  const decoration = renderDecoration(root, depth + 1);
+  if (decoration === undefined) return child;
+  return [
+    "DecoratedBox(",
+    `${indent(depth + 1)}decoration: ${decoration},`,
+    `${indent(depth + 1)}child: ${root.clipContent ? `ClipRect(\n${indent(depth + 2)}child: ${child},\n${indent(depth + 1)})` : child},`,
+    `${indent(depth)})`,
   ].join("\n");
 }
 
@@ -150,10 +196,12 @@ export function generateFlutterFiles(
   tokens: readonly IrToken[] = [],
   tokenSets: readonly IrTokenSet[] = [],
   tokenThemes: readonly IrTokenTheme[] = [],
+  responsiveScreen?: IrResponsiveScreen,
 ): GeneratedFile[] {
-  const screenName = toPascalCase(root.name) || "GeneratedScreen";
-  const usedTokens = reachableTokens(root, components, tokens);
-  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, usedTokens) }];
+  const screenName = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedScreen";
+  const responsiveRoots = responsiveScreen?.variants.map((variant) => variant.root) ?? [];
+  const usedTokens = reachableTokens([root, ...responsiveRoots], components, tokens);
+  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, usedTokens, responsiveScreen) }];
   for (const component of components) {
     files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, usedTokens) });
   }
@@ -223,8 +271,10 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
 
   const contentDepth = positioned ? depth + 1 : depth;
   const transformDepth = transformWrapperCount(node);
-  const opacityDepth = node.style.opacity === 1 ? 0 : 1;
-  let content = renderContent(node, contentDepth + transformDepth + opacityDepth);
+  const opacityDepth = node.style.opacity === 1 && !hasToken(node, "opacity") ? 0 : 1;
+  const constraintsDepth = constraintWrapperCount(node);
+  let content = renderContent(node, contentDepth + transformDepth + opacityDepth + constraintsDepth);
+  if (constraintsDepth > 0) content = renderConstraints(node, content, contentDepth + transformDepth + opacityDepth);
   if (node.transform !== undefined) content = renderTransform(node, content, contentDepth + opacityDepth);
   if (node.style.opacity !== 1 || hasToken(node, "opacity")) {
     content = [
@@ -240,6 +290,41 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
     `${indent(depth + 1)}left: ${tokenValue(node, "x", number(node.geometry.x))},`,
     `${indent(depth + 1)}top: ${tokenValue(node, "y", number(node.geometry.y))},`,
     `${indent(depth + 1)}child: ${content},`,
+    `${indent(depth)})`,
+  ].join("\n");
+}
+
+function constraintWrapperCount(node: Exclude<IrNode, { kind: "unsupported" }>): number {
+  const layout = node.layoutChild;
+  if (layout === undefined) return 0;
+  const hasBox = layout.minWidth !== undefined || layout.maxWidth !== undefined || layout.minHeight !== undefined || layout.maxHeight !== undefined;
+  return Number(hasBox) + Number(layout.aspectRatio !== undefined);
+}
+
+function renderConstraints(node: Exclude<IrNode, { kind: "unsupported" }>, child: string, depth: number): string {
+  const layout = node.layoutChild;
+  if (layout === undefined) return child;
+  let constrained = child;
+  let innerDepth = depth + Number(layout.minWidth !== undefined || layout.maxWidth !== undefined || layout.minHeight !== undefined || layout.maxHeight !== undefined);
+  if (layout.aspectRatio !== undefined) {
+    constrained = [
+      "AspectRatio(",
+      `${indent(innerDepth + 1)}aspectRatio: ${tokenValue(node, "aspectRatio", number(layout.aspectRatio))},`,
+      `${indent(innerDepth + 1)}child: ${constrained},`,
+      `${indent(innerDepth)})`,
+    ].join("\n");
+  }
+  const properties = [
+    ...(layout.minWidth === undefined ? [] : [`minWidth: ${tokenValue(node, "minWidth", number(layout.minWidth))}`]),
+    ...(layout.maxWidth === undefined ? [] : [`maxWidth: ${tokenValue(node, "maxWidth", number(layout.maxWidth))}`]),
+    ...(layout.minHeight === undefined ? [] : [`minHeight: ${tokenValue(node, "minHeight", number(layout.minHeight))}`]),
+    ...(layout.maxHeight === undefined ? [] : [`maxHeight: ${tokenValue(node, "maxHeight", number(layout.maxHeight))}`]),
+  ];
+  if (properties.length === 0) return constrained;
+  return [
+    "ConstrainedBox(",
+    `${indent(depth + 1)}constraints: BoxConstraints(${properties.join(", ")}),`,
+    `${indent(depth + 1)}child: ${constrained},`,
     `${indent(depth)})`,
   ].join("\n");
 }
@@ -440,12 +525,7 @@ function renderShape(node: IrNode, depth: number, ellipse: boolean): string {
   const clipDepth = ellipse && !circle ? 1 : 0;
   const decoration = renderDecoration(node, depth + 2 + clipDepth, circle);
   if (decoration === undefined) {
-    return [
-      "SizedBox(",
-      `${indent(depth + 1)}width: ${tokenValue(node, "width", number(width))},`,
-      `${indent(depth + 1)}height: ${tokenValue(node, "height", number(height))},`,
-      `${indent(depth)})`,
-    ].join("\n");
+    return `SizedBox(width: ${tokenValue(node, "width", number(width))}, height: ${tokenValue(node, "height", number(height))})`;
   }
   const decorated = [
     "DecoratedBox(",
@@ -630,14 +710,14 @@ function dartColor(hex: string, opacity: number): string {
   return `Color(0x${alpha}${hex.slice(1)})`;
 }
 
-function reachableTokens(root: IrNode, components: readonly IrComponentDefinition[], tokens: readonly IrToken[]): readonly IrToken[] {
+function reachableTokens(roots: readonly IrNode[], components: readonly IrComponentDefinition[], tokens: readonly IrToken[]): readonly IrToken[] {
   const byId = new Map(tokens.map((token) => [token.id, token]));
   const ids = new Set<string>();
   const collect = (node: IrNode): void => {
     for (const reference of node.tokenReferences ?? []) ids.add(reference.tokenId);
     if ("children" in node) node.children.forEach(collect);
   };
-  collect(root);
+  roots.forEach(collect);
   for (const component of components) componentRoots(component).forEach(collect);
   const includeAliasTargets = (id: string): void => {
     const target = byId.get(id)?.aliasTargetId;

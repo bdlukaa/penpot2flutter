@@ -204,6 +204,11 @@ export interface LayoutChild {
   readonly absolute: boolean;
   readonly horizontalSizing: LayoutSizing;
   readonly verticalSizing: LayoutSizing;
+  readonly minWidth?: number;
+  readonly maxWidth?: number;
+  readonly minHeight?: number;
+  readonly maxHeight?: number;
+  readonly aspectRatio?: number;
 }
 
 export interface BaseNode {
@@ -329,8 +334,23 @@ export interface IrComponentDefinition {
 
 export type IrNode = BoardNode | GroupNode | RectangleNode | EllipseNode | ImageNode | SvgNode | TextNode | IrComponentInstanceNode | UnsupportedNode;
 
+export interface IrResponsiveVariant {
+  readonly minWidth?: number;
+  readonly maxWidth?: number;
+  readonly root: IrNode;
+  readonly sourceBoardId: string;
+  readonly sourceName: string;
+}
+
+export interface IrResponsiveScreen {
+  readonly id: string;
+  readonly name: string;
+  readonly variants: readonly IrResponsiveVariant[];
+}
+
 export interface ConversionResult {
   readonly root: IrNode;
+  readonly responsiveScreen?: IrResponsiveScreen;
   readonly assets: readonly AssetManifestEntry[];
   readonly diagnostics: readonly Diagnostic[];
   readonly components: readonly IrComponentDefinition[];

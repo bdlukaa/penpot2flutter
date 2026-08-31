@@ -1,4 +1,5 @@
 import { componentKey } from "../shared/component-key.js";
+import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsive-analyzer.js";
 import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource } from "./token-registry.js";
 import type {
   AssetManifestEntry,
@@ -125,6 +126,11 @@ export interface PenpotSourceLayoutChild {
   readonly absolute?: boolean | null;
   readonly horizontalSizing?: LayoutSizing | null;
   readonly verticalSizing?: LayoutSizing | null;
+  readonly minWidth?: number | null;
+  readonly maxWidth?: number | null;
+  readonly minHeight?: number | null;
+  readonly maxHeight?: number | null;
+  readonly aspectRatio?: number | null;
 }
 
 export interface PenpotSourceLayoutCell {
@@ -214,6 +220,8 @@ export interface PenpotSourceShape {
   readonly runs?: readonly PenpotSourceTextRun[] | null;
   /** Future Penpot Token API adapter output: property key to stable token ID. */
   readonly tokenBindings?: Readonly<Record<string, string>> | null;
+  /** Optional explicit grouping; name-based inference is used when absent. */
+  readonly responsive?: ResponsiveMetadata | null;
 }
 
 export interface PenpotTokenInput {
@@ -295,9 +303,21 @@ export function extractSelection(
     context.currentComponent = undefined;
   }
 
-  const root = selection.length === 1 ? extractNode(selection[0], context, "") : extractSyntheticSelection(selection, context);
+  const extractedSelection = selection.map((shape) => extractNode(shape, context, ""));
+  const responsive = selection.every((shape) => shape.type === "board")
+    ? analyzeResponsiveCandidates(selection.map((shape, index) => ({
+        sourceBoardId: sourceIdOf(shape.id),
+        sourceName: sourceNameOf(shape.name, sourceIdOf(shape.id)),
+        width: extractedSelection[index].geometry.width,
+        root: extractedSelection[index],
+        ...(shape.responsive == null ? {} : { metadata: shape.responsive }),
+      })))
+    : { diagnostics: [] };
+  context.diagnostics.push(...responsive.diagnostics);
+  const root = responsive.screen?.variants[0]?.root ?? (extractedSelection.length === 1 ? extractedSelection[0] : extractSyntheticSelection(extractedSelection));
   return {
     root,
+    ...(responsive.screen === undefined ? {} : { responsiveScreen: responsive.screen }),
     assets: [...context.assets.values()],
     diagnostics: context.diagnostics,
     components: finalizeComponents(context),
@@ -307,8 +327,7 @@ export function extractSelection(
   };
 }
 
-function extractSyntheticSelection(selection: readonly PenpotSourceShape[], context: ExtractionContext): GroupNode {
-  const extractedChildren = selection.map((shape) => extractNode(shape, context, ""));
+function extractSyntheticSelection(extractedChildren: readonly IrNode[]): GroupNode {
   const bounds = boundsOf(extractedChildren);
   return {
     kind: "group",
@@ -344,7 +363,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
     visible: shape.visible !== false,
     style: styleOf(shape, diagnostics, context),
     ...(transform === undefined ? {} : { transform }),
-    ...(shape.layoutChild == null ? {} : { layoutChild: layoutChildOf(shape.layoutChild) }),
+    ...(shape.layoutChild == null ? {} : { layoutChild: layoutChildOf(shape.layoutChild, shape, diagnostics) }),
     diagnostics,
     ...tokenReferencesOf(shape, context, diagnostics),
   };
@@ -859,12 +878,48 @@ function paddingOf(source: Pick<PenpotSourceFlexLayout, "topPadding" | "rightPad
   };
 }
 
-function layoutChildOf(layoutChild: PenpotSourceLayoutChild): LayoutChild {
+function layoutChildOf(layoutChild: PenpotSourceLayoutChild, shape: PenpotSourceShape, diagnostics: Diagnostic[]): LayoutChild {
+  const minWidth = responsiveConstraint(layoutChild.minWidth, "minWidth", shape, diagnostics);
+  const minHeight = responsiveConstraint(layoutChild.minHeight, "minHeight", shape, diagnostics);
+  let maxWidth = responsiveConstraint(layoutChild.maxWidth, "maxWidth", shape, diagnostics);
+  let maxHeight = responsiveConstraint(layoutChild.maxHeight, "maxHeight", shape, diagnostics);
+  if (minWidth !== undefined && maxWidth !== undefined && maxWidth < minWidth) {
+    constraintDiagnostic(shape, diagnostics, "maxWidth is smaller than minWidth");
+    maxWidth = minWidth;
+  }
+  if (minHeight !== undefined && maxHeight !== undefined && maxHeight < minHeight) {
+    constraintDiagnostic(shape, diagnostics, "maxHeight is smaller than minHeight");
+    maxHeight = minHeight;
+  }
+  const aspectRatio = responsiveConstraint(layoutChild.aspectRatio, "aspectRatio", shape, diagnostics, false);
   return {
     absolute: layoutChild.absolute === true,
     horizontalSizing: layoutChild.horizontalSizing ?? "fix",
     verticalSizing: layoutChild.verticalSizing ?? "fix",
+    ...(minWidth === undefined ? {} : { minWidth }),
+    ...(maxWidth === undefined ? {} : { maxWidth }),
+    ...(minHeight === undefined ? {} : { minHeight }),
+    ...(maxHeight === undefined ? {} : { maxHeight }),
+    ...(aspectRatio === undefined ? {} : { aspectRatio }),
   };
+}
+
+function responsiveConstraint(value: number | null | undefined, property: string, shape: PenpotSourceShape, diagnostics: Diagnostic[], allowZero = true): number | undefined {
+  if (value == null) return undefined;
+  if (!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)) {
+    constraintDiagnostic(shape, diagnostics, `${property} has invalid value ${String(value)}`);
+    return undefined;
+  }
+  return value;
+}
+
+function constraintDiagnostic(shape: PenpotSourceShape, diagnostics: Diagnostic[], issue: string): void {
+  diagnostics.push({
+    severity: "warning",
+    sourceId: sourceIdOf(shape.id),
+    code: "RESPONSIVE_CONSTRAINT_UNSUPPORTED",
+    message: `Responsive constraint on "${sourceNameOf(shape.name, sourceIdOf(shape.id))}" was adjusted or omitted because ${issue}.`,
+  });
 }
 
 function geometryOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): NodeGeometry {

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
-import { extractSelection } from "../src/core/extractor.js";
+import { extractSelection, type PenpotSourceShape } from "../src/core/extractor.js";
 import { generateComponentWidget, generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
 import { LibraryResolver } from "../src/penpot/library-resolver.js";
 
@@ -425,7 +425,7 @@ test("normalizes long floating-point values in generated Dart", () => {
   const dart = generateFlutterWidget(result.root);
 
   assert.match(dart, /width: 190,/);
-  assert.match(dart, /height: 230\.69,/);
+  assert.match(dart, /height: 230\.69[,)]/);
   assert.doesNotMatch(dart, /230\.68965517218118/);
 });
 
@@ -1377,4 +1377,189 @@ test("diagnoses unresolved tokens, name collisions, invalid values, unsupported 
   assert.ok(codes.has("TOKEN_VALUE_INVALID"));
   assert.ok(codes.has("TOKEN_TYPE_UNSUPPORTED"));
   assert.match(generateFlutterWidget(result.root, result.components, result.tokens), /Color\(0xff000000\)/);
+});
+
+function responsiveBoard(
+  name: string,
+  width: number,
+  direction: "row" | "column" = "column",
+  children: readonly PenpotSourceShape[] = [{ id: `${name}-content`, name: "Content", type: "rectangle", x: 0, y: 0, width: 100, height: 40, visible: true }],
+) {
+  return {
+    id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    name,
+    type: "board",
+    x: 0,
+    y: 0,
+    width,
+    height: 800,
+    visible: true,
+    flex: { dir: direction, rowGap: 16, columnGap: 16 },
+    children,
+  } as const;
+}
+
+function responsiveDart(result: ReturnType<typeof extractSelection>): string {
+  return generateFlutterWidget(result.root, result.components, result.tokens, result.responsiveScreen);
+}
+
+test("merges mobile and desktop Row-to-Column boards with LayoutBuilder breakpoints", () => {
+  const result = extractSelection([
+    responsiveBoard("Checkout / Mobile", 390, "column"),
+    responsiveBoard("Checkout / Desktop", 1440, "row"),
+  ]);
+  assert.equal(result.responsiveScreen?.name, "Checkout");
+  assert.deepEqual(result.responsiveScreen?.variants.map((variant) => [variant.minWidth, variant.maxWidth]), [[undefined, 600], [600, undefined]]);
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "RESPONSIVE_BREAKPOINT_INFERRED"));
+  const dart = responsiveDart(result);
+  assert.match(dart, /LayoutBuilder\(/);
+  assert.match(dart, /constraints\.maxWidth < 600/);
+  assert.match(dart, /return Column\(/);
+  assert.match(dart, /return Row\(/);
+  assert.doesNotMatch(dart, /width: 390/);
+  assert.doesNotMatch(dart, /width: 1440/);
+  const responsiveDartPath = new URL("../responsive_checkout.dart", import.meta.url);
+  writeFileSync(responsiveDartPath, dart);
+  execFileSync("dart", ["format", responsiveDartPath.pathname]);
+  assert.equal(dart, readFileSync(responsiveDartPath, "utf8"));
+});
+
+test("generates responsive grid column counts from breakpoint boards", () => {
+  const gridBoard = (name: string, width: number, columns: number) => ({
+    ...responsiveBoard(name, width),
+    flex: undefined,
+    grid: {
+      dir: "row" as const,
+      rows: [{ type: "flex" as const, value: 1 }],
+      columns: Array.from({ length: columns }, () => ({ type: "flex" as const, value: 1 })),
+      rowGap: 12,
+      columnGap: 12,
+    },
+  });
+  const result = extractSelection([gridBoard("Gallery / Mobile", 390, 2), gridBoard("Gallery / Desktop", 1440, 4)]);
+  const dart = responsiveDart(result);
+  assert.match(dart, /crossAxisCount: 2/);
+  assert.match(dart, /crossAxisCount: 4/);
+});
+
+test("preserves elements hidden at a mobile breakpoint", () => {
+  const desktopChildren = [
+    { id: "content-desktop", name: "Content", type: "rectangle", x: 0, y: 0, width: 100, height: 40, visible: true },
+    { id: "sidebar-desktop", name: "Sidebar", type: "rectangle", x: 0, y: 0, width: 200, height: 800, visible: true },
+  ];
+  const mobileChildren = desktopChildren.map((child) => ({ ...child, id: child.id.replace("desktop", "mobile"), visible: child.name !== "Sidebar" }));
+  const result = extractSelection([
+    responsiveBoard("Account / Mobile", 390, "column", mobileChildren),
+    responsiveBoard("Account / Desktop", 1440, "row", desktopChildren),
+  ]);
+  const dart = responsiveDart(result);
+  assert.match(dart, /\/\/ Sidebar\n\s*const SizedBox\.shrink\(\)/);
+  assert.match(dart, /\/\/ Sidebar\n\s*SizedBox\(/);
+});
+
+test("preserves different selections of the same component variant across breakpoints", () => {
+  const main = (id: string) => ({ ...buttonMain, id, name: id });
+  const compact = main("compact");
+  const expanded = main("expanded");
+  const instance = (id: string, componentId: string) => ({ ...buttonInstance(id, "Continue"), componentId, componentLibraryId: "ui" });
+  const result = extractSelection(
+    [
+      responsiveBoard("Actions / Mobile", 390, "column", [instance("mobile-button", "compact")]),
+      responsiveBoard("Actions / Desktop", 1440, "row", [instance("desktop-button", "expanded")]),
+    ],
+    [
+      { id: "compact", libraryId: "ui", name: "Compact", root: compact },
+      { id: "expanded", libraryId: "ui", name: "Expanded", root: expanded },
+    ],
+    [{
+      id: "button-responsive-family",
+      libraryId: "ui",
+      name: "Responsive Button",
+      properties: ["Size"],
+      defaultComponentId: "compact",
+      members: [
+        { id: "compact", libraryId: "ui", name: "Compact", root: compact, values: { Size: "Compact" } },
+        { id: "expanded", libraryId: "ui", name: "Expanded", root: expanded, values: { Size: "Expanded" } },
+      ],
+    }],
+  );
+  const dart = responsiveDart(result);
+  assert.match(dart, /ResponsiveButton\(\),/);
+  assert.match(dart, /ResponsiveButton\(\n\s*size: ResponsiveButtonSize\.expanded,/);
+});
+
+test("maps Penpot min and max dimensions to ConstrainedBox", () => {
+  const constrainedChild = {
+    id: "constrained-content",
+    name: "Constrained Content",
+    type: "rectangle",
+    x: 0,
+    y: 0,
+    width: 320,
+    height: 200,
+    visible: true,
+    layoutChild: { horizontalSizing: "fill" as const, verticalSizing: "auto" as const, minWidth: 240, maxWidth: 720, minHeight: 120, maxHeight: 480 },
+  };
+  const result = extractSelection([responsiveBoard("Constraints", 800, "column", [constrainedChild])]);
+  const dart = generateFlutterWidget(result.root);
+  assert.match(dart, /ConstrainedBox\(/);
+  assert.match(dart, /BoxConstraints\(minWidth: 240, maxWidth: 720, minHeight: 120, maxHeight: 480\)/);
+});
+
+test("generates deterministic mobile, tablet, and desktop breakpoints", () => {
+  const result = extractSelection([
+    responsiveBoard("Catalog / Desktop", 1440, "row"),
+    responsiveBoard("Catalog / Mobile", 390, "column"),
+    responsiveBoard("Catalog / Tablet", 768, "column"),
+  ]);
+  assert.deepEqual(result.responsiveScreen?.variants.map((variant) => variant.sourceName), ["Catalog / Mobile", "Catalog / Tablet", "Catalog / Desktop"]);
+  const dart = responsiveDart(result);
+  assert.match(dart, /constraints\.maxWidth < 600/);
+  assert.match(dart, /constraints\.maxWidth < 1024/);
+});
+
+test("keeps explicit responsive groups with unmatched nodes and reports divergence", () => {
+  const mobile = { ...responsiveBoard("Phone", 390), responsive: { groupId: "checkout", groupName: "Checkout", maxWidth: 640 } };
+  const desktop = {
+    ...responsiveBoard("Wide", 1440, "row", [{ id: "navigation", name: "Navigation", type: "rectangle", x: 0, y: 0, width: 240, height: 800, visible: true }]),
+    responsive: { groupId: "checkout", groupName: "Checkout", minWidth: 640 },
+  };
+  const result = extractSelection([mobile, desktop]);
+  assert.equal(result.responsiveScreen?.name, "Checkout");
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "RESPONSIVE_LAYOUT_DIVERGENCE"));
+});
+
+test("does not merge unrelated breakpoint-like boards with similar names", () => {
+  const result = extractSelection([
+    responsiveBoard("Checkout / Mobile", 390),
+    responsiveBoard("Checkout Settings / Desktop", 1440),
+  ]);
+  assert.equal(result.responsiveScreen, undefined);
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "RESPONSIVE_GROUP_UNRESOLVED"));
+  assert.equal(result.root.kind, "group");
+});
+
+test("retains absolute-positioned fallback inside responsive variants", () => {
+  const overlay = (suffix: string) => [{ id: `badge-${suffix}`, name: "Badge", type: "rectangle", x: 20, y: 12, width: 40, height: 20, visible: true, layoutChild: { absolute: true } }];
+  const result = extractSelection([
+    { ...responsiveBoard("Profile / Mobile", 390, "column", overlay("mobile")), flex: undefined },
+    { ...responsiveBoard("Profile / Desktop", 1440, "column", overlay("desktop")), flex: undefined },
+  ]);
+  const dart = responsiveDart(result);
+  assert.match(dart, /Stack\(/);
+  assert.match(dart, /Positioned\(/);
+});
+
+test("preserves nested component calls in responsive layouts", () => {
+  const nestedInstance = (id: string) => ({ ...buttonInstance(id, "Continue"), componentLibraryId: "local" });
+  const result = extractSelection(
+    [
+      responsiveBoard("Nested / Mobile", 390, "column", [nestedInstance("nested-mobile")]),
+      responsiveBoard("Nested / Desktop", 1440, "row", [nestedInstance("nested-desktop")]),
+    ],
+    [{ id: "comp-button", libraryId: "local", name: "Primary Button", root: buttonMain }],
+  );
+  const dart = responsiveDart(result);
+  assert.equal((dart.match(/PrimaryButton\(\)/g) ?? []).length, 2);
+  assert.match(dart, /import '\.\.\/components\/primary_button\.dart';/);
 });
