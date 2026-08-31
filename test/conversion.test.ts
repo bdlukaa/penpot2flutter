@@ -772,3 +772,56 @@ test("extracts svg-raw and boolean nodes as SvgPicture assets", () => {
   assert.match(dart, /'assets\/images\/bool-shape\.svg',/);
   assert.equal(result.diagnostics.length, 0);
 });
+
+test("renders square ellipses as a circle decoration without ClipOval", () => {
+  const result = extractSelection([{
+    id: "circle-avatar",
+    name: "Circle avatar",
+    type: "ellipse",
+    x: 0,
+    y: 0,
+    width: 40,
+    height: 40,
+    visible: true,
+    fills: [{ fillColor: "#6750a4", fillOpacity: 1 }],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.equal(result.root.kind, "ellipse");
+  assert.match(dart, /shape: BoxShape\.circle,/);
+  assert.doesNotMatch(dart, /ClipOval\(/);
+
+  const circlePath = new URL("../circle_generated_widget.dart", import.meta.url);
+  writeFileSync(circlePath, dart);
+  execFileSync("dart", ["format", circlePath.pathname]);
+  assert.equal(dart, readFileSync(circlePath, "utf8"));
+});
+
+test("emits SizedBox without clipBehavior for decoration-less boards", () => {
+  const result = extractSelection([{
+    id: "plain-board",
+    name: "Plain board",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 180,
+    height: 20,
+    visible: true,
+    clipContent: true,
+    children: [{
+      id: "plain-child",
+      name: "Plain child",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 20,
+      visible: true,
+    }],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.doesNotMatch(dart, /Container\(/);
+  assert.doesNotMatch(dart, /clipBehavior:/);
+  assert.match(dart, /SizedBox\(\n\s*width: 180,\n\s*height: 20,/);
+});

@@ -113,15 +113,26 @@ function renderContent(node: Exclude<IrNode, { kind: "unsupported" }>, depth: nu
 }
 
 function renderContainer(node: BoardNode, depth: number, clipBehavior: string): string {
-  const lines = ["Container(", `${indent(depth + 1)}width: ${number(node.geometry.width)},`, `${indent(depth + 1)}height: ${number(node.geometry.height)},`];
   const decoration = renderDecoration(node.style, depth + 1);
-  if (decoration !== undefined) lines.push(`${indent(depth + 1)}decoration: ${decoration},`);
-  if (clipBehavior !== "Clip.none") lines.push(`${indent(depth + 1)}clipBehavior: ${clipBehavior},`);
-  lines.push(
-    `${indent(depth + 1)}child: ${node.flex !== undefined ? renderFlex(node, depth + 1, clipBehavior) : node.grid?.supported === true ? renderGrid(node.grid, node.children, depth + 1) : renderStack(node.children, depth + 1, clipBehavior)},`,
+  const child = node.flex !== undefined ? renderFlex(node, depth + 1, clipBehavior) : node.grid?.supported === true ? renderGrid(node.grid, node.children, depth + 1) : renderStack(node.children, depth + 1, clipBehavior);
+  if (decoration === undefined) {
+    return [
+      "SizedBox(",
+      `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
+      `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+      `${indent(depth + 1)}child: ${child},`,
+      `${indent(depth)})`,
+    ].join("\n");
+  }
+  return [
+    "Container(",
+    `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
+    `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+    `${indent(depth + 1)}decoration: ${decoration},`,
+    ...(clipBehavior === "Clip.hardEdge" ? [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`] : []),
+    `${indent(depth + 1)}child: ${child},`,
     `${indent(depth)})`,
-  );
-  return lines.join("\n");
+  ].join("\n");
 }
 
 function renderStack(children: readonly IrNode[], depth: number, clipBehavior: string): string {
@@ -243,7 +254,9 @@ function renderGroup(node: GroupNode, depth: number): string {
 }
 
 function renderShape(style: NodeStyle, width: number, height: number, depth: number, ellipse: boolean): string {
-  const decoration = renderDecoration(style, depth + (ellipse ? 3 : 2));
+  const circle = ellipse && width === height;
+  const clipDepth = ellipse && !circle ? 1 : 0;
+  const decoration = renderDecoration(style, depth + 2 + clipDepth, circle);
   if (decoration === undefined) {
     return [
       "SizedBox(",
@@ -254,10 +267,10 @@ function renderShape(style: NodeStyle, width: number, height: number, depth: num
   }
   const decorated = [
     "DecoratedBox(",
-    `${indent(depth + (ellipse ? 3 : 2))}decoration: ${decoration},`,
-    `${indent(depth + (ellipse ? 2 : 1))})`,
+    `${indent(depth + 2 + clipDepth)}decoration: ${decoration},`,
+    `${indent(depth + 1 + clipDepth)})`,
   ].join("\n");
-  const content = ellipse
+  const content = ellipse && !circle
     ? ["ClipOval(", `${indent(depth + 2)}child: ${decorated},`, `${indent(depth + 1)})`].join("\n")
     : decorated;
   return [
@@ -337,12 +350,13 @@ function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, sty
   return properties.length === 0 ? undefined : [`TextStyle(`, ...properties.map((property) => `${indent(styleDepth + 1)}${property},`), `${indent(styleDepth)})`].join("\n");
 }
 
-function renderDecoration(style: NodeStyle, depth: number): string | undefined {
+function renderDecoration(style: NodeStyle, depth: number, circle = false): string | undefined {
   const border = style.border !== undefined && style.border.width > 0 ? style.border : undefined;
-  const radius = style.radius !== undefined && [style.radius.topLeft, style.radius.topRight, style.radius.bottomRight, style.radius.bottomLeft].some((value) => value > 0) ? style.radius : undefined;
+  const radius = !circle && style.radius !== undefined && [style.radius.topLeft, style.radius.topRight, style.radius.bottomRight, style.radius.bottomLeft].some((value) => value > 0) ? style.radius : undefined;
   const shadows = style.shadows !== undefined && style.shadows.length > 0 ? style.shadows : undefined;
   if (style.fill === undefined && style.gradient === undefined && style.image === undefined && border === undefined && radius === undefined && shadows === undefined) return undefined;
   const properties = [
+    ...(circle ? ["shape: BoxShape.circle"] : []),
     ...(style.fill === undefined ? [] : [`color: ${dartColor(style.fill.color, style.fill.opacity)}`]),
     ...(style.gradient === undefined ? [] : [`gradient: ${renderGradient(style.gradient, depth + 1)}`]),
     ...(style.image === undefined ? [] : [`image: DecorationImage(\n${indent(depth + 2)}image: AssetImage('${escapeDart(style.image.assetPath)}'),\n${indent(depth + 2)}fit: BoxFit.${style.image.keepAspectRatio ? "cover" : "fill"},\n${indent(depth + 1)})`]),
