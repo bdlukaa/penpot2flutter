@@ -25,6 +25,7 @@ import type {
   NodeStyle,
   NodeTransform,
   RectangleNode,
+  SvgNode,
   TextNode,
   TextRun,
   TextStyle,
@@ -248,6 +249,11 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
     case "image":
       node = { ...base, kind: "image" } satisfies ImageNode;
       break;
+    case "path":
+    case "svg-raw":
+    case "boolean":
+      node = { ...base, kind: "svg", assetPath: svgAssetPathOf(shape, context) } satisfies SvgNode;
+      break;
     case "text": {
       const runs = textRunsOf(shape, diagnostics);
       node = {
@@ -375,6 +381,7 @@ function boundsOf(children: readonly IrNode[]): NodeGeometry {
 }
 
 function styleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], context: ExtractionContext): NodeStyle {
+  if (isVectorType(shape.type)) return { opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics) };
   const fill = solidFillOf(shape.fills, sourceIdOf(shape.id), diagnostics);
   const gradient = gradientFillOf(shape.fills, sourceIdOf(shape.id), diagnostics);
   const image = imageFillOf(shape.fills, shape.type === "image", sourceIdOf(shape.id), diagnostics, context);
@@ -464,8 +471,27 @@ function imageFillOf(fills: PenpotSourceShape["fills"], isImageShape: boolean, s
 
 function assetPathFor(id: string, mimeType: string | undefined): string {
   const encodedId = [...id].map((character) => /[A-Za-z0-9_-]/.test(character) ? character : `_${character.codePointAt(0)!.toString(16)}`).join("");
-  const extension = mimeType === "image/jpeg" ? ".jpg" : mimeType === "image/png" ? ".png" : mimeType === "image/webp" ? ".webp" : mimeType === "image/gif" ? ".gif" : "";
+  const extension = mimeType === "image/jpeg" ? ".jpg" : mimeType === "image/png" ? ".png" : mimeType === "image/webp" ? ".webp" : mimeType === "image/gif" ? ".gif" : mimeType === "image/svg+xml" ? ".svg" : "";
   return `assets/images/${encodedId}${extension}`;
+}
+
+function isVectorType(type: string): boolean {
+  return type === "path" || type === "svg-raw" || type === "boolean";
+}
+
+function svgAssetPathOf(shape: PenpotSourceShape, context: ExtractionContext): string {
+  const sourceId = sourceIdOf(shape.id);
+  const path = assetPathFor(sourceId, "image/svg+xml");
+  if (!context.assets.has(sourceId)) {
+    context.assets.set(sourceId, {
+      id: sourceId,
+      mimeType: "image/svg+xml",
+      width: nonNegativeDimension(shape.width),
+      height: nonNegativeDimension(shape.height),
+      path,
+    });
+  }
+  return path;
 }
 
 function solidFillOf(fills: PenpotSourceShape["fills"], sourceId: string, diagnostics: Diagnostic[]): ColorFill | undefined {

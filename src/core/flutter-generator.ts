@@ -1,7 +1,15 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, EdgeInsets, GradientFill, GridLayout, GroupNode, IrNode, NodeStyle, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, EdgeInsets, GradientFill, GridLayout, GroupNode, IrNode, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 
-export function generatePubspecAssetsSnippet(assets: readonly AssetManifestEntry[]): string {
-  return assets.length === 0 ? "" : ["flutter:", "  assets:", ...assets.map((asset) => `    - ${asset.path}`), ""].join("\n");
+export function generatePubspecSnippet(assets: readonly AssetManifestEntry[]): string {
+  if (assets.length === 0) return "";
+  const hasSvg = assets.some((asset) => asset.mimeType === "image/svg+xml");
+  return [
+    ...(hasSvg ? ["dependencies:", "  flutter_svg: ^2.3.0", ""] : []),
+    "flutter:",
+    "  assets:",
+    ...assets.map((asset) => `    - ${asset.path}`),
+    "",
+  ].join("\n");
 }
 
 export function generateFlutterWidget(root: IrNode): string {
@@ -9,6 +17,7 @@ export function generateFlutterWidget(root: IrNode): string {
   return [
     ...(containsRotation(root) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
+    ...(containsSvg(root) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
     "",
     `class ${className} extends StatelessWidget {`,
     `  const ${className}({super.key});`,
@@ -25,6 +34,10 @@ export function generateFlutterWidget(root: IrNode): string {
 
 function containsRotation(node: IrNode): boolean {
   return (node.transform?.rotation ?? 0) !== 0 || ("children" in node && node.children.some(containsRotation));
+}
+
+function containsSvg(node: IrNode): boolean {
+  return node.kind === "svg" || ("children" in node && node.children.some(containsSvg));
 }
 
 function renderNode(node: IrNode, depth: number, positioned: boolean): string {
@@ -90,6 +103,8 @@ function renderContent(node: Exclude<IrNode, { kind: "unsupported" }>, depth: nu
     case "rectangle":
     case "image":
       return renderShape(node.style, node.geometry.width, node.geometry.height, depth, false);
+    case "svg":
+      return renderSvg(node, depth);
     case "ellipse":
       return renderShape(node.style, node.geometry.width, node.geometry.height, depth, true);
     case "text":
@@ -250,6 +265,16 @@ function renderShape(style: NodeStyle, width: number, height: number, depth: num
     `${indent(depth + 1)}width: ${number(width)},`,
     `${indent(depth + 1)}height: ${number(height)},`,
     `${indent(depth + 1)}child: ${content},`,
+    `${indent(depth)})`,
+  ].join("\n");
+}
+
+function renderSvg(node: SvgNode, depth: number): string {
+  return [
+    "SvgPicture.asset(",
+    `${indent(depth + 1)}'${escapeDart(node.assetPath)}',`,
+    `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
+    `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
     `${indent(depth)})`,
   ].join("\n");
 }

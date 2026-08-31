@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
 import { extractSelection } from "../src/core/extractor.js";
-import { generateFlutterWidget, generatePubspecAssetsSnippet } from "../src/core/flutter-generator.js";
+import { generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
 
 const board = {
   id: "board-1",
@@ -135,9 +135,9 @@ test("normalizes direct-child coordinates for a synthetic multi-selection root",
 test("reports unsupported shapes rather than silently dropping them", () => {
   const result = extractSelection([
     {
-      id: "vector-1",
-      name: "Logo path",
-      type: "path",
+      id: "frame-1",
+      name: "Unknown frame",
+      type: "frame",
       x: 0,
       y: 0,
       width: 24,
@@ -322,7 +322,7 @@ test("extracts image shapes and fillImage assets into deterministic Flutter outp
   }]);
   assert.match(dart, /DecorationImage\(\n\s*image: AssetImage\('assets\/images\/media_2fhero\.jpg'\),/);
   assert.match(dart, /fit: BoxFit\.cover,/);
-  assert.equal(generatePubspecAssetsSnippet(result.assets), "flutter:\n  assets:\n    - assets/images/media_2fhero.jpg\n");
+  assert.equal(generatePubspecSnippet(result.assets), "flutter:\n  assets:\n    - assets/images/media_2fhero.jpg\n");
   assert.equal(result.diagnostics.length, 0);
 
   const imageDartPath = new URL("../image_generated_widget.dart", import.meta.url);
@@ -723,4 +723,52 @@ test("extracts single-run fontStyle and decoration for plain text", () => {
   assert.match(dart, /Text\(/);
   assert.match(dart, /fontStyle: FontStyle\.italic,/);
   assert.match(dart, /decoration: TextDecoration\.underline,/);
+});
+
+test("extracts vector paths and svg-raw nodes as SvgPicture assets", () => {
+  const result = extractSelection([{
+    id: "logo-vector",
+    name: "Logo vector",
+    type: "path",
+    x: 0,
+    y: 0,
+    width: 24,
+    height: 24,
+    visible: true,
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.equal(result.root.kind, "svg");
+  assert.equal(result.root.assetPath, "assets/images/logo-vector.svg");
+  assert.deepEqual(result.assets, [{
+    id: "logo-vector",
+    mimeType: "image/svg+xml",
+    width: 24,
+    height: 24,
+    path: "assets/images/logo-vector.svg",
+  }]);
+  assert.equal(result.diagnostics.length, 0);
+  assert.match(dart, /SvgPicture\.asset\(/);
+  assert.match(dart, /'assets\/images\/logo-vector\.svg',/);
+  assert.match(dart, /width: 24,/);
+  assert.match(dart, /height: 24,/);
+  assert.equal(generatePubspecSnippet(result.assets), "dependencies:\n  flutter_svg: ^2.3.0\n\nflutter:\n  assets:\n    - assets/images/logo-vector.svg\n");
+
+  const svgDartPath = new URL("../svg_generated_widget.dart", import.meta.url);
+  writeFileSync(svgDartPath, dart);
+  execFileSync("dart", ["format", svgDartPath.pathname]);
+  assert.equal(dart, readFileSync(svgDartPath, "utf8"));
+});
+
+test("extracts svg-raw and boolean nodes as SvgPicture assets", () => {
+  const result = extractSelection([
+    { id: "raw-svg", name: "Raw svg", type: "svg-raw", x: 0, y: 0, width: 16, height: 16, visible: true },
+    { id: "bool-shape", name: "Boolean shape", type: "boolean", x: 0, y: 0, width: 32, height: 32, visible: true },
+  ]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.match(dart, /SvgPicture\.asset\(/);
+  assert.match(dart, /'assets\/images\/raw-svg\.svg',/);
+  assert.match(dart, /'assets\/images\/bool-shape\.svg',/);
+  assert.equal(result.diagnostics.length, 0);
 });

@@ -16,7 +16,8 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 ## Implemented conversion scope
 
 - Selection changes, empty selection state, and multiple roots through a synthetic parent
-- Boards, groups, rectangles, ellipses, images, and text
+- Boards, groups, rectangles, ellipses, images, text, and vector paths
+- Vector paths (`path`, `svg-raw`, `boolean`) as SVG assets rendered via `flutter_svg`
 - Nested children and source/z-order preservation
 - Flex rows and columns, reverse direction, spacing (`Row`/`Column.spacing`), alignment, fill sizing, and absolute children
 - Simple grids containing only flex tracks and unspanned auto-positioned children, generated as `GridView.count`
@@ -43,8 +44,8 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - A grid containing fixed, percent, or auto tracks; spans; or manual/area placement falls back to `Stack`/`Positioned` and reports an `unsupported-grid` warning. This preserves placement instead of guessing incorrect Flutter grid constraints.
 - Mixed text runs are resolved into `RichText`/`TextSpan` from the live `Text.getRange` API when Penpot reports mixed styles; when runs cannot be resolved, the common style is used with a warning.
 - Inner shadows, non-solid strokes, unsupported colors, malformed geometry, and malformed image IDs report warnings.
-- Vector/path shapes are currently omitted with an explicit warning; SVG export is not implemented.
-- Asset references and the pubspec snippet are generated, but original image binary files are not downloaded. The plugin does not claim to export an image bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
+- Vector/path shapes become `SvgPicture.asset` references; the SVG binary files themselves are not exported by the plugin yet.
+- Asset references and the pubspec snippet are generated, but original image and SVG binary files are not downloaded. The plugin does not claim to export a binary bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
 - Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
 
 ## Permissions
@@ -82,6 +83,17 @@ Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while
 5. Add a spanning or fixed-track grid child and confirm a warning is shown and the generated widget uses a `Stack` fallback.
 6. Confirm **Copy Dart** copies the unmodified source and **Download Dart** downloads `generated_widget.dart`.
 7. For images, add the displayed `pubspec.yaml` snippet and place the corresponding image files at the generated asset paths before running the Flutter app.
+8. For vectors, add `flutter_svg` to your Flutter project (`flutter pub add flutter_svg`) and export the SVG assets to the generated `assets/images/*.svg` paths.
+
+## Adding the SVG dependency
+
+Generated code that contains vector paths references `SvgPicture.asset` from `package:flutter_svg/flutter_svg.dart`. Add it to your Flutter app:
+
+```sh
+flutter pub add flutter_svg
+```
+
+The generated `pubspec.yaml` snippet includes the `flutter_svg` dependency and the asset entries. Export each vector shape as `.svg` into the generated path (e.g. `assets/images/<node-id>.svg`) so `SvgPicture.asset` can load it.
 
 ## Project structure
 
@@ -98,4 +110,4 @@ src/
 
 ## Next milestone
 
-The remaining post-MVP work is vector/SVG export with a verified archive/download workflow, actual image binary export, design tokens, components/variants, responsive inference, and project-wide export.
+The remaining post-MVP work is a verified archive/download workflow for images and SVG assets, design tokens, components/variants, responsive inference, and project-wide export.

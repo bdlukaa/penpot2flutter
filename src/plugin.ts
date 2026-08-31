@@ -1,5 +1,5 @@
 import { extractSelection, type PenpotSourceShape, type PenpotSourceTextRun } from "./core/extractor.js";
-import { generateFlutterWidget, generatePubspecAssetsSnippet } from "./core/flutter-generator.js";
+import { generateFlutterWidget, generatePubspecSnippet } from "./core/flutter-generator.js";
 import type { PluginToUiMessage } from "./shared/messages.js";
 
 interface LiveTextRange {
@@ -40,7 +40,7 @@ function sendConversion(): void {
       : {
           result,
           dart: generateFlutterWidget(result.root),
-          pubspecAssets: generatePubspecAssetsSnippet(result.assets),
+          pubspecAssets: generatePubspecSnippet(result.assets),
         }),
   };
   penpot.ui.sendMessage(message);

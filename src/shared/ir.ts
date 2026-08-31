@@ -182,6 +182,11 @@ export interface ImageNode extends BaseNode {
   readonly kind: "image";
 }
 
+export interface SvgNode extends BaseNode {
+  readonly kind: "svg";
+  readonly assetPath: string;
+}
+
 export interface TextNode extends BaseNode {
   readonly kind: "text";
   readonly text: string;
@@ -194,7 +199,7 @@ export interface UnsupportedNode extends BaseNode {
   readonly sourceType: string;
 }
 
-export type IrNode = BoardNode | GroupNode | RectangleNode | EllipseNode | ImageNode | TextNode | UnsupportedNode;
+export type IrNode = BoardNode | GroupNode | RectangleNode | EllipseNode | ImageNode | SvgNode | TextNode | UnsupportedNode;
 
 export interface ConversionResult {
   readonly root: IrNode;
