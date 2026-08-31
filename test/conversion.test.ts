@@ -976,6 +976,23 @@ test("maps a Penpot component to a reusable widget and instances to invocations"
   assert.doesNotMatch(dart, /label: 'Continue'/);
 });
 
+test("preserves non-enumerable children from Penpot component proxies", () => {
+  const proxyLikeMain = { ...buttonMain };
+  Object.defineProperty(proxyLikeMain, "children", {
+    enumerable: false,
+    value: [{ id: "background", name: "Background", type: "rectangle", x: 0, y: 0, width: 40, height: 40, visible: true }],
+  });
+  const result = extractSelection(
+    [{ ...buttonInstance("instance", "Continue"), componentLibraryId: "library-a" }],
+    [{ id: "comp-button", libraryId: "library-a", name: "Primary Button", root: proxyLikeMain }],
+  );
+
+  const component = result.components[0];
+  assert.equal(component.root.kind, "board");
+  assert.equal(component.root.children.length, 1);
+  assert.equal(component.root.children[0].sourceName, "Background");
+});
+
 test("keeps layers inside a component tree as ordinary component content", () => {
   const mainWithInternalLayer = {
     ...buttonMain,

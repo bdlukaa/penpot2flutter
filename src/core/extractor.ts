@@ -360,7 +360,11 @@ function registerComponents(components: readonly PenpotComponentSource[], contex
     if (context.componentSources.has(id)) continue;
     // Penpot's main-instance root can also report itself as a component instance.
     // It is the canonical definition here, so only its root must not become a self-call.
-    context.componentSources.set(id, { ...component.root, isComponentInstance: false });
+    context.componentSources.set(id, {
+      ...component.root,
+      ...(component.root.children == null ? {} : { children: component.root.children }),
+      isComponentInstance: false,
+    });
     const sourceName = typeof component.name === "string" && component.name.trim() !== "" ? component.name : `Component ${component.id}`;
     const dartName = dartNameFor(sourceName, id, context);
     context.components.set(id, {

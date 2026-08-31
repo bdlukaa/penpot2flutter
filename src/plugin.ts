@@ -82,6 +82,7 @@ function enrichComponent(shape: PenpotSourceShape): PenpotSourceShape {
     const component = live.component?.();
     return {
       ...shape,
+      ...(shape.children == null ? {} : { children: shape.children }),
       ...(typeof component?.id === "string" && component.id !== "" ? { componentId: component.id } : {}),
       ...(typeof component?.libraryId === "string" && component.libraryId !== "" ? { componentLibraryId: component.libraryId } : {}),
       ...(isInstance ? { isComponentInstance: true, isComponentRoot: true } : {}),
