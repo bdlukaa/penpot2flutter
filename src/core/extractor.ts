@@ -26,6 +26,7 @@ import type {
   NodeTransform,
   RectangleNode,
   TextNode,
+  TextRun,
   TextStyle,
   UnsupportedNode,
 } from "../shared/ir.js";
@@ -122,6 +123,18 @@ export interface PenpotSourceLayoutCell {
   readonly position?: "auto" | "manual" | "area" | null;
 }
 
+export interface PenpotSourceTextRun {
+  readonly characters?: string | null;
+  readonly fontFamily?: string | null;
+  readonly fontSize?: string | null;
+  readonly fontWeight?: string | null;
+  readonly fontStyle?: "normal" | "italic" | "mixed" | null;
+  readonly lineHeight?: string | null;
+  readonly letterSpacing?: string | null;
+  readonly textDecoration?: "underline" | "line-through" | "none" | "mixed" | null;
+  readonly fills?: readonly PenpotSourceFill[] | "mixed" | null;
+}
+
 export interface PenpotSourceShape {
   readonly id: string;
   readonly name: string;
@@ -155,9 +168,12 @@ export interface PenpotSourceShape {
   readonly fontFamily?: string | null;
   readonly fontSize?: string | null;
   readonly fontWeight?: string | null;
+  readonly fontStyle?: "normal" | "italic" | "mixed" | null;
   readonly lineHeight?: string | null;
   readonly letterSpacing?: string | null;
+  readonly textDecoration?: "underline" | "line-through" | "none" | "mixed" | null;
   readonly align?: "left" | "center" | "right" | "justify" | "mixed" | null;
+  readonly runs?: readonly PenpotSourceTextRun[] | null;
 }
 
 interface ExtractionContext {
@@ -230,9 +246,17 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
     case "image":
       node = { ...base, kind: "image" } satisfies ImageNode;
       break;
-    case "text":
-      node = { ...base, kind: "text", text: shape.characters ?? "", textStyle: textStyleOf(shape, diagnostics) } satisfies TextNode;
+    case "text": {
+      const runs = textRunsOf(shape, diagnostics);
+      node = {
+        ...base,
+        kind: "text",
+        text: shape.characters ?? "",
+        textStyle: textStyleOf(shape, diagnostics),
+        ...(runs === undefined ? {} : { runs }),
+      } satisfies TextNode;
       break;
+    }
     default:
       diagnostics.push({ severity: "warning", sourceId: base.sourceId, code: "unsupported-shape", message: `${shape.type} is not yet supported and was omitted from the generated widget.` });
       node = { ...base, kind: "unsupported", sourceType: shape.type } satisfies UnsupportedNode;
@@ -486,14 +510,44 @@ function textStyleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): TextS
   const lineHeight = finiteNumber(shape.lineHeight);
   const fontWeight = finiteNumber(shape.fontWeight);
   const letterSpacing = finiteNumber(shape.letterSpacing);
-  if (shape.fontFamily === "mixed" || shape.fontSize === "mixed") diagnostics.push({ severity: "warning", sourceId: sourceIdOf(shape.id), code: "mixed-text-style", message: "Mixed text runs are not yet supported; the common text style was used." });
+  if ((shape.fontFamily === "mixed" || shape.fontSize === "mixed") && shape.runs == null) diagnostics.push({ severity: "warning", sourceId: sourceIdOf(shape.id), code: "mixed-text-style", message: "Mixed text runs could not be resolved; the common text style was used." });
   return {
     ...(shape.fontFamily == null || shape.fontFamily === "mixed" ? {} : { fontFamily: shape.fontFamily }),
     ...(fontSize === undefined ? {} : { fontSize }),
     ...(fontWeight === undefined ? {} : { fontWeight }),
+    ...(shape.fontStyle === "italic" ? { fontStyle: "italic" } : shape.fontStyle === "normal" ? { fontStyle: "normal" } : {}),
     ...(lineHeight === undefined ? {} : { lineHeight }),
     ...(letterSpacing === undefined ? {} : { letterSpacing }),
+    ...(shape.textDecoration === "underline" || shape.textDecoration === "line-through" ? { decoration: shape.textDecoration } : {}),
     ...(shape.align == null || shape.align === "mixed" ? {} : { align: shape.align }),
+  };
+}
+
+function textRunsOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): readonly TextRun[] | undefined {
+  const runs = shape.runs;
+  if (runs == null || runs.length === 0) return undefined;
+  const mapped = runs.flatMap((run) => {
+    const text = run.characters ?? "";
+    if (text.length === 0) return [];
+    return [{
+      text,
+      style: runStyleOf(run, sourceIdOf(shape.id), diagnostics),
+    } satisfies TextRun];
+  });
+  return mapped.length === 0 ? undefined : mapped;
+}
+
+function runStyleOf(run: PenpotSourceTextRun, sourceId: string, diagnostics: Diagnostic[]): TextStyle {
+  const fill = run.fills == null || run.fills === "mixed" || run.fills.length === 0 ? undefined : solidFillOf(run.fills, sourceId, diagnostics);
+  return {
+    ...(run.fontFamily == null || run.fontFamily === "mixed" ? {} : { fontFamily: run.fontFamily }),
+    ...(finiteNumber(run.fontSize) === undefined ? {} : { fontSize: finiteNumber(run.fontSize)! }),
+    ...(finiteNumber(run.fontWeight) === undefined ? {} : { fontWeight: finiteNumber(run.fontWeight)! }),
+    ...(run.fontStyle === "italic" ? { fontStyle: "italic" } : run.fontStyle === "normal" ? { fontStyle: "normal" } : {}),
+    ...(finiteNumber(run.lineHeight) === undefined ? {} : { lineHeight: finiteNumber(run.lineHeight)! }),
+    ...(finiteNumber(run.letterSpacing) === undefined ? {} : { letterSpacing: finiteNumber(run.letterSpacing)! }),
+    ...(run.textDecoration === "underline" || run.textDecoration === "line-through" ? { decoration: run.textDecoration } : {}),
+    ...(fill === undefined ? {} : { color: fill }),
   };
 }
 

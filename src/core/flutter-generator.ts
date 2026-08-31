@@ -1,4 +1,4 @@
-import type { AssetManifestEntry, BoardNode, GradientFill, GridLayout, GroupNode, IrNode, NodeStyle, TextNode } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, GradientFill, GridLayout, GroupNode, IrNode, NodeStyle, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 
 export function generatePubspecAssetsSnippet(assets: readonly AssetManifestEntry[]): string {
   return assets.length === 0 ? "" : ["flutter:", "  assets:", ...assets.map((asset) => `    - ${asset.path}`), ""].join("\n");
@@ -244,15 +244,9 @@ function renderShape(style: NodeStyle, width: number, height: number, depth: num
 }
 
 function renderText(node: TextNode, depth: number): string {
+  if (node.runs !== undefined) return renderRichText(node, depth);
   const style = node.textStyle;
-  const textStyle = [
-    ...(style.fontFamily === undefined ? [] : [`fontFamily: '${escapeDart(style.fontFamily)}'`]),
-    ...(style.fontSize === undefined ? [] : [`fontSize: ${number(style.fontSize)}`]),
-    ...(style.fontWeight === undefined ? [] : [`fontWeight: ${fontWeight(style.fontWeight)}`]),
-    ...(style.lineHeight === undefined || style.fontSize === undefined ? [] : [`height: ${number(style.lineHeight)}`]),
-    ...(style.letterSpacing === undefined ? [] : [`letterSpacing: ${number(style.letterSpacing)}`]),
-    ...(node.style.fill === undefined ? [] : [`color: ${dartColor(node.style.fill.color, node.style.fill.opacity)}`]),
-  ];
+  const textStyle = renderTextStyle(style, node.style.fill, depth + 2);
   return [
     "SizedBox(",
     `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
@@ -260,10 +254,51 @@ function renderText(node: TextNode, depth: number): string {
     `${indent(depth + 1)}child: Text(`,
     `${indent(depth + 2)}'${escapeDart(node.text)}',`,
     ...(style.align === undefined ? [] : [`${indent(depth + 2)}textAlign: TextAlign.${style.align},`]),
-    ...(textStyle.length === 0 ? [] : [`${indent(depth + 2)}style: TextStyle(`, ...textStyle.map((property) => `${indent(depth + 3)}${property},`), `${indent(depth + 2)}),`]),
+    ...(textStyle === undefined ? [] : [`${indent(depth + 2)}style: ${textStyle},`]),
     `${indent(depth + 1)}),`,
     `${indent(depth)})`,
   ].join("\n");
+}
+
+function renderRichText(node: TextNode, depth: number): string {
+  return [
+    "SizedBox(",
+    `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
+    `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+    `${indent(depth + 1)}child: RichText(`,
+    ...(node.textStyle.align === undefined ? [] : [`${indent(depth + 2)}textAlign: TextAlign.${node.textStyle.align},`]),
+    `${indent(depth + 2)}text: TextSpan(`,
+    `${indent(depth + 3)}children: [`,
+    ...(node.runs ?? []).map((run) => `${indent(depth + 4)}${renderTextSpan(run, depth + 4)},`),
+    `${indent(depth + 3)}],`,
+    `${indent(depth + 2)}),`,
+    `${indent(depth + 1)}),`,
+    `${indent(depth)})`,
+  ].join("\n");
+}
+
+function renderTextSpan(run: TextRun, depth: number): string {
+  const style = renderTextStyle(run.style, undefined, depth + 1);
+  return [
+    "TextSpan(",
+    ...(style === undefined ? [] : [`${indent(depth + 1)}style: ${style},`]),
+    `${indent(depth + 1)}text: '${escapeDart(run.text)}',`,
+    `${indent(depth)})`,
+  ].join("\n");
+}
+
+function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, styleDepth: number): string | undefined {
+  const properties = [
+    ...(style.fontFamily === undefined ? [] : [`fontFamily: '${escapeDart(style.fontFamily)}'`]),
+    ...(style.fontSize === undefined ? [] : [`fontSize: ${number(style.fontSize)}`]),
+    ...(style.fontWeight === undefined ? [] : [`fontWeight: ${fontWeight(style.fontWeight)}`]),
+    ...(style.fontStyle === "italic" ? ["fontStyle: FontStyle.italic"] : style.fontStyle === "normal" ? ["fontStyle: FontStyle.normal"] : []),
+    ...(style.lineHeight === undefined || style.fontSize === undefined ? [] : [`height: ${number(style.lineHeight)}`]),
+    ...(style.letterSpacing === undefined ? [] : [`letterSpacing: ${number(style.letterSpacing)}`]),
+    ...(style.decoration === "underline" ? ["decoration: TextDecoration.underline"] : style.decoration === "line-through" ? ["decoration: TextDecoration.lineThrough"] : []),
+    ...(style.color !== undefined ? [`color: ${dartColor(style.color.color, style.color.opacity)}`] : fillColor === undefined ? [] : [`color: ${dartColor(fillColor.color, fillColor.opacity)}`]),
+  ];
+  return properties.length === 0 ? undefined : [`TextStyle(`, ...properties.map((property) => `${indent(styleDepth + 1)}${property},`), `${indent(styleDepth)})`].join("\n");
 }
 
 function renderDecoration(style: NodeStyle, depth: number): string | undefined {

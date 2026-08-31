@@ -89,9 +89,17 @@ export interface TextStyle {
   readonly fontFamily?: string;
   readonly fontSize?: number;
   readonly fontWeight?: number;
+  readonly fontStyle?: "normal" | "italic";
   readonly lineHeight?: number;
   readonly letterSpacing?: number;
+  readonly decoration?: "underline" | "line-through";
+  readonly color?: ColorFill;
   readonly align?: "left" | "center" | "right" | "justify";
+}
+
+export interface TextRun {
+  readonly text: string;
+  readonly style: TextStyle;
 }
 
 export type FlexDirection = "row" | "row-reverse" | "column" | "column-reverse";
@@ -177,6 +185,7 @@ export interface TextNode extends BaseNode {
   readonly kind: "text";
   readonly text: string;
   readonly textStyle: TextStyle;
+  readonly runs?: readonly TextRun[];
 }
 
 export interface UnsupportedNode extends BaseNode {

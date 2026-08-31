@@ -23,7 +23,8 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Stack/`Positioned` fallback for absolute containers and unsupported grid semantics
 - Solid fills, linear gradients, radial gradients, image fills, opacity, solid borders, corner radii, and drop shadows
 - Board clipping, rotation, and horizontal/vertical flips
-- Text content, family, size, weight, line height, letter spacing, and alignment
+- Text content, family, size, weight, style, decoration, line height, letter spacing, and alignment
+- Mixed-style text runs as `RichText`/`TextSpan` with per-run style and color
 - Deterministic Flutter asset path and `pubspec.yaml` asset snippet generation
 - Preview syntax highlighting, Copy Dart, and Download Dart actions
 - Node-associated warnings for unsupported or approximate conversion
@@ -31,7 +32,7 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 ## Intentional fallbacks and limitations
 
 - A grid containing fixed, percent, or auto tracks; spans; or manual/area placement falls back to `Stack`/`Positioned` and reports an `unsupported-grid` warning. This preserves placement instead of guessing incorrect Flutter grid constraints.
-- Mixed text runs are reported and use the common text style. `RichText` conversion is not available yet.
+- Mixed text runs are resolved into `RichText`/`TextSpan` from the live `Text.getRange` API when Penpot reports mixed styles; when runs cannot be resolved, the common style is used with a warning.
 - Inner shadows, non-solid strokes, unsupported colors, malformed geometry, and malformed image IDs report warnings.
 - Vector/path shapes are currently omitted with an explicit warning; SVG export is not implemented.
 - Asset references and the pubspec snippet are generated, but original image binary files are not downloaded. The plugin does not claim to export an image bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
@@ -67,6 +68,7 @@ Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while
 1. Create a board containing a flex row, a gradient rectangle, an ellipse, text, and an image fill.
 2. Select the board and open **Penpot to Flutter**.
 3. Confirm the preview uses `Row`/`Column` for flex, `LinearGradient` or `RadialGradient`, `ClipOval` for ellipses, and `Transform.rotate` for rotated layers.
+4. Select a text layer with mixed styling (bold, italic, underline, or colored runs) and confirm it emits `RichText` with per-run `TextSpan`s.
 4. Create a simple all-flex grid and confirm it emits `GridView.count`.
 5. Add a spanning or fixed-track grid child and confirm a warning is shown and the generated widget uses a `Stack` fallback.
 6. Confirm **Copy Dart** copies the unmodified source and **Download Dart** downloads `generated_widget.dart`.
@@ -87,4 +89,4 @@ src/
 
 ## Next milestone
 
-The remaining post-MVP work is rich text runs, actual image/vector export with a verified archive/download workflow, design tokens, components/variants, responsive inference, and project-wide export.
+The remaining post-MVP work is vector/SVG export with a verified archive/download workflow, actual image binary export, design tokens, components/variants, responsive inference, and project-wide export.

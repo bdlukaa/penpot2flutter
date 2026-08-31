@@ -638,3 +638,88 @@ test("generates a simple grid and falls back with diagnostics for unsupported gr
   assert.match(fallback.diagnostics.map((diagnostic) => diagnostic.code).join(","), /unsupported-grid/);
   assert.match(generateFlutterWidget(fallback.root), /Stack\(/);
 });
+
+test("extracts and generates rich text runs as RichText spans", () => {
+  const result = extractSelection([{
+    id: "rich-text",
+    name: "Rich caption",
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 40,
+    visible: true,
+    characters: "Bold and italic",
+    fontFamily: "mixed",
+    fontSize: "mixed",
+    runs: [
+      {
+        characters: "Bold",
+        fontFamily: "Karla",
+        fontSize: "16",
+        fontWeight: "700",
+        fontStyle: "normal",
+        textDecoration: "none",
+        fills: [{ fillColor: "#352922", fillOpacity: 1 }],
+      },
+      {
+        characters: " and ",
+        fontFamily: "Karla",
+        fontSize: "16",
+        fontWeight: "400",
+        fontStyle: "normal",
+        textDecoration: "none",
+        fills: [{ fillColor: "#352922", fillOpacity: 1 }],
+      },
+      {
+        characters: "italic",
+        fontFamily: "Karla",
+        fontSize: "16",
+        fontWeight: "400",
+        fontStyle: "italic",
+        textDecoration: "underline",
+        fills: [{ fillColor: "#6750a4", fillOpacity: 1 }],
+      },
+    ],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.equal(result.root.kind, "text");
+  assert.equal(result.root.runs?.length, 3);
+  assert.equal(result.diagnostics.filter((diagnostic) => diagnostic.code === "mixed-text-style").length, 0);
+  assert.match(dart, /RichText\(/);
+  assert.match(dart, /TextSpan\(/);
+  assert.match(dart, /fontWeight: FontWeight\.w700,/);
+  assert.match(dart, /fontStyle: FontStyle\.italic,/);
+  assert.match(dart, /decoration: TextDecoration\.underline,/);
+  assert.doesNotMatch(dart, /child: Text\(/);
+
+  const richTextPath = new URL("../rich_text_generated_widget.dart", import.meta.url);
+  writeFileSync(richTextPath, dart);
+  execFileSync("dart", ["format", richTextPath.pathname]);
+  assert.equal(dart, readFileSync(richTextPath, "utf8"));
+});
+
+test("extracts single-run fontStyle and decoration for plain text", () => {
+  const result = extractSelection([{
+    id: "plain-italic",
+    name: "Italic label",
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 20,
+    visible: true,
+    characters: "italic underline",
+    fontFamily: "Karla",
+    fontSize: "14",
+    fontWeight: "400",
+    fontStyle: "italic",
+    textDecoration: "underline",
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.match(dart, /Text\(/);
+  assert.match(dart, /fontStyle: FontStyle\.italic,/);
+  assert.match(dart, /decoration: TextDecoration\.underline,/);
+});
