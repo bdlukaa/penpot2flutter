@@ -4,7 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
 import { extractSelection } from "../src/core/extractor.js";
-import { generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
+import { generateComponentWidget, generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
+import { LibraryResolver } from "../src/penpot/library-resolver.js";
 
 const board = {
   id: "board-1",
@@ -824,4 +825,354 @@ test("emits SizedBox without clipBehavior for decoration-less boards", () => {
   assert.doesNotMatch(dart, /Container\(/);
   assert.doesNotMatch(dart, /clipBehavior:/);
   assert.match(dart, /SizedBox\(\n\s*width: 180,\n\s*height: 20,/);
+});
+
+// --- Shared library resolution fixtures ---
+
+test("resolves a connected shared component without listing available libraries", async () => {
+  let availableCalls = 0;
+  const component = { id: "button", libraryId: "design-system", name: "Button", mainInstance: () => ({}) };
+  const resolver = new LibraryResolver({
+    local: { id: "local", name: "Local", components: [] },
+    connected: [{ id: "design-system", name: "Design System", components: [component] }],
+    availableLibraries: async () => { availableCalls++; return []; },
+  });
+
+  const result = await resolver.resolve({ componentId: "button", libraryId: "design-system" });
+  assert.equal(result.status, "resolved");
+  assert.equal(availableCalls, 0);
+});
+
+test("uses a directly resolved shape component without global scans", async () => {
+  let availableCalls = 0;
+  const component = { id: "button", libraryId: "design-system", name: "Button", mainInstance: () => ({}) };
+  const resolver = new LibraryResolver({
+    local: { id: "local", name: "Local", components: [] },
+    connected: [],
+    availableLibraries: async () => { availableCalls++; return []; },
+  });
+
+  const result = await resolver.resolve({ directComponent: component });
+  assert.equal(result.status, "resolved");
+  assert.equal(availableCalls, 0);
+});
+
+test("reports an available but disconnected shared library without connecting it", async () => {
+  let availableCalls = 0;
+  const resolver = new LibraryResolver({
+    local: { id: "local", name: "Local", components: [] },
+    connected: [],
+    availableLibraries: async () => { availableCalls++; return [{ id: "design-system", name: "Design System" }]; },
+  });
+
+  const result = await resolver.resolve({ componentId: "button", libraryId: "design-system" });
+  assert.deepEqual(result, { status: "library-not-connected", componentId: "button", library: { id: "design-system", name: "Design System" } });
+  assert.equal(availableCalls, 1);
+});
+
+test("reports a missing component in a connected shared library", async () => {
+  const resolver = new LibraryResolver({
+    local: { id: "local", name: "Local", components: [] },
+    connected: [{ id: "design-system", name: "Design System", components: [] }],
+    availableLibraries: async () => [],
+  });
+
+  const result = await resolver.resolve({ componentId: "missing", libraryId: "design-system" });
+  assert.equal(result.status, "component-not-found");
+});
+
+test("caches unavailable-library resolution", async () => {
+  let availableCalls = 0;
+  const resolver = new LibraryResolver({
+    local: { id: "local", name: "Local", components: [] },
+    connected: [],
+    availableLibraries: async () => { availableCalls++; return []; },
+  });
+
+  await Promise.all([
+    resolver.resolve({ componentId: "button", libraryId: "missing" }),
+    resolver.resolve({ componentId: "button", libraryId: "missing" }),
+  ]);
+  assert.equal(availableCalls, 1);
+});
+
+// --- Component support fixtures ---
+
+const buttonMain = {
+  id: "button-main",
+  name: "Primary Button",
+  type: "board",
+  x: 0,
+  y: 0,
+  width: 120,
+  height: 40,
+  visible: true,
+  children: [{
+    id: "button-label",
+    name: "Label",
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 40,
+    visible: true,
+    characters: "Continue",
+    fontSize: "16",
+  }],
+};
+
+function buttonInstance(id: string, label: string) {
+  return {
+    id,
+    name: "Primary Button",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 40,
+    visible: true,
+    isComponentInstance: true,
+    componentId: "comp-button",
+    children: [{
+      id: `${id}-label`,
+      name: "Label",
+      type: "text",
+      x: 0,
+      y: 0,
+      width: 120,
+      height: 40,
+      visible: true,
+      characters: label,
+      fontSize: "16",
+    }],
+  };
+}
+
+test("maps a Penpot component to a reusable widget and instances to invocations", () => {
+  const result = extractSelection(
+    [buttonInstance("i1", "Buy now"), buttonInstance("i2", "Continue"), buttonInstance("i3", "Cancel")],
+    [{ id: "comp-button", name: "Primary Button", root: buttonMain }],
+  );
+
+  assert.equal(result.components.length, 1);
+  const component = result.components[0];
+  assert.equal(component.name, "PrimaryButton");
+  assert.deepEqual(component.parameters, [{ name: "label", type: "String", defaultValue: "Continue" }]);
+  assert.equal(component.dependencies.length, 0);
+  assert.equal(result.root.kind, "group");
+  assert.equal(result.root.children.length, 3);
+  assert.equal(result.root.children[0].kind, "component-instance");
+
+  const componentDart = generateComponentWidget(component, result.components);
+  assert.match(componentDart, /class PrimaryButton extends StatelessWidget/);
+  assert.match(componentDart, /this\.label = 'Continue',/);
+  assert.match(componentDart, /final String label;/);
+  assert.match(componentDart, /Text\(\n\s*this\.label,/);
+
+  const dart = generateFlutterWidget(result.root, result.components);
+  assert.match(dart, /PrimaryButton\(\n\s*label: 'Buy now',/);
+  assert.match(dart, /PrimaryButton\(\)/);
+  assert.match(dart, /PrimaryButton\(\n\s*label: 'Cancel',/);
+  assert.doesNotMatch(dart, /label: 'Continue'/);
+});
+
+test("keeps layers inside a component tree as ordinary component content", () => {
+  const mainWithInternalLayer = {
+    ...buttonMain,
+    children: [{
+      id: "button-background",
+      name: "Background",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 120,
+      height: 40,
+      visible: true,
+      isComponentInstance: true,
+      isComponentRoot: false,
+      componentId: "comp-button",
+    }],
+  };
+  const result = extractSelection(
+    [{ ...buttonInstance("instance", "Continue"), componentLibraryId: "library-a" }],
+    [{ id: "comp-button", libraryId: "library-a", name: "Primary Button", root: mainWithInternalLayer }],
+  );
+
+  const component = result.components[0];
+  assert.equal(component.root.kind, "board");
+  assert.equal(component.root.children[0].kind, "rectangle");
+  assert.deepEqual(component.dependencies, []);
+});
+
+test("extracts a canonical main-instance root instead of calling itself", () => {
+  const mainInstanceRoot = {
+    ...buttonMain,
+    isComponentInstance: true,
+    isComponentMainInstance: true,
+    componentId: "comp-button",
+    componentLibraryId: "library-a",
+  };
+  const result = extractSelection(
+    [{ ...buttonInstance("instance", "Continue"), componentLibraryId: "library-a" }],
+    [{ id: "comp-button", libraryId: "library-a", name: "Primary Button", root: mainInstanceRoot }],
+  );
+
+  const component = result.components[0];
+  assert.deepEqual(component.dependencies, []);
+  assert.doesNotMatch(generateComponentWidget(component, result.components), /PrimaryButton\(\)/);
+  assert.doesNotMatch(result.diagnostics.map((diagnostic) => diagnostic.code).join(","), /COMPONENT_DEPENDENCY_CYCLE/);
+});
+
+test("preserves nested component instances as dependencies", () => {
+  const cardMain = {
+    id: "card-main",
+    name: "Product Card",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 100,
+    visible: true,
+    children: [
+      { id: "card-name", name: "Product name", type: "text", x: 0, y: 0, width: 200, height: 40, visible: true, characters: "Coffee", fontSize: "16" },
+      {
+        id: "card-button",
+        name: "Primary Button",
+        type: "board",
+        x: 0,
+        y: 40,
+        width: 120,
+        height: 40,
+        visible: true,
+        isComponentInstance: true,
+        componentId: "comp-button",
+        children: [{ id: "card-button-label", name: "Label", type: "text", x: 0, y: 0, width: 120, height: 40, visible: true, characters: "Continue", fontSize: "16" }],
+      },
+    ],
+  };
+  const result = extractSelection(
+    [{ id: "card-instance", name: "Product Card", type: "board", x: 0, y: 0, width: 200, height: 100, visible: true, isComponentInstance: true, componentId: "comp-card", children: cardMain.children }],
+    [
+      { id: "comp-button", name: "Primary Button", root: buttonMain },
+      { id: "comp-card", name: "Product Card", root: cardMain },
+    ],
+  );
+
+  const card = result.components.find((component) => component.id === "local:comp-card")!;
+  assert.deepEqual(card.dependencies, ["local:comp-button"]);
+  const cardDart = generateComponentWidget(card, result.components);
+  assert.match(cardDart, /PrimaryButton\(\)/);
+});
+
+test("keeps components with the same ID from separate libraries distinct", () => {
+  const localButton = { ...buttonMain, id: "local-button-main", name: "Local Button" };
+  const sharedButton = { ...buttonMain, id: "shared-button-main", name: "Shared Button" };
+  const result = extractSelection(
+    [
+      { ...buttonInstance("local-instance", "Continue"), componentId: "button", componentLibraryId: "local-library" },
+      { ...buttonInstance("shared-instance", "Continue"), componentId: "button", componentLibraryId: "shared-library" },
+    ],
+    [
+      { id: "button", libraryId: "local-library", name: "Local Button", root: localButton },
+      { id: "button", libraryId: "shared-library", name: "Shared Button", root: sharedButton },
+    ],
+  );
+
+  assert.deepEqual(result.components.map((component) => component.id), ["local-library:button", "shared-library:button"]);
+  assert.deepEqual(result.root.kind === "group" ? result.root.children.map((child) => child.kind === "component-instance" ? child.componentId : "") : [], ["local-library:button", "shared-library:button"]);
+  assert.match(generateFlutterWidget(result.root, result.components), /LocalButton\(\)/);
+  assert.match(generateFlutterWidget(result.root, result.components), /SharedButton\(\)/);
+});
+
+test("disambiguates colliding component names deterministically", () => {
+  const make = (id: string) => ({ id, name: "Button", root: buttonMain });
+  const result = extractSelection(
+    [{ id: "a", name: "Button", type: "board", x: 0, y: 0, width: 120, height: 40, visible: true, isComponentInstance: true, componentId: "c1", children: buttonMain.children }],
+    [make("c1"), make("c2")],
+  );
+
+  const names = result.components.map((component) => component.name);
+  assert.equal(new Set(names).size, 2);
+  assert.equal(names[0], "Button");
+  assert.equal(names[1], "Button2");
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "COMPONENT_NAME_COLLISION"));
+});
+
+test("treats detached instances as ordinary shape trees", () => {
+  const result = extractSelection([buttonMain]);
+  assert.equal(result.components.length, 0);
+  assert.equal(result.root.kind, "board");
+  assert.equal(result.root.children[0].kind, "text");
+});
+
+test("reports unsupported component overrides with a safe fallback", () => {
+  const redButton = {
+    ...buttonMain,
+    id: "red-button-main",
+    fills: [{ fillColor: "#6750a4", fillOpacity: 1 }],
+  };
+  const redInstance = {
+    ...buttonInstance("red-i", "Continue"),
+    fills: [{ fillColor: "#ff0000", fillOpacity: 1 }],
+  };
+  const result = extractSelection([redInstance], [{ id: "comp-button", name: "Primary Button", root: redButton }]);
+
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "COMPONENT_OVERRIDE_UNSUPPORTED"));
+  const dart = generateFlutterWidget(result.root, result.components);
+  assert.match(dart, /PrimaryButton\(\)/);
+});
+
+test("reports unresolved components and falls back safely", () => {
+  const result = extractSelection([buttonInstance("orphan", "Continue")]);
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "COMPONENT_UNRESOLVED"));
+  assert.equal(result.root.kind, "unsupported");
+  assert.match(generateFlutterWidget(result.root, result.components), /const SizedBox\.shrink\(\)/);
+});
+
+test("reports unavailable shared-library components", () => {
+  const result = extractSelection([{ ...buttonInstance("library-orphan", "Continue"), componentLibraryId: "shared-library" }]);
+
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "SHARED_LIBRARY_UNAVAILABLE"));
+  assert.equal(result.root.kind, "unsupported");
+});
+
+test("generates deterministic multi-file output with a barrel export", () => {
+  const cardMain = {
+    id: "card-main",
+    name: "Product Card",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 100,
+    visible: true,
+    children: [
+      { id: "card-button", name: "Primary Button", type: "board", x: 0, y: 0, width: 120, height: 40, visible: true, isComponentInstance: true, componentId: "comp-button", children: buttonMain.children },
+    ],
+  };
+  const result = extractSelection(
+    [{
+      id: "checkout-screen",
+      name: "Checkout Screen",
+      type: "board",
+      x: 0,
+      y: 0,
+      width: 300,
+      height: 200,
+      visible: true,
+      children: [buttonInstance("top", "Checkout")],
+    }],
+    [
+      { id: "comp-button", name: "Primary Button", root: buttonMain },
+      { id: "comp-card", name: "Product Card", root: cardMain },
+    ],
+  );
+
+  const files = generateFlutterFiles(result.root, result.components);
+  const paths = files.map((file) => file.path);
+  assert.deepEqual(paths, ["screens/checkout_screen.dart", "components/primary_button.dart", "components/product_card.dart", "penpot_ui.dart"]);
+  assert.match(files.find((file) => file.path === "penpot_ui.dart")!.source, /export 'components\/primary_button\.dart';/);
+
+  const again = generateFlutterFiles(result.root, result.components);
+  assert.deepEqual(again, files);
 });

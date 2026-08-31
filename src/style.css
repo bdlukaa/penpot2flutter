@@ -36,6 +36,11 @@ button:disabled { background: #cac4d0; cursor: default; }
 .token-number { color: #ffb4ab; }
 textarea { background: #1d1b20; border: 0; border-radius: 8px; color: #e9ddff; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 320px; padding: 14px; resize: vertical; tab-size: 2; width: 100%; }
 
+#generated-files h2 { margin-bottom: 8px; }
+.generated-file-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.generated-file { background: #eee8f4; border: 1px solid #c9c1d0; border-radius: 6px; color: #2b2830; font-size: 12px; font-weight: 600; padding: 6px 9px; }
+.generated-file.selected { background: #6750a4; border-color: #6750a4; color: #fff; }
+
 #diagnostics { background: #fff8e1; border-radius: 8px; color: #594000; padding: 12px; }
 #diagnostics h2 { margin-bottom: 6px; }
 #diagnostic-list { margin: 0; padding-left: 20px; }

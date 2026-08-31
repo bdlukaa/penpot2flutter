@@ -1,3 +1,4 @@
+import { componentKey } from "../shared/component-key.js";
 import type {
   AssetManifestEntry,
   BoardNode,
@@ -18,6 +19,10 @@ import type {
   GroupNode,
   ImageFill,
   ImageNode,
+  IrArgument,
+  IrComponentDefinition,
+  IrComponentInstanceNode,
+  IrComponentParameter,
   IrNode,
   LayoutChild,
   LayoutSizing,
@@ -136,6 +141,13 @@ export interface PenpotSourceTextRun {
   readonly fills?: readonly PenpotSourceFill[] | "mixed" | null;
 }
 
+export interface PenpotComponentSource {
+  readonly id: string;
+  readonly libraryId?: string | null;
+  readonly name: string;
+  readonly root: PenpotSourceShape;
+}
+
 export interface PenpotSourceShape {
   readonly id: string;
   readonly name: string;
@@ -151,6 +163,12 @@ export interface PenpotSourceShape {
   readonly rotation?: number | null;
   readonly flipX?: boolean | null;
   readonly flipY?: boolean | null;
+  readonly componentId?: string | null;
+  readonly componentLibraryId?: string | null;
+  readonly isComponentInstance?: boolean | null;
+  readonly isComponentMainInstance?: boolean | null;
+  readonly isComponentRoot?: boolean | null;
+  readonly componentResolutionIssue?: { readonly code: string; readonly message: string } | null;
   readonly fills?: readonly PenpotSourceFill[] | "mixed" | null;
   readonly strokes?: readonly PenpotSourceStroke[] | null;
   readonly borderRadius?: number | null;
@@ -177,20 +195,61 @@ export interface PenpotSourceShape {
   readonly runs?: readonly PenpotSourceTextRun[] | null;
 }
 
+interface ComponentSlot {
+  readonly parameterName: string;
+  readonly defaultText: string;
+}
+
+interface ComponentBuilder {
+  readonly id: string;
+  readonly sourceComponentId: string;
+  readonly sourceName: string;
+  readonly dartName: string;
+  readonly libraryId?: string;
+  root?: IrNode;
+  readonly slots: Map<string, ComponentSlot>;
+  readonly usedParameterNames: Set<string>;
+  readonly overridden: Set<string>;
+  readonly dependencies: Set<string>;
+}
+
 interface ExtractionContext {
   readonly diagnostics: Diagnostic[];
   readonly assets: Map<string, AssetManifestEntry>;
+  readonly componentSources: Map<string, PenpotSourceShape>;
+  readonly components: Map<string, ComponentBuilder>;
+  readonly componentOrder: string[];
+  readonly usedDartNames: Map<string, string>;
+  currentComponent?: string;
 }
 
-export function extractSelection(selection: readonly PenpotSourceShape[]): ConversionResult {
-  const diagnostics: Diagnostic[] = [];
-  const context = { diagnostics, assets: new Map<string, AssetManifestEntry>() };
-  const root = selection.length === 1 ? extractNode(selection[0], context) : extractSyntheticSelection(selection, context);
-  return { root, assets: [...context.assets.values()], diagnostics };
+export function extractSelection(selection: readonly PenpotSourceShape[], components: readonly PenpotComponentSource[] = []): ConversionResult {
+  const context: ExtractionContext = {
+    diagnostics: [],
+    assets: new Map<string, AssetManifestEntry>(),
+    componentSources: new Map(),
+    components: new Map(),
+    componentOrder: [],
+    usedDartNames: new Map(),
+  };
+
+  registerComponents(components, context);
+  for (const componentId of context.componentOrder) {
+    collectSlots(context.componentSources.get(componentId)!, componentId, context, "");
+  }
+  for (const componentId of context.componentOrder) {
+    const builder = context.components.get(componentId)!;
+    context.currentComponent = componentId;
+    builder.root = extractNode(context.componentSources.get(componentId)!, context, "");
+    context.currentComponent = undefined;
+  }
+
+  const root = selection.length === 1 ? extractNode(selection[0], context, "") : extractSyntheticSelection(selection, context);
+  return { root, assets: [...context.assets.values()], diagnostics: context.diagnostics, components: finalizeComponents(context) };
 }
 
 function extractSyntheticSelection(selection: readonly PenpotSourceShape[], context: ExtractionContext): GroupNode {
-  const extractedChildren = selection.map((shape) => extractNode(shape, context));
+  const extractedChildren = selection.map((shape) => extractNode(shape, context, ""));
   const bounds = boundsOf(extractedChildren);
   return {
     kind: "group",
@@ -208,7 +267,13 @@ function extractSyntheticSelection(selection: readonly PenpotSourceShape[], cont
   };
 }
 
-function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNode {
+function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path: string): IrNode {
+  if (isComponentRootInstance(shape)) {
+    const instance = componentInstanceNode(shape, context);
+    context.diagnostics.push(...instance.diagnostics);
+    return instance.node;
+  }
+
   const diagnostics: Diagnostic[] = [];
   const grid = shape.grid == null ? undefined : gridOf(shape.grid, shape, diagnostics);
   const transform = transformOf(shape, diagnostics);
@@ -233,11 +298,11 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
         clipContent: shape.clipContent === true,
         ...(shape.flex == null ? {} : { flex: flexOf(shape.flex) }),
         ...(grid === undefined ? {} : { grid }),
-        children: extractChildren(shape, context),
+        children: extractChildren(shape, context, path),
       } satisfies BoardNode;
       break;
     case "group":
-      node = { ...base, kind: "group", children: extractChildren(shape, context) } satisfies GroupNode;
+      node = { ...base, kind: "group", children: extractChildren(shape, context, path) } satisfies GroupNode;
       break;
     case "rectangle":
     case "rect":
@@ -256,12 +321,14 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
       break;
     case "text": {
       const runs = textRunsOf(shape, diagnostics);
+      const parameterName = context.currentComponent === undefined ? undefined : context.components.get(context.currentComponent)?.slots.get(path)?.parameterName;
       node = {
         ...base,
         kind: "text",
         text: shape.characters ?? "",
         textStyle: textStyleOf(shape, diagnostics),
         ...(runs === undefined ? {} : { runs }),
+        ...(parameterName === undefined ? {} : { parameterName }),
       } satisfies TextNode;
       break;
     }
@@ -273,8 +340,255 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
   return node;
 }
 
-function extractChildren(shape: PenpotSourceShape, context: ExtractionContext): readonly IrNode[] {
-  return (shape.children ?? []).map((child) => extractNode(child, context));
+function isComponentRootInstance(shape: PenpotSourceShape): boolean {
+  return shape.isComponentInstance === true && shape.isComponentRoot !== false;
+}
+
+function extractChildren(shape: PenpotSourceShape, context: ExtractionContext, path: string): readonly IrNode[] {
+  return (shape.children ?? []).map((child, index) => extractNode(child, context, pathKey(path, index)));
+}
+
+function pathKey(path: string, index: number): string {
+  return path === "" ? String(index) : `${path}.${index}`;
+}
+
+function registerComponents(components: readonly PenpotComponentSource[], context: ExtractionContext): void {
+  for (const component of components) {
+    if (typeof component.id !== "string" || component.id === "") continue;
+    const libraryId = typeof component.libraryId === "string" && component.libraryId !== "" ? component.libraryId : undefined;
+    const id = componentKey(libraryId, component.id);
+    if (context.componentSources.has(id)) continue;
+    // Penpot's main-instance root can also report itself as a component instance.
+    // It is the canonical definition here, so only its root must not become a self-call.
+    context.componentSources.set(id, { ...component.root, isComponentInstance: false });
+    const sourceName = typeof component.name === "string" && component.name.trim() !== "" ? component.name : `Component ${component.id}`;
+    const dartName = dartNameFor(sourceName, id, context);
+    context.components.set(id, {
+      id,
+      sourceComponentId: component.id,
+      sourceName,
+      dartName,
+      ...(libraryId === undefined ? {} : { libraryId }),
+      slots: new Map(),
+      usedParameterNames: new Set(),
+      overridden: new Set(),
+      dependencies: new Set(),
+    });
+    context.componentOrder.push(id);
+  }
+}
+
+function collectSlots(shape: PenpotSourceShape, componentId: string, context: ExtractionContext, path: string): void {
+  if (isComponentRootInstance(shape)) return;
+  const builder = context.components.get(componentId)!;
+  if (shape.type === "text") {
+    const parameterName = dedupeParameterName(parameterNameFor(shape.name), builder);
+    builder.slots.set(path, { parameterName, defaultText: shape.characters ?? "" });
+    return;
+  }
+  if (shape.type === "board" || shape.type === "group") {
+    (shape.children ?? []).forEach((child, index) => collectSlots(child, componentId, context, pathKey(path, index)));
+  }
+}
+
+function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionContext): { node: IrNode; diagnostics: Diagnostic[] } {
+  const diagnostics: Diagnostic[] = [];
+  const componentId = typeof shape.componentId === "string" && shape.componentId !== "" ? shape.componentId : undefined;
+  if (componentId === undefined) {
+    diagnostics.push({
+      severity: "warning",
+      sourceId: sourceIdOf(shape.id),
+      code: shape.componentResolutionIssue?.code ?? "SHARED_COMPONENT_RESOLUTION_FAILED",
+      message: shape.componentResolutionIssue?.message ?? `Component identity is unavailable for component instance "${sourceNameOf(shape.name, sourceIdOf(shape.id))}" (${sourceIdOf(shape.id)}).`,
+    });
+    const node: UnsupportedNode = {
+      kind: "unsupported",
+      sourceId: sourceIdOf(shape.id),
+      sourceName: sourceNameOf(shape.name, sourceIdOf(shape.id)),
+      name: normalizeName(shape.name, sourceIdOf(shape.id)),
+      geometry: geometryOf(shape, diagnostics),
+      visible: shape.visible !== false,
+      style: { opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics) },
+      diagnostics,
+      sourceType: "component-instance",
+    };
+    return { node, diagnostics };
+  }
+  const componentIdentity = componentKey(
+    typeof shape.componentLibraryId === "string" && shape.componentLibraryId !== "" ? shape.componentLibraryId : undefined,
+    componentId,
+  );
+  const main = context.componentSources.get(componentIdentity);
+  if (main === undefined) {
+    const sharedLibraryId = typeof shape.componentLibraryId === "string" && shape.componentLibraryId !== "" ? shape.componentLibraryId : undefined;
+    diagnostics.push({
+      severity: "warning",
+      sourceId: sourceIdOf(shape.id),
+      code: shape.componentResolutionIssue?.code ?? (sharedLibraryId === undefined ? "COMPONENT_UNRESOLVED" : "SHARED_LIBRARY_UNAVAILABLE"),
+      message: shape.componentResolutionIssue?.message ?? (sharedLibraryId === undefined
+        ? `Component instance references an unresolved component (${componentId}).`
+        : `Unable to resolve component "${sourceNameOf(shape.name, sourceIdOf(shape.id))}" (${componentId}) from shared library ${sharedLibraryId}.`),
+    });
+    const node: UnsupportedNode = {
+      kind: "unsupported",
+      sourceId: sourceIdOf(shape.id),
+      sourceName: sourceNameOf(shape.name, sourceIdOf(shape.id)),
+      name: normalizeName(shape.name, sourceIdOf(shape.id)),
+      geometry: geometryOf(shape, diagnostics),
+      visible: shape.visible !== false,
+      style: { opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics) },
+      diagnostics,
+      sourceType: "component-instance",
+    };
+    return { node, diagnostics };
+  }
+
+  if (context.currentComponent !== undefined) {
+    context.components.get(context.currentComponent)!.dependencies.add(componentIdentity);
+  }
+
+  const args: IrArgument[] = [];
+  walkOverrides(main, shape, "", componentIdentity, context, args);
+
+  const transform = transformOf(shape, diagnostics);
+  const node: IrComponentInstanceNode = {
+    kind: "component-instance",
+    sourceId: sourceIdOf(shape.id),
+    sourceName: sourceNameOf(shape.name, sourceIdOf(shape.id)),
+    name: normalizeName(shape.name, sourceIdOf(shape.id)),
+    geometry: geometryOf(shape, diagnostics),
+    visible: shape.visible !== false,
+    style: { opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics) },
+    ...(transform === undefined ? {} : { transform }),
+    diagnostics,
+    componentId: componentIdentity,
+    arguments: args,
+  };
+  return { node, diagnostics };
+}
+
+function walkOverrides(main: PenpotSourceShape, instance: PenpotSourceShape, path: string, componentId: string, context: ExtractionContext, args: IrArgument[]): void {
+  const builder = context.components.get(componentId);
+  if (builder === undefined) return;
+  if (main.type === "text" || instance.type === "text") {
+    const slot = builder.slots.get(path);
+    if (slot !== undefined && (main.characters ?? "") !== (instance.characters ?? "")) {
+      args.push({ name: slot.parameterName, value: instance.characters ?? "" });
+      builder.overridden.add(slot.parameterName);
+    }
+    return;
+  }
+  if ((main.visible !== false) !== (instance.visible !== false)) {
+    unsupportedOverride(instance, context, "visibility");
+  }
+  if (fillColorKey(main) !== fillColorKey(instance)) {
+    unsupportedOverride(instance, context, "fill color");
+  }
+  if (main.type === "board" || main.type === "group") {
+    const mainChildren = main.children ?? [];
+    const instanceChildren = instance.children ?? [];
+    const count = Math.min(mainChildren.length, instanceChildren.length);
+    for (let i = 0; i < count; i++) {
+      const mainChild = mainChildren[i];
+      const instanceChild = instanceChildren[i];
+      if (isComponentRootInstance(mainChild) || isComponentRootInstance(instanceChild)) {
+        if ((mainChild.componentId ?? undefined) !== (instanceChild.componentId ?? undefined)) {
+          unsupportedOverride(instanceChild, context, "nested component swap");
+        }
+        continue;
+      }
+      walkOverrides(mainChild, instanceChild, pathKey(path, i), componentId, context, args);
+    }
+  }
+}
+
+function fillColorKey(shape: PenpotSourceShape): string | undefined {
+  const fills = shape.fills;
+  if (fills == null || fills === "mixed" || fills.length === 0) return undefined;
+  return fills[0].fillColor ?? undefined;
+}
+
+function unsupportedOverride(shape: PenpotSourceShape, context: ExtractionContext, property: string): void {
+  context.diagnostics.push({
+    severity: "warning",
+    sourceId: sourceIdOf(shape.id),
+    code: "COMPONENT_OVERRIDE_UNSUPPORTED",
+    message: `Unsupported component override (${property}) on "${sourceNameOf(shape.name, sourceIdOf(shape.id))}"; the canonical value was used.`,
+  });
+}
+
+function finalizeComponents(context: ExtractionContext): IrComponentDefinition[] {
+  detectDependencyCycles(context);
+  return context.componentOrder.map((componentId) => {
+    const builder = context.components.get(componentId)!;
+    const parameters: IrComponentParameter[] = [...builder.slots.values()]
+      .filter((slot) => builder.overridden.has(slot.parameterName))
+      .filter((slot, index, all) => all.findIndex((other) => other.parameterName === slot.parameterName) === index)
+      .map((slot) => ({ name: slot.parameterName, type: "String" as const, defaultValue: slot.defaultText }));
+    return {
+      id: componentId,
+      sourceComponentId: builder.sourceComponentId,
+      sourceName: builder.sourceName,
+      name: builder.dartName,
+      ...(builder.libraryId === undefined ? {} : { sourceLibraryId: builder.libraryId }),
+      root: builder.root!,
+      parameters,
+      dependencies: [...builder.dependencies],
+    };
+  });
+}
+
+function detectDependencyCycles(context: ExtractionContext): void {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (componentId: string): void => {
+    if (visited.has(componentId)) return;
+    if (visiting.has(componentId)) {
+      context.diagnostics.push({ severity: "warning", sourceId: componentId, code: "COMPONENT_DEPENDENCY_CYCLE", message: `Component dependency cycle detected involving component "${componentId}".` });
+      return;
+    }
+    visiting.add(componentId);
+    for (const dependency of context.components.get(componentId)?.dependencies ?? []) visit(dependency);
+    visiting.delete(componentId);
+    visited.add(componentId);
+  };
+  for (const componentId of context.componentOrder) visit(componentId);
+}
+
+function dartNameFor(sourceName: string, componentId: string, context: ExtractionContext): string {
+  const base = pascalCase(sourceName) || "Component";
+  let candidate = base;
+  let suffix = 2;
+  while (context.usedDartNames.has(candidate) && context.usedDartNames.get(candidate) !== componentId) {
+    candidate = `${base}${suffix}`;
+    suffix++;
+  }
+  if (candidate !== base) {
+    context.diagnostics.push({ severity: "warning", sourceId: componentId, code: "COMPONENT_NAME_COLLISION", message: `Component "${sourceName}" collides with another component name; generated "${candidate}".` });
+  }
+  context.usedDartNames.set(candidate, componentId);
+  return candidate;
+}
+
+function dedupeParameterName(base: string, builder: ComponentBuilder): string {
+  let candidate = base;
+  let suffix = 2;
+  while (builder.usedParameterNames.has(candidate)) {
+    candidate = `${base}${suffix}`;
+    suffix++;
+  }
+  builder.usedParameterNames.add(candidate);
+  return candidate;
+}
+
+function parameterNameFor(name: unknown): string {
+  const words = (typeof name === "string" ? name : "").match(/[A-Za-z0-9]+/g) ?? [];
+  const base = words.map((word, index) => index === 0 ? word.charAt(0).toLowerCase() + word.slice(1) : word.charAt(0).toUpperCase() + word.slice(1)).join("");
+  return base || "text";
+}
+
+function pascalCase(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("").replace(/^[^A-Za-z]+/, "");
 }
 
 function flexOf(flex: PenpotSourceFlexLayout): FlexLayout {

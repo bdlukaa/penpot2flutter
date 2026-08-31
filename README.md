@@ -27,7 +27,9 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Text content, family, size, weight, style, decoration, line height, letter spacing, and alignment
 - Mixed-style text runs as `RichText`/`TextSpan` with per-run style and color
 - Deterministic Flutter asset path and `pubspec.yaml` asset snippet generation
-- Preview syntax highlighting, Copy Dart, and Download Dart actions
+- Preview syntax highlighting, Copy Dart, Download Dart, and per-file preview/copy/download for multi-file component output
+- Explicit Penpot component definitions and component instances: one Flutter widget per canonical component, with callers generated as widget invocations
+- Local and connected shared-library component resolution, including nested and cross-library component dependencies, composite library/component identity, deterministic name collision handling, and conservative text-override (`String`) parameters
 - Node-associated warnings for unsupported or approximate conversion
 - A `// layer-name` comment above every generated widget for traceability back to the Penpot layer
 
@@ -47,6 +49,12 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Mixed text runs are resolved into `RichText`/`TextSpan` from the live `Text.getRange` API when Penpot reports mixed styles; when runs cannot be resolved, the common style is used with a warning.
 - Inner shadows, non-solid strokes, unsupported colors, malformed geometry, and malformed image IDs report warnings.
 - Vector/path shapes become `SvgPicture.asset` references; the SVG binary files themselves are not exported by the plugin yet.
+- Shared components resolve first from `Shape.component()`, then from the local/connected library index. Only components reachable from the selected roots are exported.
+- The plugin is read-only. A shared library that is available but not connected produces `SHARED_LIBRARY_NOT_CONNECTED` with remediation guidance; the plugin intentionally does not call `connectLibrary()` because it persistently modifies the Penpot file and requires `library:write`.
+- Missing libraries, missing components, unavailable canonical instances, and failed resolution produce source-node diagnostics rather than being silently flattened.
+- Component parameter inference currently supports only meaningful text overrides as defaulted `String` parameters. Color, visibility, dimensions, component swaps, and variant properties remain diagnostics/future work.
+- The installed Penpot Plugin API typings do not expose component-family or variant metadata, so variant-specific Flutter APIs are not generated. This is intentionally not inferred from names or visual structure.
+- Component output is generated as deterministic source files (`screens/`, `components/`, and `penpot_ui.dart`). The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
 - Asset references and the pubspec snippet are generated, but original image and SVG binary files are not downloaded. The plugin does not claim to export a binary bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
 - Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
 
@@ -55,10 +63,10 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 The manifest requests only:
 
 ```json
-"permissions": ["content:read"]
+"permissions": ["content:read", "library:read"]
 ```
 
-The plugin reads selected content but does not modify Penpot documents. Download Dart uses a browser-generated text file and requires no Penpot content-write permission.
+`content:read` allows extraction of the selected design. `library:read` allows resolution of canonical component definitions in the local and already-connected shared libraries. The plugin does not request `library:write`: connecting a library is a persistent document change. Download Dart uses a browser-generated text file and requires no Penpot content-write permission.
 
 ## Development
 
@@ -81,11 +89,13 @@ Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while
 2. Select the board and open **Penpot to Flutter**.
 3. Confirm the preview uses `Row`/`Column` for flex, `LinearGradient` or `RadialGradient`, `ClipOval` for ellipses, and `Transform.rotate` for rotated layers.
 4. Select a text layer with mixed styling (bold, italic, underline, or colored runs) and confirm it emits `RichText` with per-run `TextSpan`s.
-4. Create a simple all-flex grid and confirm it emits `GridView.count`.
-5. Add a spanning or fixed-track grid child and confirm a warning is shown and the generated widget uses a `Stack` fallback.
-6. Confirm **Copy Dart** copies the unmodified source and **Download Dart** downloads `generated_widget.dart`.
-7. For images, add the displayed `pubspec.yaml` snippet and place the corresponding image files at the generated asset paths before running the Flutter app.
-8. For vectors, add `flutter_svg` to your Flutter project (`flutter pub add flutter_svg`) and export the SVG assets to the generated `assets/images/*.svg` paths.
+5. Create a simple all-flex grid and confirm it emits `GridView.count`.
+6. Add a spanning or fixed-track grid child and confirm a warning is shown and the generated widget uses a `Stack` fallback.
+7. Create a local component, use several instances in a board, and override a text label. Confirm **Generated files** contains a component file and the screen calls that widget with a `String` argument instead of duplicating its internals.
+8. Place a component instance inside another component and confirm the parent component imports and calls the nested component. In a second Penpot file, connect a published shared library and use its component in the selected board; confirm it resolves to the same reusable component output. A library that is available but not connected must show `SHARED_LIBRARY_NOT_CONNECTED`, not expanded markup.
+9. Confirm **Copy Dart** and **Download Dart** act on the visible file; select each generated file to review component, screen, and barrel sources.
+10. For images, add the displayed `pubspec.yaml` snippet and place the corresponding image files at the generated asset paths before running the Flutter app.
+11. For vectors, add `flutter_svg` to your Flutter project (`flutter pub add flutter_svg`) and export the SVG assets to the generated `assets/images/*.svg` paths.
 
 ## Adding the SVG dependency
 
@@ -110,6 +120,19 @@ src/
   shared/version.ts          UI version indicator
 ```
 
+## Component output
+
+For a selected screen containing component instances, the compiler emits deterministic source files such as:
+
+```text
+screens/checkout_screen.dart
+components/primary_button.dart
+components/product_card.dart
+penpot_ui.dart
+```
+
+Each main component becomes one `StatelessWidget`; each linked instance becomes a call to that widget. A composite `libraryId:componentId` key, rather than a display name or raw component ID, defines identity. Display names only determine deterministic Dart class/file names, with a suffix added for collisions. A detached instance remains an ordinary shape tree.
+
 ## Next milestone
 
-The remaining post-MVP work is a verified archive/download workflow for images and SVG assets, design tokens, components/variants, responsive inference, and project-wide export.
+The remaining post-MVP work is a verified archive/download workflow for images and SVG assets, broader component parameters and variants, design tokens, responsive inference, and project-wide export.

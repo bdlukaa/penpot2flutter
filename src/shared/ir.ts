@@ -192,6 +192,7 @@ export interface TextNode extends BaseNode {
   readonly text: string;
   readonly textStyle: TextStyle;
   readonly runs?: readonly TextRun[];
+  readonly parameterName?: string;
 }
 
 export interface UnsupportedNode extends BaseNode {
@@ -199,10 +200,47 @@ export interface UnsupportedNode extends BaseNode {
   readonly sourceType: string;
 }
 
-export type IrNode = BoardNode | GroupNode | RectangleNode | EllipseNode | ImageNode | SvgNode | TextNode | UnsupportedNode;
+export type ComponentParameterType = "String";
+
+export interface IrComponentParameter {
+  readonly name: string;
+  readonly type: ComponentParameterType;
+  readonly defaultValue?: string;
+}
+
+export interface IrArgument {
+  readonly name: string;
+  readonly value: string;
+}
+
+export interface IrComponentInstanceNode extends BaseNode {
+  readonly kind: "component-instance";
+  readonly componentId: string;
+  readonly arguments: readonly IrArgument[];
+}
+
+export interface IrComponentDefinition {
+  /** Composite `${libraryId}:${componentId}` identity used for references and dependencies. */
+  readonly id: string;
+  readonly sourceComponentId: string;
+  readonly sourceName: string;
+  readonly name: string;
+  readonly sourceLibraryId?: string;
+  readonly root: IrNode;
+  readonly parameters: readonly IrComponentParameter[];
+  readonly dependencies: readonly string[];
+}
+
+export type IrNode = BoardNode | GroupNode | RectangleNode | EllipseNode | ImageNode | SvgNode | TextNode | IrComponentInstanceNode | UnsupportedNode;
 
 export interface ConversionResult {
   readonly root: IrNode;
   readonly assets: readonly AssetManifestEntry[];
   readonly diagnostics: readonly Diagnostic[];
+  readonly components: readonly IrComponentDefinition[];
+}
+
+export interface GeneratedFile {
+  readonly path: string;
+  readonly source: string;
 }

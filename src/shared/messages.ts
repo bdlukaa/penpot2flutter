@@ -1,4 +1,4 @@
-import type { ConversionResult } from "./ir.js";
+import type { ConversionResult, GeneratedFile } from "./ir.js";
 
 export interface RequestConversionMessage {
   readonly source: "penpot-to-flutter";
@@ -14,6 +14,7 @@ export interface ConversionMessage {
   readonly result?: ConversionResult;
   readonly dart?: string;
   readonly pubspecAssets?: string;
+  readonly files?: readonly GeneratedFile[];
 }
 
 export type PluginToUiMessage = ConversionMessage;

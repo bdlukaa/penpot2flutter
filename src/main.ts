@@ -1,4 +1,5 @@
 import { isPluginToUiMessage, type PluginToUiMessage } from "./shared/messages.js";
+import type { GeneratedFile } from "./shared/ir.js";
 import { APP_VERSION } from "./shared/version.js";
 import "./style.css";
 
@@ -27,6 +28,10 @@ app.innerHTML = `
         <button id="download" type="button" disabled>Download Dart</button>
       </div>
     </div>
+    <section id="generated-files" hidden aria-label="Generated Dart files">
+      <h2>Generated files</h2>
+      <div id="generated-file-list" class="generated-file-list"></div>
+    </section>
     <pre id="dart-preview" class="code-preview" aria-label="Generated Dart"><code></code></pre>
     <textarea id="dart" class="copy-source" readonly hidden spellcheck="false" aria-label="Generated Dart"></textarea>
     <section id="assets" hidden>
@@ -50,6 +55,8 @@ const copy = requiredElement<HTMLButtonElement>("copy");
 const download = requiredElement<HTMLButtonElement>("download");
 const assets = requiredElement<HTMLElement>("assets");
 const pubspecAssets = requiredElement<HTMLTextAreaElement>("pubspec-assets");
+const generatedFiles = requiredElement<HTMLElement>("generated-files");
+const generatedFileList = requiredElement<HTMLElement>("generated-file-list");
 const diagnostics = requiredElement<HTMLElement>("diagnostics");
 const diagnosticList = requiredElement<HTMLUListElement>("diagnostic-list");
 
@@ -68,7 +75,7 @@ download.addEventListener("click", () => {
   const url = URL.createObjectURL(new Blob([latestDart], { type: "text/x-dart" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = "generated_widget.dart";
+  link.download = selectedFileName();
   link.click();
   URL.revokeObjectURL(url);
 });
@@ -91,11 +98,9 @@ function render(message: PluginToUiMessage): void {
     return;
   }
 
-  latestDart = message.dart;
   status.textContent = "Generated from the current selection";
   summary.textContent = `${message.selectionCount} selected ${message.selectionCount === 1 ? "layer" : "layers"}`;
-  dart.value = message.dart;
-  dartPreview.querySelector("code")!.innerHTML = highlightDart(message.dart);
+  renderGeneratedFiles(message.files, message.dart);
   assets.hidden = message.pubspecAssets === undefined || message.pubspecAssets === "";
   pubspecAssets.value = message.pubspecAssets ?? "";
   copy.disabled = false;
@@ -104,13 +109,53 @@ function render(message: PluginToUiMessage): void {
 
   const warnings = message.result.diagnostics;
   diagnostics.hidden = warnings.length === 0;
+  const warningCounts = new Map<string, number>();
+  for (const warning of warnings) {
+    warningCounts.set(warning.message, (warningCounts.get(warning.message) ?? 0) + 1);
+  }
   diagnosticList.replaceChildren(
-    ...warnings.map((warning) => {
+    ...[...warningCounts].map(([message, count]) => {
       const item = document.createElement("li");
-      item.textContent = warning.message;
+      item.textContent = count === 1 ? message : `${message} (${count} occurrences)`;
       return item;
     }),
   );
+}
+
+function renderGeneratedFiles(files: readonly GeneratedFile[] | undefined, fallback: string): void {
+  const generated = files?.length === 0 || files === undefined ? [{ path: "generated_widget.dart", source: fallback }] : files;
+  generatedFiles.hidden = generated.length < 2;
+  generatedFileList.replaceChildren(
+    ...generated.map((file, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "generated-file";
+      button.textContent = file.path;
+      button.addEventListener("click", () => {
+        for (const candidate of generatedFileList.querySelectorAll("button")) {
+          candidate.classList.remove("selected");
+        }
+        button.classList.add("selected");
+        renderDart(file.source);
+      });
+      if (index === 0) {
+        button.classList.add("selected");
+      }
+      return button;
+    }),
+  );
+  renderDart(generated[0].source);
+}
+
+function renderDart(source: string): void {
+  latestDart = source;
+  dart.value = source;
+  dartPreview.querySelector("code")!.innerHTML = highlightDart(source);
+}
+
+function selectedFileName(): string {
+  const selected = generatedFileList.querySelector<HTMLButtonElement>(".selected")?.textContent;
+  return selected?.split("/").pop() || "generated_widget.dart";
 }
 
 function highlightDart(source: string): string {

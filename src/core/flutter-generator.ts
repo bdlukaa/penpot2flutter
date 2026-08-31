@@ -1,4 +1,7 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, EdgeInsets, GradientFill, GridLayout, GroupNode, IrNode, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrNode, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+
+let componentNames: ReadonlyMap<string, string> = new Map();
+let declaredParameters: ReadonlySet<string> = new Set();
 
 export function generatePubspecSnippet(assets: readonly AssetManifestEntry[]): string {
   if (assets.length === 0) return "";
@@ -12,12 +15,15 @@ export function generatePubspecSnippet(assets: readonly AssetManifestEntry[]): s
   ].join("\n");
 }
 
-export function generateFlutterWidget(root: IrNode): string {
+export function generateFlutterWidget(root: IrNode, components: readonly IrComponentDefinition[] = []): string {
+  componentNames = buildNameMap(components);
+  declaredParameters = new Set();
   const className = toPascalCase(root.name) || "GeneratedWidget";
   return [
     ...(containsRotation(root) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(containsSvg(root) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
+    ...componentImports(collectInstanceComponentIds(root), components, "../components/"),
     "",
     `class ${className} extends StatelessWidget {`,
     `  const ${className}({super.key});`,
@@ -30,6 +36,87 @@ export function generateFlutterWidget(root: IrNode): string {
     "}",
     "",
   ].join("\n");
+}
+
+export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[]): string {
+  componentNames = buildNameMap(components);
+  declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
+  const lines = [
+    ...(containsRotation(component.root) ? ["import 'dart:math' as math;", ""] : []),
+    "import 'package:flutter/material.dart';",
+    ...(containsSvg(component.root) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
+    ...componentImports(component.dependencies, components, ""),
+    "",
+    `class ${component.name} extends StatelessWidget {`,
+  ];
+  const parameters = component.parameters;
+  if (parameters.length === 0) {
+    lines.push(`  const ${component.name}({super.key});`);
+  } else {
+    lines.push(`  const ${component.name}({`);
+    lines.push("    super.key,");
+    for (const parameter of parameters) {
+      lines.push(`    this.${parameter.name}${parameter.defaultValue === undefined ? "" : ` = ${stringLiteral(parameter.defaultValue)}`},`);
+    }
+    lines.push("  });");
+    lines.push("");
+    for (const parameter of parameters) lines.push(`  final String ${parameter.name};`);
+  }
+  lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${component.sourceName}`, `    return ${renderNode(component.root, 2, false)};`, "  }", "}", "");
+  return lines.join("\n");
+}
+
+export function generateFlutterFiles(root: IrNode, components: readonly IrComponentDefinition[]): GeneratedFile[] {
+  const screenName = toPascalCase(root.name) || "GeneratedScreen";
+  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components) }];
+  for (const component of components) {
+    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components) });
+  }
+  if (components.length > 0) {
+    files.push({ path: "penpot_ui.dart", source: generateBarrelExport(components, snakeCase(screenName)) });
+  }
+  return files;
+}
+
+function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string): string {
+  return [
+    `export 'screens/${screenFileName}.dart';`,
+    ...components.map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
+    "",
+  ].join("\n");
+}
+
+function buildNameMap(components: readonly IrComponentDefinition[]): ReadonlyMap<string, string> {
+  return new Map(components.map((component) => [component.id, component.name]));
+}
+
+function componentImports(componentIds: Iterable<string>, components: readonly IrComponentDefinition[], prefix: string): string[] {
+  return [...new Set(componentIds)]
+    .map((id) => components.find((component) => component.id === id))
+    .filter((component): component is IrComponentDefinition => component !== undefined)
+    .map((component) => `import '${prefix}${snakeCase(component.name)}.dart';`)
+    .sort();
+}
+
+function collectInstanceComponentIds(node: IrNode): Set<string> {
+  const ids = new Set<string>();
+  const walk = (current: IrNode): void => {
+    if (current.kind === "component-instance") {
+      ids.add(current.componentId);
+      return;
+    }
+    if ("children" in current) current.children.forEach(walk);
+  };
+  walk(node);
+  return ids;
+}
+
+function stringLiteral(value: string): string {
+  return `'${escapeDart(value)}'`;
+}
+
+function snakeCase(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 }
 
 function containsRotation(node: IrNode): boolean {
@@ -105,6 +192,8 @@ function renderContent(node: Exclude<IrNode, { kind: "unsupported" }>, depth: nu
       return renderShape(node.style, node.geometry.width, node.geometry.height, depth, false);
     case "svg":
       return renderSvg(node, depth);
+    case "component-instance":
+      return renderComponentInstance(node, depth);
     case "ellipse":
       return renderShape(node.style, node.geometry.width, node.geometry.height, depth, true);
     case "text":
@@ -282,6 +371,17 @@ function renderShape(style: NodeStyle, width: number, height: number, depth: num
   ].join("\n");
 }
 
+function renderComponentInstance(node: IrComponentInstanceNode, depth: number): string {
+  const name = componentNames.get(node.componentId);
+  if (name === undefined) return "const SizedBox.shrink()";
+  if (node.arguments.length === 0) return `${name}()`;
+  return [
+    `${name}(`,
+    ...node.arguments.map((argument) => `${indent(depth + 1)}${argument.name}: '${escapeDart(argument.value)}',`),
+    `${indent(depth)})`,
+  ].join("\n");
+}
+
 function renderSvg(node: SvgNode, depth: number): string {
   return [
     "SvgPicture.asset(",
@@ -296,12 +396,15 @@ function renderText(node: TextNode, depth: number): string {
   if (node.runs !== undefined) return renderRichText(node, depth);
   const style = node.textStyle;
   const textStyle = renderTextStyle(style, node.style.fill, depth + 2);
+  const text = node.parameterName !== undefined && declaredParameters.has(node.parameterName)
+    ? `this.${node.parameterName}`
+    : stringLiteral(node.text);
   return [
     "SizedBox(",
     `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
     `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
     `${indent(depth + 1)}child: Text(`,
-    `${indent(depth + 2)}'${escapeDart(node.text)}',`,
+    `${indent(depth + 2)}${text},`,
     ...(style.align === undefined ? [] : [`${indent(depth + 2)}textAlign: TextAlign.${style.align},`]),
     ...(textStyle === undefined ? [] : [`${indent(depth + 2)}style: ${textStyle},`]),
     `${indent(depth + 1)}),`,
@@ -424,5 +527,13 @@ function indent(depth: number): string {
 }
 
 function escapeDart(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n");
+  return [...value].map((character) => {
+    switch (character) {
+      case "\\": return "\\\\";
+      case "'": return "\\'";
+      case "$": return "\\$";
+      case "\n": return "\\n";
+      default: return character;
+    }
+  }).join("");
 }
