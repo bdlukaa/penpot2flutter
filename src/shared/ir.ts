@@ -146,21 +146,58 @@ export interface NodeTransform {
   readonly flipY: boolean;
 }
 
+export type IrTextDecoration = "underline" | "line-through";
+export type IrTextTransform = "uppercase" | "lowercase" | "capitalize";
+
+export interface IrTypographyStyle {
+  readonly id: string;
+  readonly name: string;
+  readonly fontFamily?: string;
+  readonly fallbackFamilies?: readonly string[];
+  readonly fontSize?: number;
+  readonly fontWeight?: number;
+  readonly fontStyle?: "normal" | "italic";
+  /** Flutter line-height multiplier. */
+  readonly lineHeight?: number;
+  readonly letterSpacing?: number;
+  readonly decoration?: IrTextDecoration;
+  readonly color?: ColorFill;
+}
+
 export interface TextStyle {
   readonly fontFamily?: string;
+  readonly fallbackFamilies?: readonly string[];
   readonly fontSize?: number;
   readonly fontWeight?: number;
   readonly fontStyle?: "normal" | "italic";
   readonly lineHeight?: number;
   readonly letterSpacing?: number;
-  readonly decoration?: "underline" | "line-through";
+  readonly decoration?: IrTextDecoration;
   readonly color?: ColorFill;
   readonly align?: "left" | "center" | "right" | "justify";
+}
+
+export interface IrFontManifestEntry {
+  readonly family: string;
+  readonly fallbackFamilies: readonly string[];
+  readonly weights: readonly number[];
+  readonly styles: readonly ("normal" | "italic")[];
+  readonly available: boolean;
+  readonly assets: readonly IrFontAsset[];
+}
+
+export interface IrFontAsset {
+  readonly path: string;
+  readonly weight: number;
+  readonly style: "normal" | "italic";
 }
 
 export interface TextRun {
   readonly text: string;
   readonly style: TextStyle;
+  readonly typographyStyleId?: string;
+  readonly textTransform?: IrTextTransform;
+  readonly children?: readonly TextRun[];
 }
 
 export type FlexDirection = "row" | "row-reverse" | "column" | "column-reverse";
@@ -258,6 +295,12 @@ export interface TextNode extends BaseNode {
   readonly kind: "text";
   readonly text: string;
   readonly textStyle: TextStyle;
+  readonly typographyStyleId?: string;
+  readonly textTransform?: IrTextTransform;
+  readonly verticalAlign?: "top" | "center" | "bottom";
+  readonly maxLines?: number;
+  readonly overflow?: "ellipsis" | "clip" | "fade" | "visible";
+  readonly softWrap?: boolean;
   readonly runs?: readonly TextRun[];
   readonly parameterName?: string;
 }
@@ -357,6 +400,8 @@ export interface ConversionResult {
   readonly tokens: readonly IrToken[];
   readonly tokenSets: readonly IrTokenSet[];
   readonly tokenThemes: readonly IrTokenTheme[];
+  readonly typographyStyles: readonly IrTypographyStyle[];
+  readonly fonts: readonly IrFontManifestEntry[];
 }
 
 export interface GeneratedFile {

@@ -1563,3 +1563,146 @@ test("preserves nested component calls in responsive layouts", () => {
   assert.equal((dart.match(/PrimaryButton\(\)/g) ?? []).length, 2);
   assert.match(dart, /import '\.\.\/components\/primary_button\.dart';/);
 });
+
+test("deduplicates repeated typography styles into AppTextStyles", () => {
+  const text = (id: string, name: string, x: number) => ({
+    id,
+    name,
+    type: "text",
+    x,
+    y: 0,
+    width: 120,
+    height: 24,
+    visible: true,
+    characters: "Typography",
+    fontFamily: "Inter",
+    fontSize: "16",
+    fontWeight: "400",
+    lineHeight: "1.5",
+    letterSpacing: "0.2",
+    textDecoration: "underline" as const,
+    align: "center" as const,
+  });
+  const result = extractSelection([text("type-1", "Body", 0), text("type-2", "Body copy", 130)]);
+  assert.equal(result.typographyStyles.length, 1);
+  assert.equal(result.typographyStyles[0].name, "body");
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, undefined, result.typographyStyles);
+  assert.match(files.find((file) => file.path === "screens/selection.dart")!.source, /style: AppTextStyles\.body/);
+  const typographyDartPath = new URL("../app_typography.dart", import.meta.url);
+  writeFileSync(typographyDartPath, files.find((file) => file.path === "app_typography.dart")!.source);
+  execFileSync("dart", ["format", typographyDartPath.pathname]);
+  assert.equal(files.find((file) => file.path === "app_typography.dart")!.source, readFileSync(typographyDartPath, "utf8"));
+});
+
+test("tracks custom fonts, fallback families, and unavailable font assets", () => {
+  const result = extractSelection([{
+    id: "font-text",
+    name: "Custom text",
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 30,
+    visible: true,
+    characters: "Custom",
+    fontFamily: "Acme Sans, Courier",
+    fontSize: "16",
+    fontWeight: "450",
+  }], [], [], {}, {
+    fonts: [{ id: "acme", family: "Acme Sans", variants: [{ weight: 400, style: "normal" }] }],
+  });
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "FONT_UNAVAILABLE"));
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "FONT_WEIGHT_APPROXIMATED"));
+  assert.deepEqual(result.fonts[0].fallbackFamilies, ["Courier", "sans-serif"]);
+  assert.equal(result.fonts[0].available, false);
+  assert.match(generateFlutterWidget(result.root), /fontFamilyFallback: const \['Courier', 'sans-serif'\]/);
+});
+
+test("converts absolute and percentage line heights and preserves alignment, transform, and overflow", () => {
+  const result = extractSelection([{
+    id: "semantic-text",
+    name: "Semantic text",
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 48,
+    visible: true,
+    characters: "hello world",
+    fontFamily: "sans-serif",
+    fontSize: "16",
+    fontWeight: "700",
+    lineHeight: "24px",
+    letterSpacing: "1.25",
+    textTransform: "uppercase",
+    textDecoration: "line-through",
+    align: "right",
+    verticalAlign: "center",
+    maxLines: 1,
+    overflow: "ellipsis",
+    softWrap: false,
+  }]);
+  const dart = generateFlutterWidget(result.root);
+  assert.match(dart, /height: 1\.5/);
+  assert.match(dart, /textAlign: TextAlign\.right/);
+  assert.match(dart, /'HELLO WORLD',/);
+  assert.match(dart, /maxLines: 1/);
+  assert.match(dart, /overflow: TextOverflow\.ellipsis/);
+  assert.match(dart, /softWrap: false/);
+  assert.match(dart, /Alignment\.centerRight/);
+  assert.match(dart, /TextDecoration\.lineThrough/);
+  const semanticDartPath = new URL("../semantic_text.dart", import.meta.url);
+  writeFileSync(semanticDartPath, dart);
+  execFileSync("dart", ["format", semanticDartPath.pathname]);
+  assert.equal(dart, readFileSync(semanticDartPath, "utf8"));
+});
+
+test("preserves mixed inline styles and nested text spans", () => {
+  const result = extractSelection([{
+    id: "mixed-text",
+    name: "Mixed text",
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 240,
+    height: 40,
+    visible: true,
+    characters: "Hello world",
+    fontFamily: "Inter",
+    fontSize: "16",
+    runs: [{
+      characters: "Hello",
+      fontFamily: "Inter",
+      fontSize: "16",
+      fontWeight: "700",
+      children: [{ characters: "!", fontFamily: "Inter", fontSize: "16", fontWeight: "700" }],
+    }, { characters: " world", fontFamily: "Inter", fontSize: "16", fontWeight: "400" }],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+  assert.match(dart, /RichText\(/);
+  assert.match(dart, /children: \[/);
+  assert.match(dart, /text: 'Hello'/);
+  assert.match(dart, /text: '!'/);
+  assert.match(dart, /text: ' world'/);
+});
+
+test("emits font assets in the Flutter pubspec snippet when supplied by an adapter", () => {
+  const result = extractSelection([{
+    id: "font-text-asset",
+    name: "Asset font",
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 20,
+    visible: true,
+    characters: "Asset",
+    fontFamily: "Brand",
+    fontSize: "14",
+  }], [], [], {}, {
+    fonts: [{ id: "brand", family: "Brand", variants: [{ weight: 700, style: "italic", assetPath: "assets/fonts/Brand-BoldItalic.ttf" }] }],
+  });
+  assert.match(generatePubspecSnippet([], result.fonts), /family: Brand/);
+  assert.match(generatePubspecSnippet([], result.fonts), /asset: assets\/fonts\/Brand-BoldItalic\.ttf/);
+  assert.match(generatePubspecSnippet([], result.fonts), /style: italic/);
+});

@@ -25,8 +25,11 @@ import type {
   IrComponentDefinition,
   IrComponentInstanceNode,
   IrComponentParameter,
+  IrFontManifestEntry,
   IrNode,
+  IrTextTransform,
   IrTokenReference,
+  IrTypographyStyle,
   IrVariantAxis,
   IrVariantFamily,
   IrVariantMember,
@@ -143,14 +146,18 @@ export interface PenpotSourceLayoutCell {
 
 export interface PenpotSourceTextRun {
   readonly characters?: string | null;
+  readonly fontId?: string | null;
   readonly fontFamily?: string | null;
+  readonly fallbackFamilies?: readonly string[] | null;
   readonly fontSize?: string | null;
   readonly fontWeight?: string | null;
   readonly fontStyle?: "normal" | "italic" | "mixed" | null;
   readonly lineHeight?: string | null;
   readonly letterSpacing?: string | null;
   readonly textDecoration?: "underline" | "line-through" | "none" | "mixed" | null;
+  readonly textTransform?: "uppercase" | "capitalize" | "lowercase" | "none" | "mixed" | null;
   readonly fills?: readonly PenpotSourceFill[] | "mixed" | null;
+  readonly children?: readonly PenpotSourceTextRun[] | null;
 }
 
 export interface PenpotComponentSource {
@@ -209,19 +216,44 @@ export interface PenpotSourceShape {
   readonly layoutChild?: PenpotSourceLayoutChild | null;
   readonly layoutCell?: PenpotSourceLayoutCell | null;
   readonly characters?: string | null;
+  readonly growType?: "fixed" | "auto-width" | "auto-height" | null;
+  readonly fontId?: string | null;
   readonly fontFamily?: string | null;
+  readonly fontFamilyFallbacks?: readonly string[] | null;
   readonly fontSize?: string | null;
   readonly fontWeight?: string | null;
   readonly fontStyle?: "normal" | "italic" | "mixed" | null;
   readonly lineHeight?: string | null;
   readonly letterSpacing?: string | null;
   readonly textDecoration?: "underline" | "line-through" | "none" | "mixed" | null;
+  readonly textTransform?: "uppercase" | "capitalize" | "lowercase" | "mixed" | null;
   readonly align?: "left" | "center" | "right" | "justify" | "mixed" | null;
+  readonly verticalAlign?: "top" | "center" | "bottom" | null;
+  readonly maxLines?: number | null;
+  readonly overflow?: "ellipsis" | "clip" | "fade" | "visible" | null;
+  readonly softWrap?: boolean | null;
   readonly runs?: readonly PenpotSourceTextRun[] | null;
   /** Future Penpot Token API adapter output: property key to stable token ID. */
   readonly tokenBindings?: Readonly<Record<string, string>> | null;
   /** Optional explicit grouping; name-based inference is used when absent. */
   readonly responsive?: ResponsiveMetadata | null;
+}
+
+export interface PenpotFontVariantSource {
+  readonly weight: number;
+  readonly style: "normal" | "italic";
+  readonly assetPath?: string;
+}
+
+export interface PenpotFontSource {
+  readonly id: string;
+  readonly family: string;
+  readonly variants: readonly PenpotFontVariantSource[];
+}
+
+export interface PenpotTypographyInput {
+  readonly fonts?: readonly PenpotFontSource[];
+  readonly defaultFallbackFamilies?: readonly string[];
 }
 
 export interface PenpotTokenInput {
@@ -251,6 +283,20 @@ interface ComponentBuilder {
   variantMembers?: readonly IrVariantMember[];
 }
 
+interface TypographyCandidate {
+  readonly id: string;
+  readonly name: string;
+  readonly style: TextStyle;
+  count: number;
+}
+
+interface FontUsage {
+  readonly family: string;
+  readonly fallbackFamilies: Set<string>;
+  readonly weights: Set<number>;
+  readonly styles: Set<"normal" | "italic">;
+}
+
 interface ExtractionContext {
   readonly diagnostics: Diagnostic[];
   readonly assets: Map<string, AssetManifestEntry>;
@@ -260,6 +306,13 @@ interface ExtractionContext {
   readonly componentOrder: string[];
   readonly usedDartNames: Map<string, string>;
   readonly tokenIds: ReadonlySet<string>;
+  readonly typographyCandidates: Map<string, TypographyCandidate>;
+  readonly usedTypographyNames: Set<string>;
+  readonly fontSources: ReadonlyMap<string, PenpotFontSource>;
+  readonly fontResolutionEnabled: boolean;
+  readonly fontUsages: Map<string, FontUsage>;
+  readonly defaultFallbackFamilies: readonly string[];
+  readonly diagnosedFonts: Set<string>;
   currentComponent?: string;
 }
 
@@ -268,6 +321,7 @@ export function extractSelection(
   components: readonly PenpotComponentSource[] = [],
   variants: readonly PenpotVariantFamilySource[] = [],
   tokenInput: PenpotTokenInput = {},
+  typographyInput: PenpotTypographyInput = {},
 ): ConversionResult {
   const tokenRegistry = buildTokenRegistry(tokenInput.tokens, tokenInput.sets, tokenInput.themes);
   const context: ExtractionContext = {
@@ -279,6 +333,13 @@ export function extractSelection(
     componentOrder: [],
     usedDartNames: new Map(),
     tokenIds: new Set(tokenRegistry.tokens.map((token) => token.id)),
+    typographyCandidates: new Map(),
+    usedTypographyNames: new Set(),
+    fontSources: new Map((typographyInput.fonts ?? []).map((font) => [font.family.toLowerCase(), font])),
+    fontResolutionEnabled: typographyInput.fonts !== undefined,
+    fontUsages: new Map(),
+    defaultFallbackFamilies: typographyInput.defaultFallbackFamilies ?? ["sans-serif"],
+    diagnosedFonts: new Set(),
   };
 
   registerVariants(variants, context);
@@ -324,6 +385,8 @@ export function extractSelection(
     tokens: tokenRegistry.tokens,
     tokenSets: tokenRegistry.sets,
     tokenThemes: tokenRegistry.themes,
+    typographyStyles: finalizeTypographyStyles(context),
+    fonts: finalizeFontManifest(context),
   };
 }
 
@@ -399,13 +462,29 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
       node = { ...base, kind: "svg", assetPath: svgAssetPathOf(shape, context) } satisfies SvgNode;
       break;
     case "text": {
-      const runs = textRunsOf(shape, diagnostics);
+      const textStyle = textStyleOf(shape, diagnostics, context);
+      const runs = textRunsOf(shape, diagnostics, context);
       const parameterName = context.currentComponent === undefined ? undefined : context.components.get(context.currentComponent)?.slots.get(path)?.parameterName;
+      const typographyStyleId = registerTypographyStyle(textStyle, shape.name, context);
+      const textTransform = textTransformOf(shape.textTransform, shape, diagnostics);
+      const maxLines = positiveInteger(shape.maxLines);
+      if (shape.maxLines != null && maxLines === undefined) {
+        diagnostics.push({ severity: "warning", sourceId: sourceIdOf(shape.id), code: "TEXT_STYLE_UNSUPPORTED", message: "Text maxLines must be a positive integer and was omitted." });
+      }
+      if (shape.overflow != null && maxLines !== undefined) {
+        diagnostics.push({ severity: "warning", sourceId: sourceIdOf(shape.id), code: "TEXT_OVERFLOW_INFERRED", message: `Explicit ${shape.overflow} overflow was preserved with maxLines ${maxLines}.` });
+      }
       node = {
         ...base,
         kind: "text",
         text: shape.characters ?? "",
-        textStyle: textStyleOf(shape, diagnostics),
+        textStyle,
+        ...(typographyStyleId === undefined ? {} : { typographyStyleId }),
+        ...(textTransform === undefined ? {} : { textTransform }),
+        ...(shape.verticalAlign == null ? {} : { verticalAlign: shape.verticalAlign }),
+        ...(maxLines === undefined ? {} : { maxLines }),
+        ...(shape.overflow == null ? {} : { overflow: shape.overflow }),
+        ...(shape.softWrap == null ? {} : { softWrap: shape.softWrap }),
         ...(runs === undefined ? {} : { runs }),
         ...(parameterName === undefined ? {} : { parameterName }),
       } satisfies TextNode;
@@ -1115,14 +1194,18 @@ function clampUnit(value: number): number {
   return Math.min(Math.max(finiteCoordinate(value), 0), 1);
 }
 
-function textStyleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): TextStyle {
+function textStyleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], context: ExtractionContext): TextStyle {
   const fontSize = finiteNumber(shape.fontSize);
-  const lineHeight = finiteNumber(shape.lineHeight);
-  const fontWeight = finiteNumber(shape.fontWeight);
+  const fontWeight = normalizedFontWeight(shape.fontWeight, sourceIdOf(shape.id), diagnostics);
   const letterSpacing = finiteNumber(shape.letterSpacing);
-  if ((shape.fontFamily === "mixed" || shape.fontSize === "mixed") && shape.runs == null) diagnostics.push({ severity: "warning", sourceId: sourceIdOf(shape.id), code: "mixed-text-style", message: "Mixed text runs could not be resolved; the common text style was used." });
-  return {
-    ...(shape.fontFamily == null || shape.fontFamily === "mixed" ? {} : { fontFamily: shape.fontFamily }),
+  const families = fontFamilies(shape.fontFamily, shape.fontFamilyFallbacks, context.defaultFallbackFamilies);
+  const lineHeight = lineHeightMultiplier(shape.lineHeight, fontSize, sourceIdOf(shape.id), diagnostics);
+  if ((shape.fontFamily === "mixed" || shape.fontSize === "mixed") && shape.runs == null) {
+    diagnostics.push({ severity: "warning", sourceId: sourceIdOf(shape.id), code: "TEXT_MIXED_STYLE_UNSUPPORTED", message: "Mixed text runs could not be resolved; the common text style was used." });
+  }
+  const style: TextStyle = {
+    ...(families.family === undefined ? {} : { fontFamily: families.family }),
+    ...(families.fallbacks.length === 0 ? {} : { fallbackFamilies: families.fallbacks }),
     ...(fontSize === undefined ? {} : { fontSize }),
     ...(fontWeight === undefined ? {} : { fontWeight }),
     ...(shape.fontStyle === "italic" ? { fontStyle: "italic" } : shape.fontStyle === "normal" ? { fontStyle: "normal" } : {}),
@@ -1131,40 +1214,199 @@ function textStyleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): TextS
     ...(shape.textDecoration === "underline" || shape.textDecoration === "line-through" ? { decoration: shape.textDecoration } : {}),
     ...(shape.align == null || shape.align === "mixed" ? {} : { align: shape.align }),
   };
+  registerFontUsage(style, context, sourceIdOf(shape.id));
+  return style;
 }
 
-function textRunsOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): readonly TextRun[] | undefined {
+function textRunsOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], context: ExtractionContext): readonly TextRun[] | undefined {
   const runs = shape.runs;
   if (runs == null || runs.length === 0) return undefined;
-  const mapped = runs.flatMap((run) => {
-    const text = run.characters ?? "";
-    if (text.length === 0) return [];
-    return [{
-      text,
-      style: runStyleOf(run, sourceIdOf(shape.id), diagnostics),
-    } satisfies TextRun];
-  });
+  const mapped = runs.flatMap((run) => runOf(run, sourceIdOf(shape.id), diagnostics, context));
   return mapped.length === 0 ? undefined : mapped;
 }
 
-function runStyleOf(run: PenpotSourceTextRun, sourceId: string, diagnostics: Diagnostic[]): TextStyle {
+function runOf(run: PenpotSourceTextRun, sourceId: string, diagnostics: Diagnostic[], context: ExtractionContext): readonly TextRun[] {
+  const text = run.characters ?? "";
+  const style = runStyleOf(run, sourceId, diagnostics, context);
+  const children = run.children?.flatMap((child) => runOf(child, sourceId, diagnostics, context));
+  const textTransform = runTextTransformOf(run.textTransform, sourceId, diagnostics);
+  const typographyStyleId = registerTypographyStyle(style, "Inline", context);
+  if (text.length === 0 && (children?.length ?? 0) === 0) return [];
+  return [{
+    text,
+    style,
+    ...(typographyStyleId === undefined ? {} : { typographyStyleId }),
+    ...(textTransform === undefined ? {} : { textTransform }),
+    ...(children == null || children.length === 0 ? {} : { children }),
+  }];
+}
+
+function runStyleOf(run: PenpotSourceTextRun, sourceId: string, diagnostics: Diagnostic[], context: ExtractionContext): TextStyle {
   const fill = run.fills == null || run.fills === "mixed" || run.fills.length === 0 ? undefined : solidFillOf(run.fills, sourceId, diagnostics);
-  return {
-    ...(run.fontFamily == null || run.fontFamily === "mixed" ? {} : { fontFamily: run.fontFamily }),
-    ...(finiteNumber(run.fontSize) === undefined ? {} : { fontSize: finiteNumber(run.fontSize)! }),
-    ...(finiteNumber(run.fontWeight) === undefined ? {} : { fontWeight: finiteNumber(run.fontWeight)! }),
+  const fontSize = finiteNumber(run.fontSize);
+  const fontWeight = normalizedFontWeight(run.fontWeight, sourceId, diagnostics);
+  const lineHeight = lineHeightMultiplier(run.lineHeight, fontSize, sourceId, diagnostics);
+  const letterSpacing = finiteNumber(run.letterSpacing);
+  const families = fontFamilies(run.fontFamily, run.fallbackFamilies, context.defaultFallbackFamilies);
+  const style: TextStyle = {
+    ...(families.family === undefined ? {} : { fontFamily: families.family }),
+    ...(families.fallbacks.length === 0 ? {} : { fallbackFamilies: families.fallbacks }),
+    ...(fontSize === undefined ? {} : { fontSize }),
+    ...(fontWeight === undefined ? {} : { fontWeight }),
     ...(run.fontStyle === "italic" ? { fontStyle: "italic" } : run.fontStyle === "normal" ? { fontStyle: "normal" } : {}),
-    ...(finiteNumber(run.lineHeight) === undefined ? {} : { lineHeight: finiteNumber(run.lineHeight)! }),
-    ...(finiteNumber(run.letterSpacing) === undefined ? {} : { letterSpacing: finiteNumber(run.letterSpacing)! }),
+    ...(lineHeight === undefined ? {} : { lineHeight }),
+    ...(letterSpacing === undefined ? {} : { letterSpacing }),
     ...(run.textDecoration === "underline" || run.textDecoration === "line-through" ? { decoration: run.textDecoration } : {}),
     ...(fill === undefined ? {} : { color: fill }),
   };
+  registerFontUsage(style, context, sourceId);
+  return style;
 }
 
 function finiteNumber(value: string | null | undefined): number | undefined {
   if (value == null || value === "mixed") return undefined;
   const result = Number(value);
   return Number.isFinite(result) ? result : undefined;
+}
+
+function normalizedFontWeight(value: string | null | undefined, sourceId: string, diagnostics: Diagnostic[]): number | undefined {
+  const numeric = finiteNumber(value);
+  if (numeric === undefined) return undefined;
+  const supported = [100, 200, 300, 400, 500, 600, 700, 800, 900];
+  const normalized = supported.reduce((closest, candidate) => Math.abs(candidate - numeric) < Math.abs(closest - numeric) ? candidate : closest, 400);
+  if (normalized !== numeric) {
+    diagnostics.push({ severity: "warning", sourceId, code: "FONT_WEIGHT_APPROXIMATED", message: `Font weight ${numeric} was mapped to Flutter FontWeight.w${normalized}.` });
+  }
+  return normalized;
+}
+
+function lineHeightMultiplier(value: string | null | undefined, fontSize: number | undefined, sourceId: string, diagnostics: Diagnostic[]): number | undefined {
+  if (value == null || value === "mixed") return undefined;
+  const trimmed = value.trim().toLowerCase();
+  let result: number | undefined;
+  if (trimmed.endsWith("%")) {
+    const percentage = Number(trimmed.slice(0, -1));
+    result = Number.isFinite(percentage) ? percentage / 100 : undefined;
+  } else if (trimmed.endsWith("px")) {
+    const pixels = Number(trimmed.slice(0, -2));
+    result = Number.isFinite(pixels) && fontSize !== undefined && fontSize > 0 ? pixels / fontSize : undefined;
+  } else {
+    const numeric = Number(trimmed);
+    result = Number.isFinite(numeric) ? numeric > 4 && fontSize !== undefined && fontSize > 0 ? numeric / fontSize : numeric : undefined;
+  }
+  if (result === undefined || !Number.isFinite(result) || result <= 0) {
+    diagnostics.push({ severity: "warning", sourceId, code: "TEXT_LINE_HEIGHT_INVALID", message: `Line height "${value}" could not be converted to a positive Flutter height multiplier.` });
+    return undefined;
+  }
+  return result;
+}
+
+function fontFamilies(value: string | null | undefined, explicitFallbacks: readonly string[] | null | undefined, defaults: readonly string[]): { family?: string; fallbacks: readonly string[] } {
+  if (value == null || value === "mixed") return { fallbacks: [] };
+  const parsed = value.split(",").map(cleanFontFamily).filter(Boolean);
+  const family = parsed[0];
+  const fallbacks = [...new Set([...parsed.slice(1), ...(explicitFallbacks ?? []).map(cleanFontFamily), ...defaults.map(cleanFontFamily)])].filter((item) => item !== "" && item !== family);
+  return { ...(family === undefined ? {} : { family }), fallbacks };
+}
+
+function cleanFontFamily(value: string): string {
+  return value.trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2");
+}
+
+function runTextTransformOf(value: PenpotSourceTextRun["textTransform"], sourceId: string, diagnostics: Diagnostic[]): IrTextTransform | undefined {
+  if (value === "uppercase" || value === "lowercase" || value === "capitalize") return value;
+  if (value === "mixed") diagnostics.push({ severity: "warning", sourceId, code: "TEXT_STYLE_UNSUPPORTED", message: "Mixed inline text transforms were omitted." });
+  return undefined;
+}
+
+function textTransformOf(value: PenpotSourceShape["textTransform"], shape: PenpotSourceShape, diagnostics: Diagnostic[]): IrTextTransform | undefined {
+  if (value === "uppercase" || value === "lowercase" || value === "capitalize") return value;
+  if (value === "mixed") diagnostics.push({ severity: "warning", sourceId: sourceIdOf(shape.id), code: "TEXT_STYLE_UNSUPPORTED", message: "Mixed text transforms could not be represented as one paragraph transform." });
+  return undefined;
+}
+
+function positiveInteger(value: number | null | undefined): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function registerTypographyStyle(style: TextStyle, sourceName: string, context: ExtractionContext): string | undefined {
+  const reusable = typographyOnly(style);
+  if (Object.keys(reusable).length === 0) return undefined;
+  const signature = JSON.stringify(reusable);
+  const existing = context.typographyCandidates.get(signature);
+  if (existing !== undefined) {
+    existing.count++;
+    return existing.id;
+  }
+  const id = `typography-${stableHash(signature)}`;
+  const baseName = parameterNameFor(sourceName) || "textStyle";
+  const name = dedupeName(baseName, context.usedTypographyNames);
+  context.typographyCandidates.set(signature, { id, name, style: reusable, count: 1 });
+  return id;
+}
+
+function typographyOnly(style: TextStyle): TextStyle {
+  const { align: _align, ...typography } = style;
+  return typography;
+}
+
+function finalizeTypographyStyles(context: ExtractionContext): readonly IrTypographyStyle[] {
+  return [...context.typographyCandidates.values()]
+    .filter((candidate) => candidate.count > 1)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((candidate) => ({ id: candidate.id, name: candidate.name, ...candidate.style }));
+}
+
+function registerFontUsage(style: TextStyle, context: ExtractionContext, sourceId: string): void {
+  const family = style.fontFamily;
+  if (family === undefined) return;
+  let usage = context.fontUsages.get(family.toLowerCase());
+  if (usage === undefined) {
+    usage = { family, fallbackFamilies: new Set(), weights: new Set(), styles: new Set() };
+    context.fontUsages.set(family.toLowerCase(), usage);
+  }
+  for (const fallback of style.fallbackFamilies ?? []) usage.fallbackFamilies.add(fallback);
+  usage.weights.add(style.fontWeight ?? 400);
+  usage.styles.add(style.fontStyle ?? "normal");
+  if (!context.fontResolutionEnabled || isGenericFont(family)) return;
+  const source = context.fontSources.get(family.toLowerCase());
+  const hasAssets = source?.variants.some((variant) => variant.assetPath !== undefined) === true;
+  if (!hasAssets && !context.diagnosedFonts.has(family.toLowerCase())) {
+    context.diagnosedFonts.add(family.toLowerCase());
+    context.diagnostics.push({ severity: "warning", sourceId, code: "FONT_UNAVAILABLE", message: `Font family "${family}" has no exportable font files in the Penpot Plugin API. Generated text includes explicit fallback families.` });
+  }
+}
+
+function finalizeFontManifest(context: ExtractionContext): readonly IrFontManifestEntry[] {
+  return [...context.fontUsages.values()].sort((left, right) => left.family.localeCompare(right.family)).map((usage) => {
+    const source = context.fontSources.get(usage.family.toLowerCase());
+    const assets = (source?.variants ?? []).flatMap((variant) => variant.assetPath === undefined ? [] : [{ path: variant.assetPath, weight: normalizedManifestWeight(variant.weight), style: variant.style }]);
+    return {
+      family: usage.family,
+      fallbackFamilies: [...usage.fallbackFamilies].sort(),
+      weights: [...usage.weights].sort((left, right) => left - right),
+      styles: [...usage.styles].sort(),
+      available: isGenericFont(usage.family) || assets.length > 0,
+      assets,
+    };
+  });
+}
+
+function normalizedManifestWeight(value: number): number {
+  return Math.min(900, Math.max(100, Math.round(value / 100) * 100));
+}
+
+function isGenericFont(family: string): boolean {
+  return ["sans-serif", "serif", "monospace", "system-ui"].includes(family.toLowerCase());
+}
+
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function normalizeHexColor(value: string): string | undefined {

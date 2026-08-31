@@ -1,17 +1,30 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrNode, IrResponsiveScreen, IrToken, IrTokenSet, IrTokenTheme, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
 let declaredParameters: ReadonlySet<string> = new Set();
 let tokenDefinitions: ReadonlyMap<string, IrToken> = new Map();
+let typographyDefinitions: ReadonlyMap<string, IrTypographyStyle> = new Map();
 
-export function generatePubspecSnippet(assets: readonly AssetManifestEntry[]): string {
-  if (assets.length === 0) return "";
+export function generatePubspecSnippet(assets: readonly AssetManifestEntry[], fonts: readonly IrFontManifestEntry[] = []): string {
+  const fontFamilies = fonts.filter((font) => font.assets.length > 0);
+  if (assets.length === 0 && fontFamilies.length === 0) return "";
   const hasSvg = assets.some((asset) => asset.mimeType === "image/svg+xml");
   return [
     ...(hasSvg ? ["dependencies:", "  flutter_svg: ^2.3.0", ""] : []),
     "flutter:",
-    "  assets:",
-    ...assets.map((asset) => `    - ${asset.path}`),
+    ...(assets.length === 0 ? [] : ["  assets:", ...assets.map((asset) => `    - ${asset.path}`)]),
+    ...(fontFamilies.length === 0 ? [] : [
+      "  fonts:",
+      ...fontFamilies.flatMap((font) => [
+        `    - family: ${font.family}`,
+        "      fonts:",
+        ...font.assets.map((asset) => [
+          `        - asset: ${asset.path}`,
+          `          weight: ${asset.weight}`,
+          ...(asset.style === "italic" ? ["          style: italic"] : []),
+        ].join("\n")),
+      ]),
+    ]),
     "",
   ].join("\n");
 }
@@ -60,14 +73,27 @@ export function generateFlutterTokens(
   return lines.join("\n");
 }
 
+export function generateFlutterTypography(styles: readonly IrTypographyStyle[]): string {
+  return [
+    "import 'package:flutter/material.dart';",
+    "",
+    "abstract final class AppTextStyles {",
+    ...[...styles].sort((left, right) => left.name.localeCompare(right.name)).map((style) => `  static const ${style.name} = ${standaloneTextStyle(style)};`),
+    "}",
+    "",
+  ].join("\n");
+}
+
 export function generateFlutterWidget(
   root: IrNode,
   components: readonly IrComponentDefinition[] = [],
   tokens: readonly IrToken[] = [],
   responsiveScreen?: IrResponsiveScreen,
+  typographyStyles: readonly IrTypographyStyle[] = [],
 ): string {
   componentNames = buildNameMap(components);
   tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
+  typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   declaredParameters = new Set();
   const roots = responsiveScreen?.variants.map((variant) => variant.root) ?? [root];
   const className = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedWidget";
@@ -76,6 +102,7 @@ export function generateFlutterWidget(
     "import 'package:flutter/material.dart';",
     ...(roots.some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
     ...(roots.some(containsTokens) ? ["import '../app_tokens.dart';"] : []),
+    ...(roots.some(containsTypography) ? ["import '../app_typography.dart';"] : []),
     ...componentImports(roots.flatMap((variantRoot) => [...collectInstanceComponentIds(variantRoot)]), components, "../components/"),
     "",
     `class ${className} extends StatelessWidget {`,
@@ -131,9 +158,10 @@ function renderResponsiveRoot(root: IrNode, depth: number): string {
   ].join("\n");
 }
 
-export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = []): string {
+export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = []): string {
   componentNames = buildNameMap(components);
   tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
+  typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
   const axes = component.variant?.axes ?? [];
   const lines = [
@@ -141,6 +169,7 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
     "import 'package:flutter/material.dart';",
     ...(componentRoots(component).some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
     ...(componentRoots(component).some(containsTokens) ? ["import '../app_tokens.dart';"] : []),
+    ...(componentRoots(component).some(containsTypography) ? ["import '../app_typography.dart';"] : []),
     ...componentImports(component.dependencies, components, ""),
     "",
     ...axes.flatMap((axis) => [`enum ${axis.enumName} {`, ...axis.values.map((value) => `  ${value.name},`), "}", ""]),
@@ -197,25 +226,28 @@ export function generateFlutterFiles(
   tokenSets: readonly IrTokenSet[] = [],
   tokenThemes: readonly IrTokenTheme[] = [],
   responsiveScreen?: IrResponsiveScreen,
+  typographyStyles: readonly IrTypographyStyle[] = [],
 ): GeneratedFile[] {
   const screenName = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedScreen";
   const responsiveRoots = responsiveScreen?.variants.map((variant) => variant.root) ?? [];
   const usedTokens = reachableTokens([root, ...responsiveRoots], components, tokens);
-  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, usedTokens, responsiveScreen) }];
+  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, usedTokens, responsiveScreen, typographyStyles) }];
   for (const component of components) {
-    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, usedTokens) });
+    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, usedTokens, typographyStyles) });
   }
   if (usedTokens.length > 0) files.push({ path: "app_tokens.dart", source: generateFlutterTokens(usedTokens, tokenSets, tokenThemes) });
-  if (components.length > 0 || usedTokens.length > 0) {
-    files.push({ path: "penpot_ui.dart", source: generateBarrelExport(components, snakeCase(screenName), usedTokens.length > 0) });
+  if (typographyStyles.length > 0) files.push({ path: "app_typography.dart", source: generateFlutterTypography(typographyStyles) });
+  if (components.length > 0 || usedTokens.length > 0 || typographyStyles.length > 0) {
+    files.push({ path: "penpot_ui.dart", source: generateBarrelExport(components, snakeCase(screenName), usedTokens.length > 0, typographyStyles.length > 0) });
   }
   return files;
 }
 
-function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string, hasTokens: boolean): string {
+function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string, hasTokens: boolean, hasTypography: boolean): string {
   return [
     `export 'screens/${screenFileName}.dart';`,
     ...(hasTokens ? ["export 'app_tokens.dart';"] : []),
+    ...(hasTypography ? ["export 'app_typography.dart';"] : []),
     ...components.map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
     "",
   ].join("\n");
@@ -264,6 +296,18 @@ function containsSvg(node: IrNode): boolean {
 
 function containsTokens(node: IrNode): boolean {
   return (node.tokenReferences?.length ?? 0) > 0 || ("children" in node && node.children.some(containsTokens));
+}
+
+function containsTypography(node: IrNode): boolean {
+  if (node.kind === "text") {
+    if (node.typographyStyleId !== undefined && typographyDefinitions.has(node.typographyStyleId)) return true;
+    if (node.runs?.some(runContainsTypography) === true) return true;
+  }
+  return "children" in node && node.children.some(containsTypography);
+}
+
+function runContainsTypography(run: TextRun): boolean {
+  return (run.typographyStyleId !== undefined && typographyDefinitions.has(run.typographyStyleId)) || run.children?.some(runContainsTypography) === true;
 }
 
 function renderNode(node: IrNode, depth: number, positioned: boolean): string {
@@ -571,54 +615,89 @@ function renderSvg(node: SvgNode, depth: number): string {
 function renderText(node: TextNode, depth: number): string {
   if (node.runs !== undefined) return renderRichText(node, depth);
   const style = node.textStyle;
-  const textStyle = renderTextStyle(style, node.style.fill, depth + 2, node);
-  const text = node.parameterName !== undefined && declaredParameters.has(node.parameterName)
-    ? `this.${node.parameterName}`
-    : stringLiteral(node.text);
+  const parameterText = node.parameterName !== undefined && declaredParameters.has(node.parameterName) ? `this.${node.parameterName}` : undefined;
+  const text = transformedText(parameterText ?? stringLiteral(transformedLiteral(node.text, node.textTransform)), node.textTransform, parameterText !== undefined);
+  const nestedText = node.verticalAlign !== undefined && node.verticalAlign !== "top";
+  const textDepth = nestedText ? depth + 1 : depth;
+  const textStyle = renderTextStyle(style, node.style.fill, textDepth + 2, node, node.typographyStyleId);
+  const textWidget = [
+    "Text(",
+    `${indent(textDepth + 2)}${text},`,
+    ...(style.align === undefined ? [] : [`${indent(textDepth + 2)}textAlign: TextAlign.${style.align},`]),
+    ...(node.maxLines === undefined ? [] : [`${indent(textDepth + 2)}maxLines: ${node.maxLines},`]),
+    ...(node.overflow === undefined ? [] : [`${indent(textDepth + 2)}overflow: TextOverflow.${node.overflow},`]),
+    ...(node.softWrap === undefined ? [] : [`${indent(textDepth + 2)}softWrap: ${node.softWrap},`]),
+    ...(textStyle === undefined ? [] : [`${indent(textDepth + 2)}style: ${textStyle},`]),
+    `${indent(textDepth + 1)})`,
+  ].join("\n");
+  const aligned = node.verticalAlign === undefined || node.verticalAlign === "top" ? textWidget : [
+    "Align(",
+    `${indent(depth + 2)}alignment: Alignment.${verticalTextAlignment(node.verticalAlign, style.align)},`,
+    `${indent(depth + 2)}child: ${textWidget},`,
+    `${indent(depth + 1)})`,
+  ].join("\n");
   return [
     "SizedBox(",
     `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
     `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
-    `${indent(depth + 1)}child: Text(`,
-    `${indent(depth + 2)}${text},`,
-    ...(style.align === undefined ? [] : [`${indent(depth + 2)}textAlign: TextAlign.${style.align},`]),
-    ...(textStyle === undefined ? [] : [`${indent(depth + 2)}style: ${textStyle},`]),
-    `${indent(depth + 1)}),`,
+    `${indent(depth + 1)}child: ${aligned},`,
     `${indent(depth)})`,
   ].join("\n");
 }
 
 function renderRichText(node: TextNode, depth: number): string {
+  const nestedRichText = node.verticalAlign !== undefined && node.verticalAlign !== "top";
+  const richDepth = nestedRichText ? depth + 1 : depth;
+  const richText = [
+    "RichText(",
+    ...(node.textStyle.align === undefined ? [] : [`${indent(richDepth + 2)}textAlign: TextAlign.${node.textStyle.align},`]),
+    ...(node.maxLines === undefined ? [] : [`${indent(richDepth + 2)}maxLines: ${node.maxLines},`]),
+    ...(node.overflow === undefined ? [] : [`${indent(richDepth + 2)}overflow: TextOverflow.${node.overflow},`]),
+    ...(node.softWrap === undefined ? [] : [`${indent(richDepth + 2)}softWrap: ${node.softWrap},`]),
+    `${indent(richDepth + 2)}text: TextSpan(`,
+    `${indent(richDepth + 3)}children: [`,
+    ...(node.runs ?? []).map((run) => `${indent(richDepth + 4)}${renderTextSpan(run, richDepth + 4)},`),
+    `${indent(richDepth + 3)}],`,
+    `${indent(richDepth + 2)}),`,
+    `${indent(richDepth + 1)})`,
+  ].join("\n");
+  const aligned = node.verticalAlign === undefined || node.verticalAlign === "top" ? richText : [
+    "Align(",
+    `${indent(depth + 2)}alignment: Alignment.${verticalTextAlignment(node.verticalAlign, node.textStyle.align)},`,
+    `${indent(depth + 2)}child: ${richText},`,
+    `${indent(depth + 1)})`,
+  ].join("\n");
   return [
     "SizedBox(",
     `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
     `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
-    `${indent(depth + 1)}child: RichText(`,
-    ...(node.textStyle.align === undefined ? [] : [`${indent(depth + 2)}textAlign: TextAlign.${node.textStyle.align},`]),
-    `${indent(depth + 2)}text: TextSpan(`,
-    `${indent(depth + 3)}children: [`,
-    ...(node.runs ?? []).map((run) => `${indent(depth + 4)}${renderTextSpan(run, depth + 4)},`),
-    `${indent(depth + 3)}],`,
-    `${indent(depth + 2)}),`,
-    `${indent(depth + 1)}),`,
+    `${indent(depth + 1)}child: ${aligned},`,
     `${indent(depth)})`,
   ].join("\n");
 }
 
 function renderTextSpan(run: TextRun, depth: number): string {
-  const style = renderTextStyle(run.style, undefined, depth + 1);
+  const style = renderTextStyle(run.style, undefined, depth + 1, undefined, run.typographyStyleId);
   return [
     "TextSpan(",
     ...(style === undefined ? [] : [`${indent(depth + 1)}style: ${style},`]),
-    `${indent(depth + 1)}text: '${escapeDart(run.text)}',`,
+    ...(run.text === "" ? [] : [`${indent(depth + 1)}text: ${stringLiteral(transformedLiteral(run.text, run.textTransform))},`]),
+    ...(run.children == null || run.children.length === 0 ? [] : [
+      `${indent(depth + 1)}children: [`,
+      ...run.children.map((child) => `${indent(depth + 2)}${renderTextSpan(child, depth + 2)},`),
+      `${indent(depth + 1)}],`,
+    ]),
     `${indent(depth)})`,
   ].join("\n");
 }
 
-function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, styleDepth: number, node?: IrNode): string | undefined {
+function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, styleDepth: number, node?: IrNode, typographyStyleId?: string): string | undefined {
   if (node !== undefined && hasToken(node, "typography")) return tokenValue(node, "typography", "const TextStyle()");
+  const reusable = typographyStyleId === undefined ? undefined : typographyDefinitions.get(typographyStyleId);
+  if (reusable !== undefined) return `AppTextStyles.${reusable.name}`;
   const properties = [
-    ...(style.fontFamily === undefined ? [] : [`fontFamily: ${tokenValue(node, "fontFamily", `'${escapeDart(style.fontFamily)}'`)}`]),
+    ...(style.fontFamily === undefined ? [] : [`fontFamily: ${tokenValue(node, "fontFamily", stringLiteral(style.fontFamily))}`]),
+    ...(style.fallbackFamilies === undefined || style.fallbackFamilies.length === 0 ? [] : [`fontFamilyFallback: const [${style.fallbackFamilies.map(stringLiteral).join(", ")}]`]),
     ...(style.fontSize === undefined ? [] : [`fontSize: ${tokenValue(node, "fontSize", number(style.fontSize))}`]),
     ...(style.fontWeight === undefined ? [] : [`fontWeight: ${tokenValue(node, "fontWeight", fontWeight(style.fontWeight))}`]),
     ...(style.fontStyle === "italic" ? ["fontStyle: FontStyle.italic"] : style.fontStyle === "normal" ? ["fontStyle: FontStyle.normal"] : []),
@@ -727,6 +806,43 @@ function reachableTokens(roots: readonly IrNode[], components: readonly IrCompon
   };
   for (const id of [...ids]) includeAliasTargets(id);
   return tokens.filter((token) => ids.has(token.id));
+}
+
+function standaloneTextStyle(style: IrTypographyStyle): string {
+  const properties = [
+    ...(style.fontFamily === undefined ? [] : [`fontFamily: ${stringLiteral(style.fontFamily)}`]),
+    ...(style.fallbackFamilies === undefined || style.fallbackFamilies.length === 0 ? [] : [`fontFamilyFallback: const [${style.fallbackFamilies.map(stringLiteral).join(", ")}]`]),
+    ...(style.fontSize === undefined ? [] : [`fontSize: ${number(style.fontSize)}`]),
+    ...(style.fontWeight === undefined ? [] : [`fontWeight: ${fontWeight(style.fontWeight)}`]),
+    ...(style.fontStyle === "italic" ? ["fontStyle: FontStyle.italic"] : []),
+    ...(style.lineHeight === undefined ? [] : [`height: ${number(style.lineHeight)}`]),
+    ...(style.letterSpacing === undefined ? [] : [`letterSpacing: ${number(style.letterSpacing)}`]),
+    ...(style.decoration === "underline" ? ["decoration: TextDecoration.underline"] : style.decoration === "line-through" ? ["decoration: TextDecoration.lineThrough"] : []),
+    ...(style.color === undefined ? [] : [`color: ${dartColor(style.color.color, style.color.opacity)}`]),
+  ];
+  return ["TextStyle(", ...properties.map((property) => `    ${property},`), "  )"].join("\n");
+}
+
+function transformedLiteral(value: string, transform: IrTextTransform | undefined): string {
+  switch (transform) {
+    case "uppercase": return value.toUpperCase();
+    case "lowercase": return value.toLowerCase();
+    case "capitalize": return value.replace(/(^|\\s)(\\S)/g, (_, prefix: string, character: string) => `${prefix}${character.toUpperCase()}`);
+    default: return value;
+  }
+}
+
+function transformedText(expression: string, transform: IrTextTransform | undefined, dynamic: boolean): string {
+  if (!dynamic || transform === undefined) return expression;
+  if (transform === "uppercase") return `${expression}.toUpperCase()`;
+  if (transform === "lowercase") return `${expression}.toLowerCase()`;
+  return `${expression}.replaceAllMapped(RegExp(r'\\b\\w'), (match) => match[0]!.toUpperCase())`;
+}
+
+function verticalTextAlignment(vertical: "center" | "bottom", horizontal: TextStyle["align"]): string {
+  const prefix = vertical === "center" ? "center" : "bottom";
+  const suffix = horizontal === "right" ? "Right" : horizontal === "center" ? "Center" : "Left";
+  return `${prefix}${suffix}`;
 }
 
 function tokenExpression(token: IrToken, tokens: ReadonlyMap<string, IrToken>): string {

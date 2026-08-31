@@ -5,6 +5,7 @@ import { componentKey } from "./shared/component-key.js";
 import type { PluginToUiMessage } from "./shared/messages.js";
 
 interface LiveTextRange {
+  readonly fontId?: unknown;
   readonly fontFamily?: unknown;
   readonly fontSize?: unknown;
   readonly fontWeight?: unknown;
@@ -12,6 +13,7 @@ interface LiveTextRange {
   readonly lineHeight?: unknown;
   readonly letterSpacing?: unknown;
   readonly textDecoration?: unknown;
+  readonly textTransform?: unknown;
   readonly fills?: unknown;
 }
 
@@ -45,7 +47,7 @@ async function sendConversion(): Promise<void> {
   const selection = rawSelection.map(enrichShape);
   const resolution = await resolveComponentSources(selection);
   const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues));
-  const result = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants);
+  const result = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, {}, typographyInput());
   const message: PluginToUiMessage = {
     source: "penpot-to-flutter",
     type: "conversion",
@@ -55,7 +57,7 @@ async function sendConversion(): Promise<void> {
       : {
           result,
           dart: generateFlutterWidget(result.root, result.components, result.tokens, result.responsiveScreen),
-          pubspecAssets: generatePubspecSnippet(result.assets),
+          pubspecAssets: generatePubspecSnippet(result.assets, result.fonts),
           files: generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen),
         }),
   };
@@ -236,7 +238,7 @@ function withResolutionIssues(shape: PenpotSourceShape, issues: ReadonlyMap<stri
 
 function textRunsOf(shape: LiveTextShape): readonly PenpotSourceTextRun[] | undefined {
   if (typeof shape.getRange !== "function") return undefined;
-  if (!hasMixed(shape.fontFamily, shape.fontSize, shape.fontWeight, shape.fontStyle, shape.textDecoration)) return undefined;
+  if (!hasMixed(shape.fontFamily, shape.fontSize, shape.fontWeight, shape.fontStyle, shape.textDecoration, shape.textTransform)) return undefined;
   const characters = typeof shape.characters === "string" ? shape.characters : "";
   if (characters.length === 0) return undefined;
   try {
@@ -260,6 +262,7 @@ function hasMixed(...values: readonly unknown[]): boolean {
 
 function rangeStyleOf(range: LiveTextRange): Omit<PenpotSourceTextRun, "characters"> {
   return {
+    ...(range.fontId == null || range.fontId === "mixed" ? {} : { fontId: String(range.fontId) }),
     ...(range.fontFamily == null || range.fontFamily === "mixed" ? {} : { fontFamily: String(range.fontFamily) }),
     ...(range.fontSize == null || range.fontSize === "mixed" ? {} : { fontSize: String(range.fontSize) }),
     ...(range.fontWeight == null || range.fontWeight === "mixed" ? {} : { fontWeight: String(range.fontWeight) }),
@@ -267,12 +270,27 @@ function rangeStyleOf(range: LiveTextRange): Omit<PenpotSourceTextRun, "characte
     ...(range.lineHeight == null || range.lineHeight === "mixed" ? {} : { lineHeight: String(range.lineHeight) }),
     ...(range.letterSpacing == null || range.letterSpacing === "mixed" ? {} : { letterSpacing: String(range.letterSpacing) }),
     ...(range.textDecoration === "underline" || range.textDecoration === "line-through" ? { textDecoration: range.textDecoration } : {}),
+    ...(range.textTransform === "uppercase" || range.textTransform === "lowercase" || range.textTransform === "capitalize" || range.textTransform === "none" ? { textTransform: range.textTransform } : {}),
     ...(range.fills === undefined || range.fills === "mixed" ? {} : { fills: range.fills as PenpotSourceTextRun["fills"] }),
   };
 }
 
 function sameStyle(a: Omit<PenpotSourceTextRun, "characters">, b: Omit<PenpotSourceTextRun, "characters">): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function typographyInput() {
+  return {
+    fonts: penpot.fonts.all.map((font) => ({
+      id: font.fontId,
+      family: font.fontFamily,
+      variants: font.variants.flatMap((variant) => {
+        const weight = Number(variant.fontWeight);
+        return Number.isFinite(weight) ? [{ weight, style: variant.fontStyle }] : [];
+      }),
+    })),
+    defaultFallbackFamilies: ["sans-serif"],
+  } as const;
 }
 
 penpot.ui.onMessage<unknown>((message) => {

@@ -37,6 +37,7 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Responsive screen IR and conservative Mobile/Tablet/Desktop board-family detection, with explicit metadata support for unambiguous custom groups
 - Dependency-free `LayoutBuilder` breakpoint generation, responsive Row/Column and grid variants, hidden breakpoint content, component/variant preservation, and Stack fallback for overlays
 - Penpot child min/max dimensions as `ConstrainedBox`, fill sizing as `Expanded`, auto sizing without forced expansion, and optional aspect-ratio constraints when source metadata provides one
+- Reusable typography styles in `app_typography.dart`, fallback-family and font usage manifests, explicit unavailable-font diagnostics, Penpot weight normalization, absolute/percentage line-height conversion, text transforms, paragraph alignment, max-lines/overflow metadata, and nested mixed-style `RichText` spans
 - Node-associated warnings for unsupported or approximate conversion
 - A `// layer-name` comment above every generated widget for traceability back to the Penpot layer
 
@@ -55,6 +56,7 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - A grid containing fixed, percent, or auto tracks; spans; or manual/area placement falls back to `Stack`/`Positioned` and reports an `unsupported-grid` warning. This preserves placement instead of guessing incorrect Flutter grid constraints.
 - Mixed text runs are resolved into `RichText`/`TextSpan` from the live `Text.getRange` API when Penpot reports mixed styles; when runs cannot be resolved, the common style is used with a warning.
 - Inner shadows, non-solid strokes, unsupported colors, malformed geometry, and malformed image IDs report warnings.
+- `FONT_UNAVAILABLE`, `FONT_WEIGHT_APPROXIMATED`, `TEXT_LINE_HEIGHT_INVALID`, `TEXT_STYLE_UNSUPPORTED`, `TEXT_OVERFLOW_INFERRED`, and `TEXT_MIXED_STYLE_UNSUPPORTED` identify typography data that cannot be represented or packaged exactly. Penpot exposes font metadata but no downloadable font files through the current Plugin API; an adapter must provide `assetPath` values before font assets are added to `pubspec.yaml`.
 - Vector/path shapes become `SvgPicture.asset` references; the SVG binary files themselves are not exported by the plugin yet.
 - Shared components resolve first from `Shape.component()`, then from the local/connected library index. Only components reachable from the selected roots are exported.
 - The plugin is read-only. A shared library that is available but not connected produces `SHARED_LIBRARY_NOT_CONNECTED` with remediation guidance; the plugin intentionally does not call `connectLibrary()` because it persistently modifies the Penpot file and requires `library:write`.
@@ -132,7 +134,7 @@ src/
   core/flutter-generator.ts  IR -> Dart source
   core/token-registry.ts      Token sources -> deterministic token IR
   core/responsive-analyzer.ts Responsive board analysis and breakpoint IR
-  shared/ir.ts               Serializable compiler IR
+  shared/ir.ts               Serializable layout, typography, token, and component IR               Serializable compiler IR
   shared/messages.ts         Typed UI/plugin protocol
   shared/version.ts          UI version indicator
 ```
@@ -153,4 +155,4 @@ Each main component becomes one `StatelessWidget`; each linked instance becomes 
 
 ## Next milestone
 
-The remaining post-MVP work is factoring structurally identical responsive breakpoint trees into shared conditional values, wiring live Design Token extraction when Penpot publishes its promised Plugin Tokens API, a verified archive/download workflow for images and SVG assets, broader component override parameters, finer-grained factoring of variant-member differences, responsive inference, and project-wide export.
+The remaining post-MVP work is factoring structurally identical responsive breakpoint trees into shared conditional values, wiring live Design Token extraction when Penpot publishes its promised Plugin Tokens API, a verified archive/download workflow for images and SVG assets, broader component override parameters, finer-grained factoring of variant-member differences, and project-wide export.
