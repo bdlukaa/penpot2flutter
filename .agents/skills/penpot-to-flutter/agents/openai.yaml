@@ -1,0 +1,10 @@
+interface:
+  display_name: Penpot to Flutter
+  short_description: Build and evolve a Penpot-to-Flutter codegen plugin
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true
