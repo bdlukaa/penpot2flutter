@@ -1,4 +1,8 @@
-import type { BoardNode, GroupNode, IrNode, NodeStyle, TextNode } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, GroupNode, IrNode, NodeStyle, TextNode } from "../shared/ir.js";
+
+export function generatePubspecAssetsSnippet(assets: readonly AssetManifestEntry[]): string {
+  return assets.length === 0 ? "" : ["flutter:", "  assets:", ...assets.map((asset) => `    - ${asset.path}`), ""].join("\n");
+}
 
 export function generateFlutterWidget(root: IrNode): string {
   const className = toPascalCase(root.name) || "GeneratedWidget";
@@ -52,6 +56,7 @@ function renderContent(node: Exclude<IrNode, { kind: "unsupported" }>, depth: nu
     case "group":
       return renderGroup(node, depth);
     case "rectangle":
+    case "image":
       return renderRectangle(node.style, node.geometry.width, node.geometry.height, depth);
     case "text":
       return renderText(node, depth);
@@ -214,7 +219,11 @@ function renderRectangle(style: NodeStyle, width: number, height: number, depth:
     `${indent(depth + 1)}height: ${number(height)},`,
   ];
   if (decoration !== undefined) {
-    lines.push(`${indent(depth + 1)}child: DecoratedBox(decoration: ${decoration}),`);
+    lines.push(
+      `${indent(depth + 1)}child: DecoratedBox(`,
+      `${indent(depth + 2)}decoration: ${decoration},`,
+      `${indent(depth + 1)}),`,
+    );
   }
   lines.push(`${indent(depth)})`);
   return lines.join("\n");
@@ -253,9 +262,55 @@ function renderText(node: TextNode, depth: number): string {
 }
 
 function renderDecoration(style: NodeStyle): string | undefined {
-  return style.fill === undefined
-    ? undefined
-    : `const BoxDecoration(color: ${dartColor(style.fill.color, style.fill.opacity)})`;
+  if (style.fill === undefined && style.image === undefined && style.border === undefined && style.radius === undefined && style.shadows === undefined) {
+    return undefined;
+  }
+
+  const properties = [
+    ...(style.fill === undefined ? [] : [`color: ${dartColor(style.fill.color, style.fill.opacity)}`]),
+    ...(style.image === undefined
+      ? []
+      : [
+          `image: DecorationImage(\n${indent(4)}image: AssetImage('${escapeDart(style.image.assetPath)}'),\n${indent(4)}fit: BoxFit.${style.image.keepAspectRatio ? "cover" : "fill"},\n${indent(3)})`,
+        ]),
+    ...(style.border === undefined
+      ? []
+      : [`border: Border.all(color: ${dartColor(style.border.color, style.border.opacity)}, width: ${number(style.border.width)})`]),
+    ...(style.radius === undefined ? [] : [`borderRadius: ${borderRadius(style.radius)}`]),
+    ...(style.shadows === undefined
+      ? []
+      : [`boxShadow: [\n${style.shadows.map((shadow) => `${indent(4)}${renderShadow(shadow)}`).join(",\n")}\n${indent(3)}]`]),
+  ];
+  if (properties.length === 1 && !properties[0].includes("\n")) {
+    return `const BoxDecoration(${properties[0]})`;
+  }
+  return `const BoxDecoration(\n${properties.map((property) => `${indent(3)}${property},`).join("\n")}\n${indent(2)})`;
+}
+
+function borderRadius(radius: NonNullable<NodeStyle["radius"]>): string {
+  const values = [radius.topLeft, radius.topRight, radius.bottomRight, radius.bottomLeft];
+  if (values.every((value) => value === values[0])) {
+    return `BorderRadius.circular(${number(values[0])})`;
+  }
+  return [
+    "BorderRadius.only(",
+    `${indent(4)}topLeft: Radius.circular(${number(radius.topLeft)}),`,
+    `${indent(4)}topRight: Radius.circular(${number(radius.topRight)}),`,
+    `${indent(4)}bottomRight: Radius.circular(${number(radius.bottomRight)}),`,
+    `${indent(4)}bottomLeft: Radius.circular(${number(radius.bottomLeft)}),`,
+    `${indent(3)})`,
+  ].join("\n");
+}
+
+function renderShadow(shadow: NonNullable<NodeStyle["shadows"]>[number]): string {
+  return [
+    "BoxShadow(",
+    `${indent(5)}color: ${dartColor(shadow.color, shadow.opacity)},`,
+    `${indent(5)}offset: Offset(${number(shadow.offsetX)}, ${number(shadow.offsetY)}),`,
+    `${indent(5)}blurRadius: ${number(shadow.blur)},`,
+    `${indent(5)}spreadRadius: ${number(shadow.spread)},`,
+    `${indent(4)})`,
+  ].join("\n");
 }
 
 function dartColor(hex: string, opacity: number): string {

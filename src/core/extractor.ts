@@ -1,6 +1,9 @@
 import type {
   BoardNode,
+  Border,
   ColorFill,
+  CornerRadii,
+  DropShadow,
   FlexAlignment,
   FlexDirection,
   FlexJustification,
@@ -10,6 +13,9 @@ import type {
   ConversionResult,
   Diagnostic,
   GroupNode,
+  ImageFill,
+  ImageNode,
+  AssetManifestEntry,
   IrNode,
   NodeGeometry,
   NodeStyle,
@@ -19,9 +25,36 @@ import type {
   UnsupportedNode,
 } from "../shared/ir.js";
 
+export interface PenpotSourceImageData {
+  readonly id?: string;
+  readonly name?: string;
+  readonly width: number;
+  readonly height: number;
+  readonly mtype?: string;
+  readonly keepAspectRatio?: boolean;
+}
+
 export interface PenpotSourceFill {
   readonly fillColor?: string;
   readonly fillOpacity?: number;
+  readonly fillImage?: PenpotSourceImageData | null;
+}
+
+export interface PenpotSourceStroke {
+  readonly strokeColor?: string;
+  readonly strokeOpacity?: number;
+  readonly strokeStyle?: "solid" | "dotted" | "dashed" | "mixed" | "none" | "svg";
+  readonly strokeWidth?: number;
+}
+
+export interface PenpotSourceShadow {
+  readonly style?: "drop-shadow" | "inner-shadow";
+  readonly offsetX?: number;
+  readonly offsetY?: number;
+  readonly blur?: number;
+  readonly spread?: number;
+  readonly hidden?: boolean;
+  readonly color?: { readonly color?: string; readonly opacity?: number };
 }
 
 export interface PenpotSourceFlexLayout {
@@ -54,7 +87,14 @@ export interface PenpotSourceShape {
   readonly height: number;
   readonly visible: boolean;
   readonly opacity?: number | null;
-  readonly fills?: readonly PenpotSourceFill[] | "mixed";
+  readonly fills?: readonly PenpotSourceFill[] | "mixed" | null;
+  readonly strokes?: readonly PenpotSourceStroke[];
+  readonly borderRadius?: number;
+  readonly borderRadiusTopLeft?: number;
+  readonly borderRadiusTopRight?: number;
+  readonly borderRadiusBottomRight?: number;
+  readonly borderRadiusBottomLeft?: number;
+  readonly shadows?: readonly PenpotSourceShadow[];
   readonly children?: readonly PenpotSourceShape[];
   readonly clipContent?: boolean;
   readonly flex?: PenpotSourceFlexLayout;
@@ -70,17 +110,18 @@ export interface PenpotSourceShape {
 
 interface ExtractionContext {
   readonly diagnostics: Diagnostic[];
+  readonly assets: Map<string, AssetManifestEntry>;
 }
 
 export function extractSelection(selection: readonly PenpotSourceShape[]): ConversionResult {
   const diagnostics: Diagnostic[] = [];
-  const context = { diagnostics };
+  const context = { diagnostics, assets: new Map() };
   const root =
     selection.length === 1
       ? extractNode(selection[0], context)
       : extractSyntheticSelection(selection, context);
 
-  return { root, diagnostics };
+  return { root, assets: [...context.assets.values()], diagnostics };
 }
 
 function extractSyntheticSelection(
@@ -117,7 +158,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
     name: normalizeName(shape.name, shape.id),
     geometry: geometryOf(shape, diagnostics),
     visible: shape.visible,
-    style: styleOf(shape, diagnostics),
+    style: styleOf(shape, diagnostics, context),
     ...(shape.layoutChild == null ? {} : { layoutChild: layoutChildOf(shape.layoutChild) }),
     diagnostics,
   };
@@ -143,6 +184,9 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
     case "rectangle":
     case "rect":
       node = { ...base, kind: "rectangle" } satisfies RectangleNode;
+      break;
+    case "image":
+      node = { ...base, kind: "image" } satisfies ImageNode;
       break;
     case "text":
       node = {
@@ -236,12 +280,83 @@ function boundsOf(children: readonly IrNode[]): NodeGeometry {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
-function styleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): NodeStyle {
+function styleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], context: ExtractionContext): NodeStyle {
   const fill = solidFillOf(shape.fills, shape.id, diagnostics);
+  const image = imageFillOf(shape.fills, shape.id, diagnostics, context);
+  const border = solidBorderOf(shape.strokes, shape.id, diagnostics);
+  const radius = cornerRadiiOf(shape);
+  const shadows = dropShadowsOf(shape.shadows, shape.id, diagnostics);
   return {
     ...(fill === undefined ? {} : { fill }),
+    ...(image === undefined ? {} : { image }),
+    ...(border === undefined ? {} : { border }),
+    ...(radius === undefined ? {} : { radius }),
+    ...(shadows.length === 0 ? {} : { shadows }),
     opacity: normalizedOpacity(shape.opacity, shape.id, diagnostics),
   };
+}
+
+function solidBorderOf(
+  strokes: PenpotSourceShape["strokes"],
+  sourceId: string,
+  diagnostics: Diagnostic[],
+): Border | undefined {
+  const stroke = strokes?.[0];
+  if (stroke === undefined || stroke.strokeStyle === "none") {
+    return undefined;
+  }
+  if (stroke.strokeStyle !== undefined && stroke.strokeStyle !== "solid") {
+    diagnostics.push({ severity: "warning", sourceId, code: "unsupported-stroke", message: "Only solid strokes are supported." });
+    return undefined;
+  }
+  const color = stroke.strokeColor === undefined ? undefined : normalizeHexColor(stroke.strokeColor);
+  if (color === undefined) {
+    diagnostics.push({ severity: "warning", sourceId, code: "unsupported-stroke", message: "Solid strokes require a hex color." });
+    return undefined;
+  }
+  return { color, opacity: stroke.strokeOpacity ?? 1, width: nonNegativeDimension(stroke.strokeWidth ?? 0) };
+}
+
+function cornerRadiiOf(shape: PenpotSourceShape): CornerRadii | undefined {
+  const radius = shape.borderRadius;
+  const corners = [shape.borderRadiusTopLeft, shape.borderRadiusTopRight, shape.borderRadiusBottomRight, shape.borderRadiusBottomLeft];
+  if (radius === undefined && corners.every((corner) => corner === undefined)) {
+    return undefined;
+  }
+  const fallback = nonNegativeDimension(radius ?? 0);
+  return {
+    topLeft: nonNegativeDimension(shape.borderRadiusTopLeft ?? fallback),
+    topRight: nonNegativeDimension(shape.borderRadiusTopRight ?? fallback),
+    bottomRight: nonNegativeDimension(shape.borderRadiusBottomRight ?? fallback),
+    bottomLeft: nonNegativeDimension(shape.borderRadiusBottomLeft ?? fallback),
+  };
+}
+
+function dropShadowsOf(
+  shadows: PenpotSourceShape["shadows"],
+  sourceId: string,
+  diagnostics: Diagnostic[],
+): readonly DropShadow[] {
+  return (shadows ?? []).flatMap((shadow) => {
+    if (shadow.hidden) return [];
+    if (shadow.style !== undefined && shadow.style !== "drop-shadow") {
+      diagnostics.push({ severity: "warning", sourceId, code: "unsupported-shadow", message: "Only drop shadows are supported." });
+      return [];
+    }
+    const color = shadow.color?.color === undefined ? undefined : normalizeHexColor(shadow.color.color);
+    if (color === undefined) {
+      diagnostics.push({ severity: "warning", sourceId, code: "unsupported-shadow", message: "Drop shadows require a hex color." });
+      return [];
+    }
+    return [{
+      color,
+      opacity: shadow.color?.opacity ?? 1,
+      offsetX: shadow.offsetX ?? 0,
+      offsetY: shadow.offsetY ?? 0,
+      blur: nonNegativeDimension(shadow.blur ?? 0),
+      spread: shadow.spread ?? 0,
+    }];
+  });
 }
 
 function normalizedOpacity(
@@ -264,16 +379,64 @@ function normalizedOpacity(
   return Math.min(Math.max(value, 0), 1);
 }
 
+function imageFillOf(
+  fills: PenpotSourceShape["fills"],
+  sourceId: string,
+  diagnostics: Diagnostic[],
+  context: ExtractionContext,
+): ImageFill | undefined {
+  if (fills == null || fills === "mixed") {
+    return undefined;
+  }
+
+  const imageFill = fills.find((fill) => "fillImage" in fill);
+  if (imageFill === undefined) {
+    return undefined;
+  }
+  const image = imageFill.fillImage;
+  if (image == null || image.id === undefined || image.id.trim() === "") {
+    diagnostics.push({
+      severity: "warning",
+      sourceId,
+      code: "unusable-image-id",
+      message: "Image data has no stable usable ID, so no Flutter asset reference was generated.",
+    });
+    return undefined;
+  }
+
+  const path = assetPathFor(image.id, image.mtype);
+  if (!context.assets.has(image.id)) {
+    context.assets.set(image.id, {
+      id: image.id,
+      ...(image.name === undefined ? {} : { name: image.name }),
+      ...(image.mtype === undefined ? {} : { mimeType: image.mtype }),
+      width: nonNegativeDimension(image.width),
+      height: nonNegativeDimension(image.height),
+      path,
+    });
+  }
+  return { assetPath: path, keepAspectRatio: image.keepAspectRatio ?? false };
+}
+
+function assetPathFor(id: string, mimeType: string | undefined): string {
+  const encodedId = [...id].map((character) => /[A-Za-z0-9_-]/.test(character) ? character : `_${character.codePointAt(0)!.toString(16)}`).join("");
+  const extension = mimeType === "image/jpeg" ? ".jpg" : mimeType === "image/png" ? ".png" : mimeType === "image/webp" ? ".webp" : mimeType === "image/gif" ? ".gif" : "";
+  return `assets/images/${encodedId}${extension}`;
+}
+
 function solidFillOf(
   fills: PenpotSourceShape["fills"],
   sourceId: string,
   diagnostics: Diagnostic[],
 ): ColorFill | undefined {
-  if (fills === undefined || fills === "mixed" || fills.length === 0) {
+  if (fills == null || fills === "mixed" || fills.length === 0) {
     return undefined;
   }
 
   const fill = fills[0];
+  if (fill.fillImage !== undefined) {
+    return undefined;
+  }
   if (fill.fillColor === undefined) {
     diagnostics.push({
       severity: "warning",

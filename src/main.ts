@@ -25,6 +25,10 @@ app.innerHTML = `
       <button id="copy" type="button" disabled>Copy Dart</button>
     </div>
     <textarea id="dart" readonly spellcheck="false" aria-label="Generated Dart"></textarea>
+    <section id="assets" hidden>
+      <h2>Add exported assets to pubspec.yaml</h2>
+      <textarea id="pubspec-assets" readonly spellcheck="false" aria-label="Generated pubspec assets"></textarea>
+    </section>
     <section id="diagnostics" hidden aria-live="polite">
       <h2>Conversion warnings</h2>
       <ul id="diagnostic-list"></ul>
@@ -38,6 +42,8 @@ const status = requiredElement<HTMLElement>("status");
 const summary = requiredElement<HTMLElement>("selection-summary");
 const dart = requiredElement<HTMLTextAreaElement>("dart");
 const copy = requiredElement<HTMLButtonElement>("copy");
+const assets = requiredElement<HTMLElement>("assets");
+const pubspecAssets = requiredElement<HTMLTextAreaElement>("pubspec-assets");
 const diagnostics = requiredElement<HTMLElement>("diagnostics");
 const diagnosticList = requiredElement<HTMLUListElement>("diagnostic-list");
 
@@ -74,6 +80,8 @@ function render(message: PluginToUiMessage): void {
   status.textContent = "Generated from the current selection";
   summary.textContent = `${message.selectionCount} selected ${message.selectionCount === 1 ? "layer" : "layers"}`;
   dart.value = message.dart;
+  assets.hidden = message.pubspecAssets === undefined || message.pubspecAssets === "";
+  pubspecAssets.value = message.pubspecAssets ?? "";
   copy.disabled = false;
   copy.textContent = "Copy Dart";
 

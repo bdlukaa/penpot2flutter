@@ -13,6 +13,7 @@ export interface ConversionMessage {
   readonly selectionCount: number;
   readonly result?: ConversionResult;
   readonly dart?: string;
+  readonly pubspecAssets?: string;
 }
 
 export type PluginToUiMessage = ConversionMessage;

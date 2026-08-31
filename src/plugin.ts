@@ -1,5 +1,5 @@
 import { extractSelection, type PenpotSourceShape } from "./core/extractor.js";
-import { generateFlutterWidget } from "./core/flutter-generator.js";
+import { generateFlutterWidget, generatePubspecAssetsSnippet } from "./core/flutter-generator.js";
 import type { PluginToUiMessage } from "./shared/messages.js";
 
 penpot.ui.open("Penpot to Flutter", `?theme=${penpot.theme}`, { width: 720, height: 640 });
@@ -19,7 +19,13 @@ function sendConversion(): void {
     source: "penpot-to-flutter",
     type: "conversion",
     selectionCount: selection.length,
-    ...(result === undefined ? {} : { result, dart: generateFlutterWidget(result.root) }),
+    ...(result === undefined
+      ? {}
+      : {
+          result,
+          dart: generateFlutterWidget(result.root),
+          pubspecAssets: generatePubspecAssetsSnippet(result.assets),
+        }),
   };
   penpot.ui.sendMessage(message);
 }

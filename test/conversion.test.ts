@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
 import { extractSelection } from "../src/core/extractor.js";
-import { generateFlutterWidget } from "../src/core/flutter-generator.js";
+import { generateFlutterWidget, generatePubspecAssetsSnippet } from "../src/core/flutter-generator.js";
 
 const board = {
   id: "board-1",
@@ -250,6 +250,100 @@ test("extracts and generates flex board layouts", () => {
   assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", flexDartPath.pathname]));
 });
 
+test("extracts image shapes and fillImage assets into deterministic Flutter output", () => {
+  const result = extractSelection([
+    {
+      id: "image-board",
+      name: "Image board",
+      type: "board",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 100,
+      visible: true,
+      children: [
+        {
+          id: "hero-image",
+          name: "Hero image",
+          type: "image",
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 100,
+          visible: true,
+          fills: [{ fillImage: { id: "media/hero", name: "Hero", width: 400, height: 400, mtype: "image/jpeg", keepAspectRatio: true } }],
+        },
+        {
+          id: "image-fill-rectangle",
+          name: "Image fill rectangle",
+          type: "rectangle",
+          x: 100,
+          y: 0,
+          width: 100,
+          height: 100,
+          visible: true,
+          fills: [{ fillImage: { id: "media/hero", width: 400, height: 400, mtype: "image/jpeg" } }],
+        },
+      ],
+    },
+  ]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.equal(result.root.kind, "board");
+  assert.equal(result.root.children[0].kind, "image");
+  assert.deepEqual(result.assets, [{
+    id: "media/hero",
+    name: "Hero",
+    mimeType: "image/jpeg",
+    width: 400,
+    height: 400,
+    path: "assets/images/media_2fhero.jpg",
+  }]);
+  assert.match(dart, /DecorationImage\(\n\s*image: AssetImage\('assets\/images\/media_2fhero\.jpg'\),/);
+  assert.match(dart, /fit: BoxFit\.cover,/);
+  assert.equal(generatePubspecAssetsSnippet(result.assets), "flutter:\n  assets:\n    - assets/images/media_2fhero.jpg\n");
+  assert.equal(result.diagnostics.length, 0);
+
+  const imageDartPath = new URL("../image_generated_widget.dart", import.meta.url);
+  writeFileSync(imageDartPath, dart);
+  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", imageDartPath.pathname]));
+});
+
+test("warns instead of throwing when an image fill is null", () => {
+  const result = extractSelection([{
+    id: "null-image-fill",
+    name: "Null image fill",
+    type: "rectangle",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    visible: true,
+    fills: [{ fillImage: null }],
+  }]);
+
+  assert.deepEqual(result.assets, []);
+  assert.deepEqual(result.diagnostics.map((diagnostic) => diagnostic.code), ["unusable-image-id"]);
+});
+
+test("warns and omits image fills without a stable image id", () => {
+  const result = extractSelection([{
+    id: "missing-image-id",
+    name: "Missing image ID",
+    type: "image",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    visible: true,
+    fills: [{ fillImage: { id: "", width: 100, height: 100 } }],
+  }]);
+
+  assert.deepEqual(result.assets, []);
+  assert.deepEqual(result.diagnostics.map((diagnostic) => diagnostic.code), ["unusable-image-id"]);
+  assert.doesNotMatch(generateFlutterWidget(result.root), /AssetImage/);
+});
+
 test("generates a column with row gaps without Stack fallback", () => {
   const result = extractSelection([
     {
@@ -309,4 +403,64 @@ test("generates deterministic compilable Flutter widget source", () => {
   const generatedDartPath = new URL("../generated_widget.dart", import.meta.url);
   writeFileSync(generatedDartPath, dart);
   assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", generatedDartPath.pathname]));
+});
+
+test("emits code that already matches dart format", () => {
+  const dart = generateFlutterWidget(extractSelection([board]).root);
+  const dartPath = new URL("../dart_format_golden.dart", import.meta.url);
+  writeFileSync(dartPath, dart);
+  execFileSync("dart", ["format", dartPath.pathname]);
+  assert.equal(dart, readFileSync(dartPath, "utf8"));
+});
+
+test("extracts and generates solid strokes, per-corner radii, and drop shadows", () => {
+  const result = extractSelection([{
+    ...board,
+    id: "styled-board",
+    name: "Styled card",
+    flex: {
+      dir: "row",
+      rowGap: 0,
+      columnGap: 8,
+      topPadding: 0,
+      rightPadding: 0,
+      bottomPadding: 0,
+      leftPadding: 0,
+    },
+    fills: [{ fillColor: "#ffffff", fillOpacity: 1 }],
+    strokes: [{ strokeColor: "#6750A4", strokeOpacity: 0.75, strokeStyle: "solid", strokeWidth: 2 }],
+    borderRadius: 12,
+    borderRadiusTopLeft: 4,
+    borderRadiusTopRight: 8,
+    borderRadiusBottomRight: 12,
+    borderRadiusBottomLeft: 16,
+    shadows: [{
+      style: "drop-shadow",
+      offsetX: 2,
+      offsetY: 4,
+      blur: 6,
+      spread: 1,
+      color: { color: "#000000", opacity: 0.25 },
+    }],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.deepEqual(result.root.style.border, { color: "#6750a4", opacity: 0.75, width: 2 });
+  assert.deepEqual(result.root.style.radius, { topLeft: 4, topRight: 8, bottomRight: 12, bottomLeft: 16 });
+  assert.deepEqual(result.root.style.shadows, [{
+    color: "#000000",
+    opacity: 0.25,
+    offsetX: 2,
+    offsetY: 4,
+    blur: 6,
+    spread: 1,
+  }]);
+  assert.match(dart, /Border\.all\(color: Color\(0xbf6750a4\), width: 2\)/);
+  assert.match(dart, /BorderRadius\.only\(\n\s*topLeft: Radius\.circular\(4\),/);
+  assert.match(dart, /boxShadow: \[\n\s*BoxShadow\(/);
+  assert.match(dart, /offset: Offset\(2, 4\),/);
+  assert.match(dart, /blurRadius: 6,/);
+  assert.match(dart, /spreadRadius: 1,/);
+  assert.match(dart, /Row\(/);
+  assert.doesNotMatch(dart, /Stack\(/);
 });

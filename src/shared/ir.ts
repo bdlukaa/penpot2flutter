@@ -12,8 +12,48 @@ export interface ColorFill {
   readonly opacity: number;
 }
 
+export interface ImageFill {
+  readonly assetPath: string;
+  readonly keepAspectRatio: boolean;
+}
+
+export interface AssetManifestEntry {
+  readonly id: string;
+  readonly name?: string;
+  readonly mimeType?: string;
+  readonly width: number;
+  readonly height: number;
+  readonly path: string;
+}
+
+export interface Border {
+  readonly color: string;
+  readonly opacity: number;
+  readonly width: number;
+}
+
+export interface CornerRadii {
+  readonly topLeft: number;
+  readonly topRight: number;
+  readonly bottomRight: number;
+  readonly bottomLeft: number;
+}
+
+export interface DropShadow {
+  readonly color: string;
+  readonly opacity: number;
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly blur: number;
+  readonly spread: number;
+}
+
 export interface NodeStyle {
   readonly fill?: ColorFill;
+  readonly image?: ImageFill;
+  readonly border?: Border;
+  readonly radius?: CornerRadii;
+  readonly shadows?: readonly DropShadow[];
   readonly opacity: number;
 }
 
@@ -93,6 +133,10 @@ export interface RectangleNode extends BaseNode {
   readonly kind: "rectangle";
 }
 
+export interface ImageNode extends BaseNode {
+  readonly kind: "image";
+}
+
 export interface TextNode extends BaseNode {
   readonly kind: "text";
   readonly text: string;
@@ -104,9 +148,10 @@ export interface UnsupportedNode extends BaseNode {
   readonly sourceType: string;
 }
 
-export type IrNode = BoardNode | GroupNode | RectangleNode | TextNode | UnsupportedNode;
+export type IrNode = BoardNode | GroupNode | RectangleNode | ImageNode | TextNode | UnsupportedNode;
 
 export interface ConversionResult {
   readonly root: IrNode;
+  readonly assets: readonly AssetManifestEntry[];
   readonly diagnostics: readonly Diagnostic[];
 }
