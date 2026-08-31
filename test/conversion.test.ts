@@ -481,6 +481,23 @@ test("extracts and generates solid strokes, per-corner radii, and drop shadows",
       spread: 1,
       color: { color: "#000000", opacity: 0.25 },
     }],
+    children: [{
+      ...board.children[0],
+      fills: [{ fillImage: { id: "media/styled-card", name: "Styled card", width: 400, height: 300, mtype: "image/png", keepAspectRatio: true } }],
+      strokes: [{ strokeColor: "#6750A4", strokeOpacity: 0.75, strokeStyle: "solid", strokeWidth: 2 }],
+      borderRadiusTopLeft: 4,
+      borderRadiusTopRight: 8,
+      borderRadiusBottomRight: 12,
+      borderRadiusBottomLeft: 16,
+      shadows: [{
+        style: "drop-shadow",
+        offsetX: 2,
+        offsetY: 4,
+        blur: 6,
+        spread: 1,
+        color: { color: "#000000", opacity: 0.25 },
+      }],
+    }],
   }]);
   const dart = generateFlutterWidget(result.root);
 
@@ -502,4 +519,9 @@ test("extracts and generates solid strokes, per-corner radii, and drop shadows",
   assert.match(dart, /spreadRadius: 1,/);
   assert.match(dart, /Row\(/);
   assert.doesNotMatch(dart, /Stack\(/);
+
+  const styledDartPath = new URL("../styled_generated_widget.dart", import.meta.url);
+  writeFileSync(styledDartPath, dart);
+  execFileSync("dart", ["format", styledDartPath.pathname]);
+  assert.equal(dart, readFileSync(styledDartPath, "utf8"));
 });

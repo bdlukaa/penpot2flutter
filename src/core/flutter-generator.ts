@@ -69,7 +69,7 @@ function renderContainer(node: BoardNode, depth: number, clipBehavior: string): 
     `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
     `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
   ];
-  const decoration = renderDecoration(node.style);
+  const decoration = renderDecoration(node.style, depth + 1);
   if (decoration !== undefined) {
     lines.push(`${indent(depth + 1)}decoration: ${decoration},`);
   }
@@ -212,7 +212,7 @@ function renderGroup(node: GroupNode, depth: number): string {
 }
 
 function renderRectangle(style: NodeStyle, width: number, height: number, depth: number): string {
-  const decoration = renderDecoration(style);
+  const decoration = renderDecoration(style, depth + 2);
   const lines = [
     "SizedBox(",
     `${indent(depth + 1)}width: ${number(width)},`,
@@ -261,7 +261,7 @@ function renderText(node: TextNode, depth: number): string {
   return lines.join("\n");
 }
 
-function renderDecoration(style: NodeStyle): string | undefined {
+function renderDecoration(style: NodeStyle, depth: number): string | undefined {
   if (style.fill === undefined && style.image === undefined && style.border === undefined && style.radius === undefined && style.shadows === undefined) {
     return undefined;
   }
@@ -271,45 +271,45 @@ function renderDecoration(style: NodeStyle): string | undefined {
     ...(style.image === undefined
       ? []
       : [
-          `image: DecorationImage(\n${indent(4)}image: AssetImage('${escapeDart(style.image.assetPath)}'),\n${indent(4)}fit: BoxFit.${style.image.keepAspectRatio ? "cover" : "fill"},\n${indent(3)})`,
+          `image: DecorationImage(\n${indent(depth + 2)}image: AssetImage('${escapeDart(style.image.assetPath)}'),\n${indent(depth + 2)}fit: BoxFit.${style.image.keepAspectRatio ? "cover" : "fill"},\n${indent(depth + 1)})`,
         ]),
     ...(style.border === undefined
       ? []
       : [`border: Border.all(color: ${dartColor(style.border.color, style.border.opacity)}, width: ${number(style.border.width)})`]),
-    ...(style.radius === undefined ? [] : [`borderRadius: ${borderRadius(style.radius)}`]),
+    ...(style.radius === undefined ? [] : [`borderRadius: ${borderRadius(style.radius, depth + 2)}`]),
     ...(style.shadows === undefined
       ? []
-      : [`boxShadow: [\n${style.shadows.map((shadow) => `${indent(4)}${renderShadow(shadow)}`).join(",\n")}\n${indent(3)}]`]),
+      : [`boxShadow: [\n${style.shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`]),
   ];
   if (properties.length === 1 && !properties[0].includes("\n")) {
     return `const BoxDecoration(${properties[0]})`;
   }
-  return `const BoxDecoration(\n${properties.map((property) => `${indent(3)}${property},`).join("\n")}\n${indent(2)})`;
+  return `const BoxDecoration(\n${properties.map((property) => `${indent(depth + 1)}${property},`).join("\n")}\n${indent(depth)})`;
 }
 
-function borderRadius(radius: NonNullable<NodeStyle["radius"]>): string {
+function borderRadius(radius: NonNullable<NodeStyle["radius"]>, depth: number): string {
   const values = [radius.topLeft, radius.topRight, radius.bottomRight, radius.bottomLeft];
   if (values.every((value) => value === values[0])) {
     return `BorderRadius.circular(${number(values[0])})`;
   }
   return [
     "BorderRadius.only(",
-    `${indent(4)}topLeft: Radius.circular(${number(radius.topLeft)}),`,
-    `${indent(4)}topRight: Radius.circular(${number(radius.topRight)}),`,
-    `${indent(4)}bottomRight: Radius.circular(${number(radius.bottomRight)}),`,
-    `${indent(4)}bottomLeft: Radius.circular(${number(radius.bottomLeft)}),`,
-    `${indent(3)})`,
+    `${indent(depth)}topLeft: Radius.circular(${number(radius.topLeft)}),`,
+    `${indent(depth)}topRight: Radius.circular(${number(radius.topRight)}),`,
+    `${indent(depth)}bottomRight: Radius.circular(${number(radius.bottomRight)}),`,
+    `${indent(depth)}bottomLeft: Radius.circular(${number(radius.bottomLeft)}),`,
+    `${indent(depth - 1)})`
   ].join("\n");
 }
 
-function renderShadow(shadow: NonNullable<NodeStyle["shadows"]>[number]): string {
+function renderShadow(shadow: NonNullable<NodeStyle["shadows"]>[number], depth: number): string {
   return [
     "BoxShadow(",
-    `${indent(5)}color: ${dartColor(shadow.color, shadow.opacity)},`,
-    `${indent(5)}offset: Offset(${number(shadow.offsetX)}, ${number(shadow.offsetY)}),`,
-    `${indent(5)}blurRadius: ${number(shadow.blur)},`,
-    `${indent(5)}spreadRadius: ${number(shadow.spread)},`,
-    `${indent(4)})`,
+    `${indent(depth)}color: ${dartColor(shadow.color, shadow.opacity)},`,
+    `${indent(depth)}offset: Offset(${number(shadow.offsetX)}, ${number(shadow.offsetY)}),`,
+    `${indent(depth)}blurRadius: ${number(shadow.blur)},`,
+    `${indent(depth)}spreadRadius: ${number(shadow.spread)},`,
+    `${indent(depth - 1)})`
   ].join("\n");
 }
 

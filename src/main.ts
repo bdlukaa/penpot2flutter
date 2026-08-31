@@ -24,7 +24,8 @@ app.innerHTML = `
       <strong id="selection-summary"></strong>
       <button id="copy" type="button" disabled>Copy Dart</button>
     </div>
-    <textarea id="dart" readonly spellcheck="false" aria-label="Generated Dart"></textarea>
+    <pre id="dart-preview" class="code-preview" aria-label="Generated Dart"><code></code></pre>
+    <textarea id="dart" class="copy-source" readonly hidden spellcheck="false" aria-label="Generated Dart"></textarea>
     <section id="assets" hidden>
       <h2>Add exported assets to pubspec.yaml</h2>
       <textarea id="pubspec-assets" readonly spellcheck="false" aria-label="Generated pubspec assets"></textarea>
@@ -41,6 +42,7 @@ const result = requiredElement<HTMLElement>("result");
 const status = requiredElement<HTMLElement>("status");
 const summary = requiredElement<HTMLElement>("selection-summary");
 const dart = requiredElement<HTMLTextAreaElement>("dart");
+const dartPreview = requiredElement<HTMLElement>("dart-preview");
 const copy = requiredElement<HTMLButtonElement>("copy");
 const assets = requiredElement<HTMLElement>("assets");
 const pubspecAssets = requiredElement<HTMLTextAreaElement>("pubspec-assets");
@@ -80,6 +82,7 @@ function render(message: PluginToUiMessage): void {
   status.textContent = "Generated from the current selection";
   summary.textContent = `${message.selectionCount} selected ${message.selectionCount === 1 ? "layer" : "layers"}`;
   dart.value = message.dart;
+  dartPreview.querySelector("code")!.innerHTML = highlightDart(message.dart);
   assets.hidden = message.pubspecAssets === undefined || message.pubspecAssets === "";
   pubspecAssets.value = message.pubspecAssets ?? "";
   copy.disabled = false;
@@ -94,6 +97,25 @@ function render(message: PluginToUiMessage): void {
       return item;
     }),
   );
+}
+
+function highlightDart(source: string): string {
+  const tokenPattern = /('(?:\\\\.|[^'\\\\])*'|"(?:\\\\.|[^"\\\\])*"|\\b\\d+(?:\\.\\d+)?\\b|\\b(?:class|extends|const|override|return|import|final|void|Widget|StatelessWidget)\\b|.)/gs;
+  return [...source.matchAll(tokenPattern)]
+    .map(([token]) => {
+      const escaped = escapeHtml(token);
+      if (/^['"]/.test(token)) return `<span class="token-string">${escaped}</span>`;
+      if (/^\\d/.test(token)) return `<span class="token-number">${escaped}</span>`;
+      if (/^(class|extends|const|override|return|import|final|void|Widget|StatelessWidget)$/.test(token)) {
+        return `<span class="token-keyword">${escaped}</span>`;
+      }
+      return escaped;
+    })
+    .join("");
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function requiredElement<T extends HTMLElement>(id: string): T {

@@ -28,6 +28,11 @@ h2 { font-size: 16px; }
 button { background: #6750a4; border: 0; border-radius: 999px; color: #fff; cursor: pointer; font: inherit; font-weight: 700; padding: 9px 16px; }
 button:disabled { background: #cac4d0; cursor: default; }
 
+.code-preview { background: #1d1b20; border-radius: 8px; color: #f4eff7; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; min-height: 320px; overflow: auto; padding: 14px; tab-size: 2; white-space: pre; }
+.code-preview code { font: inherit; }
+.token-keyword { color: #d0bcff; }
+.token-string { color: #b8e6b0; }
+.token-number { color: #ffb4ab; }
 textarea { background: #1d1b20; border: 0; border-radius: 8px; color: #e9ddff; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 320px; padding: 14px; resize: vertical; tab-size: 2; width: 100%; }
 
 #diagnostics { background: #fff8e1; border-radius: 8px; color: #594000; padding: 12px; }
