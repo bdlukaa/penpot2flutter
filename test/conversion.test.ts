@@ -151,6 +151,149 @@ test("reports unsupported shapes rather than silently dropping them", () => {
   assert.deepEqual(result.diagnostics.map((diagnostic) => diagnostic.code), ["unsupported-shape"]);
 });
 
+test("accepts Penpot null layoutChild values", () => {
+  const result = extractSelection([
+    {
+      id: "plain-board",
+      name: "Plain board",
+      type: "board",
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 100,
+      visible: true,
+      layoutChild: null,
+      children: [],
+    },
+  ]);
+
+  assert.equal(result.root.kind, "board");
+  assert.equal(result.root.layoutChild, undefined);
+});
+
+test("extracts and generates flex board layouts", () => {
+  const result = extractSelection([
+    {
+      id: "flex-board",
+      name: "Action bar",
+      type: "board",
+      x: 0,
+      y: 0,
+      width: 360,
+      height: 80,
+      visible: true,
+      flex: {
+        dir: "row-reverse",
+        rowGap: 12,
+        columnGap: 16,
+        topPadding: 8,
+        rightPadding: 20,
+        bottomPadding: 12,
+        leftPadding: 24,
+        justifyContent: "space-between",
+        alignItems: "center",
+      },
+      children: [
+        {
+          id: "primary-action",
+          name: "Primary action",
+          type: "rectangle",
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 40,
+          visible: true,
+          layoutChild: { absolute: false, horizontalSizing: "fill", verticalSizing: "fill" },
+        },
+        {
+          id: "badge",
+          name: "Badge",
+          type: "rectangle",
+          x: 320,
+          y: 4,
+          width: 24,
+          height: 24,
+          visible: true,
+          layoutChild: { absolute: true, horizontalSizing: "fix", verticalSizing: "fix" },
+        },
+      ],
+    },
+  ]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.equal(result.root.kind, "board");
+  assert.deepEqual(result.root.flex, {
+    direction: "row-reverse",
+    rowGap: 12,
+    columnGap: 16,
+    padding: { top: 8, right: 20, bottom: 12, left: 24 },
+    justifyContent: "space-between",
+    alignItems: "center",
+  });
+  assert.deepEqual(result.root.children[0].layoutChild, {
+    absolute: false,
+    horizontalSizing: "fill",
+    verticalSizing: "fill",
+  });
+  assert.match(dart, /Stack\(/);
+  assert.match(dart, /Positioned\.fill\(/);
+  assert.match(dart, /EdgeInsets\.only\(top: 8, right: 20, bottom: 12, left: 24\)/);
+  assert.match(dart, /Row\(\n\s*textDirection: TextDirection\.rtl,/);
+  assert.match(dart, /mainAxisAlignment: MainAxisAlignment\.spaceBetween,/);
+  assert.match(dart, /crossAxisAlignment: CrossAxisAlignment\.center,/);
+  assert.match(dart, /Expanded\(/);
+  assert.match(dart, /height: double\.infinity,/);
+  assert.match(dart, /Positioned\(\n\s*left: 320,/);
+
+  const flexDartPath = new URL("../flex_generated_widget.dart", import.meta.url);
+  writeFileSync(flexDartPath, dart);
+  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", flexDartPath.pathname]));
+});
+
+test("generates a column with row gaps without Stack fallback", () => {
+  const result = extractSelection([
+    {
+      id: "flex-column",
+      name: "Form",
+      type: "board",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 160,
+      visible: true,
+      flex: {
+        dir: "column",
+        rowGap: 10,
+        columnGap: 0,
+        topPadding: 0,
+        rightPadding: 0,
+        bottomPadding: 0,
+        leftPadding: 0,
+      },
+      children: [
+        {
+                  id: "field-a",
+                  name: "Field a",
+                  type: "rectangle",
+                  x: 0,
+                  y: 0,
+                  width: 200,
+                  height: 40,
+                  visible: true,
+                  layoutChild: { absolute: false, horizontalSizing: "fill", verticalSizing: "fix" },
+                },
+        { id: "field-b", name: "Field b", type: "rectangle", x: 0, y: 50, width: 200, height: 40, visible: true },
+      ],
+    },
+  ]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.match(dart, /Column\(/);
+  assert.match(dart, /SizedBox\(height: 10\)/);
+  assert.match(dart, /width: double\.infinity,/);
+  assert.doesNotMatch(dart, /Stack\(/);
+});
+
 test("generates deterministic compilable Flutter widget source", () => {
   const result = extractSelection([board]);
   const dart = generateFlutterWidget(result.root);

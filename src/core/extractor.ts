@@ -1,6 +1,12 @@
 import type {
   BoardNode,
   ColorFill,
+  FlexAlignment,
+  FlexDirection,
+  FlexJustification,
+  FlexLayout,
+  LayoutChild,
+  LayoutSizing,
   ConversionResult,
   Diagnostic,
   GroupNode,
@@ -18,6 +24,24 @@ export interface PenpotSourceFill {
   readonly fillOpacity?: number;
 }
 
+export interface PenpotSourceFlexLayout {
+  readonly dir: FlexDirection;
+  readonly rowGap: number;
+  readonly columnGap: number;
+  readonly topPadding: number;
+  readonly rightPadding: number;
+  readonly bottomPadding: number;
+  readonly leftPadding: number;
+  readonly justifyContent?: FlexJustification;
+  readonly alignItems?: FlexAlignment;
+}
+
+export interface PenpotSourceLayoutChild {
+  readonly absolute: boolean;
+  readonly horizontalSizing: LayoutSizing;
+  readonly verticalSizing: LayoutSizing;
+}
+
 export interface PenpotSourceShape {
   readonly id: string;
   readonly name: string;
@@ -33,6 +57,8 @@ export interface PenpotSourceShape {
   readonly fills?: readonly PenpotSourceFill[] | "mixed";
   readonly children?: readonly PenpotSourceShape[];
   readonly clipContent?: boolean;
+  readonly flex?: PenpotSourceFlexLayout;
+  readonly layoutChild?: PenpotSourceLayoutChild | null;
   readonly characters?: string;
   readonly fontFamily?: string;
   readonly fontSize?: string;
@@ -92,6 +118,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
     geometry: geometryOf(shape, diagnostics),
     visible: shape.visible,
     style: styleOf(shape, diagnostics),
+    ...(shape.layoutChild == null ? {} : { layoutChild: layoutChildOf(shape.layoutChild) }),
     diagnostics,
   };
 
@@ -102,6 +129,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
         ...base,
         kind: "board",
         clipContent: shape.clipContent ?? false,
+        ...(shape.flex === undefined ? {} : { flex: flexOf(shape.flex) }),
         children: extractChildren(shape, context),
       } satisfies BoardNode;
       break;
@@ -144,6 +172,30 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
 
 function extractChildren(shape: PenpotSourceShape, context: ExtractionContext): readonly IrNode[] {
   return (shape.children ?? []).map((child) => extractNode(child, context));
+}
+
+function flexOf(flex: PenpotSourceFlexLayout): FlexLayout {
+  return {
+    direction: flex.dir,
+    rowGap: nonNegativeDimension(flex.rowGap),
+    columnGap: nonNegativeDimension(flex.columnGap),
+    padding: {
+      top: nonNegativeDimension(flex.topPadding),
+      right: nonNegativeDimension(flex.rightPadding),
+      bottom: nonNegativeDimension(flex.bottomPadding),
+      left: nonNegativeDimension(flex.leftPadding),
+    },
+    ...(flex.justifyContent === undefined ? {} : { justifyContent: flex.justifyContent }),
+    ...(flex.alignItems === undefined ? {} : { alignItems: flex.alignItems }),
+  };
+}
+
+function layoutChildOf(layoutChild: PenpotSourceLayoutChild): LayoutChild {
+  return {
+    absolute: layoutChild.absolute,
+    horizontalSizing: layoutChild.horizontalSizing,
+    verticalSizing: layoutChild.verticalSizing,
+  };
 }
 
 function geometryOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): NodeGeometry {

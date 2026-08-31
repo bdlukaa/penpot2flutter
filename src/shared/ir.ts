@@ -33,18 +33,54 @@ export interface TextStyle {
   readonly align?: "left" | "center" | "right" | "justify";
 }
 
+export type FlexDirection = "row" | "row-reverse" | "column" | "column-reverse";
+export type FlexAlignment = "start" | "end" | "center" | "stretch";
+export type FlexJustification =
+  | "start"
+  | "end"
+  | "center"
+  | "space-between"
+  | "space-around"
+  | "space-evenly"
+  | "stretch";
+export type LayoutSizing = "auto" | "fill" | "fix";
+
+export interface EdgeInsets {
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+  readonly left: number;
+}
+
+export interface FlexLayout {
+  readonly direction: FlexDirection;
+  readonly rowGap: number;
+  readonly columnGap: number;
+  readonly padding: EdgeInsets;
+  readonly justifyContent?: FlexJustification;
+  readonly alignItems?: FlexAlignment;
+}
+
+export interface LayoutChild {
+  readonly absolute: boolean;
+  readonly horizontalSizing: LayoutSizing;
+  readonly verticalSizing: LayoutSizing;
+}
+
 export interface BaseNode {
   readonly sourceId: string;
   readonly name: string;
   readonly geometry: NodeGeometry;
   readonly visible: boolean;
   readonly style: NodeStyle;
+  readonly layoutChild?: LayoutChild;
   readonly diagnostics: readonly Diagnostic[];
 }
 
 export interface BoardNode extends BaseNode {
   readonly kind: "board";
   readonly clipContent: boolean;
+  readonly flex?: FlexLayout;
   readonly children: readonly IrNode[];
 }
 

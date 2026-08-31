@@ -70,15 +70,126 @@ function renderContainer(node: BoardNode, depth: number, clipBehavior: string): 
   }
   lines.push(
     `${indent(depth + 1)}clipBehavior: ${clipBehavior},`,
-    `${indent(depth + 1)}child: Stack(`,
-    `${indent(depth + 2)}clipBehavior: ${clipBehavior},`,
-    `${indent(depth + 2)}children: [`,
-    ...node.children.map((child) => `${indent(depth + 3)}${renderNode(child, depth + 3, true)},`),
-    `${indent(depth + 2)}],`,
-    `${indent(depth + 1)}),`,
+    `${indent(depth + 1)}child: ${node.flex === undefined ? renderStack(node.children, depth + 1, clipBehavior) : renderFlex(node, depth + 1, clipBehavior)},`,
     `${indent(depth)})`,
   );
   return lines.join("\n");
+}
+
+function renderStack(children: readonly IrNode[], depth: number, clipBehavior: string): string {
+  return [
+    "Stack(",
+    `${indent(depth + 1)}clipBehavior: ${clipBehavior},`,
+    `${indent(depth + 1)}children: [`,
+    ...children.map((child) => `${indent(depth + 2)}${renderNode(child, depth + 2, true)},`),
+    `${indent(depth + 1)}],`,
+    `${indent(depth)})`,
+  ].join("\n");
+}
+
+function renderFlex(node: BoardNode, depth: number, clipBehavior: string): string {
+  const flowChildren = node.children.filter((child) => !child.layoutChild?.absolute);
+  const absoluteChildren = node.children.filter((child) => child.layoutChild?.absolute);
+  const flex = renderFlexFlow(node, flowChildren, depth + (absoluteChildren.length === 0 ? 0 : 2));
+
+  if (absoluteChildren.length === 0) {
+    return flex;
+  }
+
+  return [
+    "Stack(",
+    `${indent(depth + 1)}clipBehavior: ${clipBehavior},`,
+    `${indent(depth + 1)}children: [`,
+    `${indent(depth + 2)}Positioned.fill(`,
+    `${indent(depth + 3)}child: ${flex},`,
+    `${indent(depth + 2)}),`,
+    ...absoluteChildren.map((child) => `${indent(depth + 2)}${renderNode(child, depth + 2, true)},`),
+    `${indent(depth + 1)}],`,
+    `${indent(depth)})`,
+  ].join("\n");
+}
+
+function renderFlexFlow(node: BoardNode, children: readonly IrNode[], depth: number): string {
+  const flex = node.flex;
+  if (flex === undefined) {
+    return renderStack(node.children, depth, node.clipContent ? "Clip.hardEdge" : "Clip.none");
+  }
+  const isRow = flex.direction === "row" || flex.direction === "row-reverse";
+  const gap = isRow ? flex.columnGap : flex.rowGap;
+  const renderedChildren = children.flatMap((child, index) => [
+    ...(index === 0 ? [] : [`SizedBox(${isRow ? "width" : "height"}: ${number(gap)})`]),
+    renderFlexChild(child, depth + 3, isRow),
+  ]);
+  const layout = [
+    `${isRow ? "Row" : "Column"}(`,
+    ...(flex.direction === "row-reverse" ? [`${indent(depth + 2)}textDirection: TextDirection.rtl,`] : []),
+    ...(flex.direction === "column-reverse" ? [`${indent(depth + 2)}verticalDirection: VerticalDirection.up,`] : []),
+    `${indent(depth + 2)}mainAxisAlignment: MainAxisAlignment.${mainAxisAlignment(flex.justifyContent)},`,
+    `${indent(depth + 2)}crossAxisAlignment: CrossAxisAlignment.${crossAxisAlignment(flex.alignItems)},`,
+    `${indent(depth + 2)}children: [`,
+    ...renderedChildren.map((child) => `${indent(depth + 3)}${child},`),
+    `${indent(depth + 2)}],`,
+    `${indent(depth + 1)}),`,
+  ];
+  const padding = flex.padding;
+  return [
+    "Padding(",
+    `${indent(depth + 1)}padding: EdgeInsets.only(top: ${number(padding.top)}, right: ${number(padding.right)}, bottom: ${number(padding.bottom)}, left: ${number(padding.left)}),`,
+    `${indent(depth + 1)}child: ${layout.join("\n")}`,
+    `${indent(depth)})`,
+  ].join("\n");
+}
+
+function renderFlexChild(node: IrNode, depth: number, isRow: boolean): string {
+  const mainAxisSizing = isRow ? node.layoutChild?.horizontalSizing : node.layoutChild?.verticalSizing;
+  const crossAxisSizing = isRow ? node.layoutChild?.verticalSizing : node.layoutChild?.horizontalSizing;
+  const child = renderNode(node, depth + Number(mainAxisSizing === "fill") + Number(crossAxisSizing === "fill"), false);
+  const crossAxisChild =
+    crossAxisSizing === "fill"
+      ? [
+          "SizedBox(",
+          `${indent(depth + Number(mainAxisSizing === "fill") + 1)}${isRow ? "height" : "width"}: double.infinity,`,
+          `${indent(depth + Number(mainAxisSizing === "fill") + 1)}child: ${child},`,
+          `${indent(depth + Number(mainAxisSizing === "fill"))})`,
+        ].join("\n")
+      : child;
+  return mainAxisSizing === "fill"
+    ? [
+        "Expanded(",
+        `${indent(depth + 1)}child: ${crossAxisChild},`,
+        `${indent(depth)})`,
+      ].join("\n")
+    : crossAxisChild;
+}
+
+function mainAxisAlignment(value: string | undefined): string {
+  switch (value) {
+    case "center":
+      return "center";
+    case "end":
+      return "end";
+    case "space-between":
+      return "spaceBetween";
+    case "space-around":
+      return "spaceAround";
+    case "space-evenly":
+      return "spaceEvenly";
+    default:
+      return "start";
+  }
+}
+
+function crossAxisAlignment(value: string | undefined): string {
+  switch (value) {
+    case "end":
+      return "end";
+    case "center":
+      return "center";
+    case "stretch":
+      return "stretch";
+    default:
+      return "start";
+  }
 }
 
 function renderGroup(node: GroupNode, depth: number): string {
