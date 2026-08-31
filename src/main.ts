@@ -1,0 +1,96 @@
+import { isPluginToUiMessage, type PluginToUiMessage } from "./shared/messages.js";
+import "./style.css";
+
+const app = document.querySelector<HTMLElement>("#app");
+if (app === null) {
+  throw new Error("Missing plugin app root.");
+}
+
+let latestDart = "";
+
+app.innerHTML = `
+  <header>
+    <p class="eyebrow">PENPOT TO FLUTTER</p>
+    <h1>Selection export</h1>
+    <p id="status" class="muted">Reading the current selection…</p>
+  </header>
+  <section id="empty-state" class="empty-state" hidden>
+    <h2>Select a board, rectangle, or text layer</h2>
+    <p>Generated Flutter code will update whenever the selection changes.</p>
+  </section>
+  <section id="result" hidden>
+    <div class="toolbar">
+      <strong id="selection-summary"></strong>
+      <button id="copy" type="button" disabled>Copy Dart</button>
+    </div>
+    <textarea id="dart" readonly spellcheck="false" aria-label="Generated Dart"></textarea>
+    <section id="diagnostics" hidden aria-live="polite">
+      <h2>Conversion warnings</h2>
+      <ul id="diagnostic-list"></ul>
+    </section>
+  </section>
+`;
+
+const emptyState = requiredElement<HTMLElement>("empty-state");
+const result = requiredElement<HTMLElement>("result");
+const status = requiredElement<HTMLElement>("status");
+const summary = requiredElement<HTMLElement>("selection-summary");
+const dart = requiredElement<HTMLTextAreaElement>("dart");
+const copy = requiredElement<HTMLButtonElement>("copy");
+const diagnostics = requiredElement<HTMLElement>("diagnostics");
+const diagnosticList = requiredElement<HTMLUListElement>("diagnostic-list");
+
+copy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(latestDart);
+    copy.textContent = "Copied";
+  } catch {
+    dart.focus();
+    dart.select();
+    copy.textContent = "Select code to copy";
+  }
+});
+
+window.addEventListener("message", (event) => {
+  if (isPluginToUiMessage(event.data)) {
+    render(event.data);
+  }
+});
+
+parent.postMessage({ source: "penpot-to-flutter", type: "request-conversion" }, "*");
+
+function render(message: PluginToUiMessage): void {
+  const hasSelection = message.result !== undefined && message.dart !== undefined;
+  emptyState.hidden = hasSelection;
+  result.hidden = !hasSelection;
+
+  if (!hasSelection) {
+    status.textContent = "No layers selected";
+    return;
+  }
+
+  latestDart = message.dart;
+  status.textContent = "Generated from the current selection";
+  summary.textContent = `${message.selectionCount} selected ${message.selectionCount === 1 ? "layer" : "layers"}`;
+  dart.value = message.dart;
+  copy.disabled = false;
+  copy.textContent = "Copy Dart";
+
+  const warnings = message.result.diagnostics;
+  diagnostics.hidden = warnings.length === 0;
+  diagnosticList.replaceChildren(
+    ...warnings.map((warning) => {
+      const item = document.createElement("li");
+      item.textContent = warning.message;
+      return item;
+    }),
+  );
+}
+
+function requiredElement<T extends HTMLElement>(id: string): T {
+  const element = document.getElementById(id);
+  if (element === null) {
+    throw new Error(`Missing #${id}`);
+  }
+  return element as T;
+}
