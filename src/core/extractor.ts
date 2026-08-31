@@ -58,15 +58,15 @@ export interface PenpotSourceShadow {
 }
 
 export interface PenpotSourceFlexLayout {
-  readonly dir: FlexDirection;
-  readonly rowGap: number;
-  readonly columnGap: number;
-  readonly topPadding: number;
-  readonly rightPadding: number;
-  readonly bottomPadding: number;
-  readonly leftPadding: number;
-  readonly justifyContent?: FlexJustification;
-  readonly alignItems?: FlexAlignment;
+  readonly dir?: FlexDirection | null;
+  readonly rowGap?: number | null;
+  readonly columnGap?: number | null;
+  readonly topPadding?: number | null;
+  readonly rightPadding?: number | null;
+  readonly bottomPadding?: number | null;
+  readonly leftPadding?: number | null;
+  readonly justifyContent?: FlexJustification | null;
+  readonly alignItems?: FlexAlignment | null;
 }
 
 export interface PenpotSourceLayoutChild {
@@ -97,7 +97,7 @@ export interface PenpotSourceShape {
   readonly shadows?: readonly PenpotSourceShadow[];
   readonly children?: readonly PenpotSourceShape[];
   readonly clipContent?: boolean;
-  readonly flex?: PenpotSourceFlexLayout;
+  readonly flex?: PenpotSourceFlexLayout | null;
   readonly layoutChild?: PenpotSourceLayoutChild | null;
   readonly characters?: string;
   readonly fontFamily?: string;
@@ -170,7 +170,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
         ...base,
         kind: "board",
         clipContent: shape.clipContent ?? false,
-        ...(shape.flex === undefined ? {} : { flex: flexOf(shape.flex) }),
+        ...(shape.flex == null ? {} : { flex: flexOf(shape.flex) }),
         children: extractChildren(shape, context),
       } satisfies BoardNode;
       break;
@@ -220,17 +220,17 @@ function extractChildren(shape: PenpotSourceShape, context: ExtractionContext): 
 
 function flexOf(flex: PenpotSourceFlexLayout): FlexLayout {
   return {
-    direction: flex.dir,
-    rowGap: nonNegativeDimension(flex.rowGap),
-    columnGap: nonNegativeDimension(flex.columnGap),
+    direction: flex.dir ?? "column",
+    rowGap: nonNegativeDimension(flex.rowGap ?? 0),
+    columnGap: nonNegativeDimension(flex.columnGap ?? 0),
     padding: {
-      top: nonNegativeDimension(flex.topPadding),
-      right: nonNegativeDimension(flex.rightPadding),
-      bottom: nonNegativeDimension(flex.bottomPadding),
-      left: nonNegativeDimension(flex.leftPadding),
+      top: nonNegativeDimension(flex.topPadding ?? 0),
+      right: nonNegativeDimension(flex.rightPadding ?? 0),
+      bottom: nonNegativeDimension(flex.bottomPadding ?? 0),
+      left: nonNegativeDimension(flex.leftPadding ?? 0),
     },
-    ...(flex.justifyContent === undefined ? {} : { justifyContent: flex.justifyContent }),
-    ...(flex.alignItems === undefined ? {} : { alignItems: flex.alignItems }),
+    ...(flex.justifyContent == null ? {} : { justifyContent: flex.justifyContent }),
+    ...(flex.alignItems == null ? {} : { alignItems: flex.alignItems }),
   };
 }
 
@@ -243,12 +243,14 @@ function layoutChildOf(layoutChild: PenpotSourceLayoutChild): LayoutChild {
 }
 
 function geometryOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): NodeGeometry {
-  const x = finiteCoordinate(shape.parentX ?? shape.x);
-  const y = finiteCoordinate(shape.parentY ?? shape.y);
+  const rawX = finiteCoordinate(shape.x);
+  const rawY = finiteCoordinate(shape.y);
+  const x = finiteCoordinate(shape.parentX ?? rawX);
+  const y = finiteCoordinate(shape.parentY ?? rawY);
   const width = nonNegativeDimension(shape.width);
   const height = nonNegativeDimension(shape.height);
 
-  if (x !== shape.x || y !== shape.y || width !== shape.width || height !== shape.height) {
+  if (rawX !== shape.x || rawY !== shape.y || width !== shape.width || height !== shape.height) {
     diagnostics.push({
       severity: "warning",
       sourceId: shape.id,
@@ -282,7 +284,7 @@ function boundsOf(children: readonly IrNode[]): NodeGeometry {
 
 function styleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], context: ExtractionContext): NodeStyle {
   const fill = solidFillOf(shape.fills, shape.id, diagnostics);
-  const image = imageFillOf(shape.fills, shape.id, diagnostics, context);
+  const image = imageFillOf(shape.fills, shape.type === "image", shape.id, diagnostics, context);
   const border = solidBorderOf(shape.strokes, shape.id, diagnostics);
   const radius = cornerRadiiOf(shape);
   const shadows = dropShadowsOf(shape.shadows, shape.id, diagnostics);
@@ -381,6 +383,7 @@ function normalizedOpacity(
 
 function imageFillOf(
   fills: PenpotSourceShape["fills"],
+  isImageShape: boolean,
   sourceId: string,
   diagnostics: Diagnostic[],
   context: ExtractionContext,
@@ -389,8 +392,17 @@ function imageFillOf(
     return undefined;
   }
 
-  const imageFill = fills.find((fill) => "fillImage" in fill);
+  const imageFill = fills.find((fill) => fill.fillImage != null);
   if (imageFill === undefined) {
+    if (!isImageShape) {
+      return undefined;
+    }
+    diagnostics.push({
+      severity: "warning",
+      sourceId,
+      code: "unusable-image-id",
+      message: "Image data has no stable usable ID, so no Flutter asset reference was generated.",
+    });
     return undefined;
   }
   const image = imageFill.fillImage;

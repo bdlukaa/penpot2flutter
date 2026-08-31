@@ -336,7 +336,12 @@ function toPascalCase(value: string): string {
 }
 
 function number(value: number): string {
-  return Number.isInteger(value) ? String(value) : String(value);
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  const rounded = Number(value.toFixed(2));
+  return Object.is(rounded, -0) ? "0" : String(rounded);
 }
 
 function indent(depth: number): string {

@@ -76,7 +76,7 @@ test("uses parent coordinates, default opacity, and Penpot line-height factors",
   assert.equal(result.root.style.opacity, 1);
   assert.equal(result.root.kind, "board");
   assert.deepEqual(result.root.children[0].geometry, { x: 5, y: 7, width: 312, height: 28 });
-  assert.match(dart, /height: 1\.1666666666666667,/);
+  assert.match(dart, /height: 1\.17,/);
 });
 
 test("clamps invalid source dimensions and reports a geometry warning", () => {
@@ -149,6 +149,27 @@ test("reports unsupported shapes rather than silently dropping them", () => {
 
   assert.equal(result.root.kind, "unsupported");
   assert.deepEqual(result.diagnostics.map((diagnostic) => diagnostic.code), ["unsupported-shape"]);
+});
+
+test("accepts null and malformed Penpot flex values", () => {
+  const result = extractSelection([{
+    id: "plain-board",
+    name: "Plain board",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    visible: true,
+    flex: { dir: null, rowGap: null, columnGap: null, topPadding: null, rightPadding: null, bottomPadding: null, leftPadding: null },
+    layoutChild: null,
+    children: [],
+  }]);
+
+  assert.equal(result.root.kind, "board");
+  assert.equal(result.root.flex?.direction, "column");
+  assert.deepEqual(result.root.flex?.padding, { top: 0, right: 0, bottom: 0, left: 0 });
+  assert.equal(result.root.layoutChild, undefined);
 });
 
 test("accepts Penpot null layoutChild values", () => {
@@ -313,7 +334,7 @@ test("warns instead of throwing when an image fill is null", () => {
   const result = extractSelection([{
     id: "null-image-fill",
     name: "Null image fill",
-    type: "rectangle",
+    type: "image",
     x: 0,
     y: 0,
     width: 100,
@@ -386,6 +407,24 @@ test("generates a column with row gaps without Stack fallback", () => {
   assert.match(dart, /SizedBox\(height: 10\)/);
   assert.match(dart, /width: double\.infinity,/);
   assert.doesNotMatch(dart, /Stack\(/);
+});
+
+test("normalizes long floating-point values in generated Dart", () => {
+  const result = extractSelection([{
+    id: "fractional-card",
+    name: "Fractional card",
+    type: "rectangle",
+    x: 0,
+    y: 0,
+    width: 190.00000000000003,
+    height: 230.68965517218118,
+    visible: true,
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.match(dart, /width: 190,/);
+  assert.match(dart, /height: 230\.69,/);
+  assert.doesNotMatch(dart, /230\.68965517218118/);
 });
 
 test("generates deterministic compilable Flutter widget source", () => {
