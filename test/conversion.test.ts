@@ -258,10 +258,10 @@ test("extracts and generates flex board layouts", () => {
   });
   assert.match(dart, /Stack\(/);
   assert.match(dart, /Positioned\.fill\(/);
-  assert.match(dart, /EdgeInsets\.only\(top: 8, right: 20, bottom: 12, left: 24\)/);
+  assert.match(dart, /EdgeInsetsDirectional\.only\(top: 8, start: 24, end: 20, bottom: 12\)/);
   assert.match(dart, /Row\(\n\s*textDirection: TextDirection\.rtl,/);
   assert.match(dart, /mainAxisAlignment: MainAxisAlignment\.spaceBetween,/);
-  assert.match(dart, /crossAxisAlignment: CrossAxisAlignment\.center,/);
+  assert.doesNotMatch(dart, /crossAxisAlignment:/);
   assert.match(dart, /Expanded\(/);
   assert.match(dart, /height: double\.infinity,/);
   assert.match(dart, /Positioned\(\n\s*left: 320,/);
@@ -404,8 +404,9 @@ test("generates a column with row gaps without Stack fallback", () => {
   const dart = generateFlutterWidget(result.root);
 
   assert.match(dart, /Column\(/);
-  assert.match(dart, /SizedBox\(height: 10\)/);
+  assert.match(dart, /spacing: 10,/);
   assert.match(dart, /width: double\.infinity,/);
+  assert.doesNotMatch(dart, /SizedBox\(height: 10\)/);
   assert.doesNotMatch(dart, /Stack\(/);
 });
 

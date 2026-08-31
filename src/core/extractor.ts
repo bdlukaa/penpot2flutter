@@ -194,6 +194,7 @@ function extractSyntheticSelection(selection: readonly PenpotSourceShape[], cont
   return {
     kind: "group",
     sourceId: "selection",
+    sourceName: "selection",
     name: "selection",
     geometry: { x: 0, y: 0, width: bounds.width, height: bounds.height },
     visible: true,
@@ -212,6 +213,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
   const transform = transformOf(shape, diagnostics);
   const base = {
     sourceId: sourceIdOf(shape.id),
+    sourceName: sourceNameOf(shape.name, sourceIdOf(shape.id)),
     name: normalizeName(shape.name, sourceIdOf(shape.id)),
     geometry: geometryOf(shape, diagnostics),
     visible: shape.visible !== false,
@@ -564,6 +566,10 @@ function normalizeHexColor(value: string): string | undefined {
 
 function sourceIdOf(value: unknown): string {
   return typeof value === "string" && value.length > 0 ? value : "unknown";
+}
+
+function sourceNameOf(name: unknown, sourceId: string): string {
+  return typeof name === "string" && name.trim() !== "" ? name : `node-${sourceId}`;
 }
 
 function normalizeName(name: string, sourceId: string): string {

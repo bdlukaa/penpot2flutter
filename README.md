@@ -18,7 +18,7 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Selection changes, empty selection state, and multiple roots through a synthetic parent
 - Boards, groups, rectangles, ellipses, images, and text
 - Nested children and source/z-order preservation
-- Flex rows and columns, reverse direction, padding, gaps, alignment, fill sizing, and absolute children
+- Flex rows and columns, reverse direction, spacing (`Row`/`Column.spacing`), alignment, fill sizing, and absolute children
 - Simple grids containing only flex tracks and unspanned auto-positioned children, generated as `GridView.count`
 - Stack/`Positioned` fallback for absolute containers and unsupported grid semantics
 - Solid fills, linear gradients, radial gradients, image fills, opacity, solid borders, corner radii, and drop shadows
@@ -28,6 +28,15 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Deterministic Flutter asset path and `pubspec.yaml` asset snippet generation
 - Preview syntax highlighting, Copy Dart, and Download Dart actions
 - Node-associated warnings for unsupported or approximate conversion
+- A `// layer-name` comment above every generated widget for traceability back to the Penpot layer
+
+## Idiomatic Flutter output
+
+Generated code follows Flutter conventions rather than pixel-positioning every node:
+
+- Flex gaps use `Row.spacing`/`Column.spacing` instead of interleaved `SizedBox` spacers.
+- Padding uses `EdgeInsetsDirectional.only(...)` for RTL/LTR-aware layout.
+- Default-valued properties are omitted (`mainAxisAlignment: start`, `crossAxisAlignment: center`, empty `BoxDecoration`, zero padding, `clipBehavior: Clip.none`, and zero grid spacing).
 
 ## Intentional fallbacks and limitations
 

@@ -1,4 +1,4 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, GradientFill, GridLayout, GroupNode, IrNode, NodeStyle, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, EdgeInsets, GradientFill, GridLayout, GroupNode, IrNode, NodeStyle, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 
 export function generatePubspecAssetsSnippet(assets: readonly AssetManifestEntry[]): string {
   return assets.length === 0 ? "" : ["flutter:", "  assets:", ...assets.map((asset) => `    - ${asset.path}`), ""].join("\n");
@@ -15,6 +15,7 @@ export function generateFlutterWidget(root: IrNode): string {
     "",
     "  @override",
     "  Widget build(BuildContext context) {",
+    `    // ${root.sourceName}`,
     `    return ${renderNode(root, 2, false)};`,
     "  }",
     "}",
@@ -100,8 +101,8 @@ function renderContainer(node: BoardNode, depth: number, clipBehavior: string): 
   const lines = ["Container(", `${indent(depth + 1)}width: ${number(node.geometry.width)},`, `${indent(depth + 1)}height: ${number(node.geometry.height)},`];
   const decoration = renderDecoration(node.style, depth + 1);
   if (decoration !== undefined) lines.push(`${indent(depth + 1)}decoration: ${decoration},`);
+  if (clipBehavior !== "Clip.none") lines.push(`${indent(depth + 1)}clipBehavior: ${clipBehavior},`);
   lines.push(
-    `${indent(depth + 1)}clipBehavior: ${clipBehavior},`,
     `${indent(depth + 1)}child: ${node.flex !== undefined ? renderFlex(node, depth + 1, clipBehavior) : node.grid?.supported === true ? renderGrid(node.grid, node.children, depth + 1) : renderStack(node.children, depth + 1, clipBehavior)},`,
     `${indent(depth)})`,
   );
@@ -111,9 +112,9 @@ function renderContainer(node: BoardNode, depth: number, clipBehavior: string): 
 function renderStack(children: readonly IrNode[], depth: number, clipBehavior: string): string {
   return [
     "Stack(",
-    `${indent(depth + 1)}clipBehavior: ${clipBehavior},`,
+    ...(clipBehavior === "Clip.hardEdge" ? [] : [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`]),
     `${indent(depth + 1)}children: [`,
-    ...children.map((child) => `${indent(depth + 2)}${renderNode(child, depth + 2, true)},`),
+    ...children.map((child) => `${commentFor(child, depth + 2, renderNode(child, depth + 2, true))},`),
     `${indent(depth + 1)}],`,
     `${indent(depth)})`,
   ].join("\n");
@@ -123,12 +124,12 @@ function renderGrid(grid: GridLayout, children: readonly IrNode[], depth: number
   return [
     "GridView.count(",
     `${indent(depth + 1)}crossAxisCount: ${grid.columns.length},`,
-    `${indent(depth + 1)}mainAxisSpacing: ${number(grid.rowGap)},`,
-    `${indent(depth + 1)}crossAxisSpacing: ${number(grid.columnGap)},`,
-    `${indent(depth + 1)}padding: EdgeInsets.only(top: ${number(grid.padding.top)}, right: ${number(grid.padding.right)}, bottom: ${number(grid.padding.bottom)}, left: ${number(grid.padding.left)}),`,
+    ...(grid.rowGap === 0 ? [] : [`${indent(depth + 1)}mainAxisSpacing: ${number(grid.rowGap)},`]),
+    ...(grid.columnGap === 0 ? [] : [`${indent(depth + 1)}crossAxisSpacing: ${number(grid.columnGap)},`]),
+    ...(paddingIsZero(grid.padding) ? [] : [`${indent(depth + 1)}padding: ${edgeInsetsDirectional(grid.padding)},`]),
     `${indent(depth + 1)}physics: const NeverScrollableScrollPhysics(),`,
     `${indent(depth + 1)}children: [`,
-    ...children.map((child) => `${indent(depth + 2)}${renderNode(child, depth + 2, false)},`),
+    ...children.map((child) => `${commentFor(child, depth + 2, renderNode(child, depth + 2, false))},`),
     `${indent(depth + 1)}],`,
     `${indent(depth)})`,
   ].join("\n");
@@ -141,12 +142,12 @@ function renderFlex(node: BoardNode, depth: number, clipBehavior: string): strin
   if (absoluteChildren.length === 0) return flex;
   return [
     "Stack(",
-    `${indent(depth + 1)}clipBehavior: ${clipBehavior},`,
+    ...(clipBehavior === "Clip.hardEdge" ? [] : [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`]),
     `${indent(depth + 1)}children: [`,
     `${indent(depth + 2)}Positioned.fill(`,
     `${indent(depth + 3)}child: ${flex},`,
     `${indent(depth + 2)}),`,
-    ...absoluteChildren.map((child) => `${indent(depth + 2)}${renderNode(child, depth + 2, true)},`),
+    ...absoluteChildren.map((child) => `${commentFor(child, depth + 2, renderNode(child, depth + 2, true))},`),
     `${indent(depth + 1)}],`,
     `${indent(depth)})`,
   ].join("\n");
@@ -157,25 +158,25 @@ function renderFlexFlow(node: BoardNode, children: readonly IrNode[], depth: num
   if (flex === undefined) return renderStack(node.children, depth, node.clipContent ? "Clip.hardEdge" : "Clip.none");
   const isRow = flex.direction === "row" || flex.direction === "row-reverse";
   const gap = isRow ? flex.columnGap : flex.rowGap;
-  const renderedChildren = children.flatMap((child, index) => [
-    ...(index === 0 ? [] : [`SizedBox(${isRow ? "width" : "height"}: ${number(gap)})`]),
-    renderFlexChild(child, depth + 3, isRow),
-  ]);
-  const layout = [
+  const main = mainAxisAlignment(flex.justifyContent);
+  const cross = crossAxisAlignment(flex.alignItems);
+  const flow = [
     `${isRow ? "Row" : "Column"}(`,
-    ...(flex.direction === "row-reverse" ? [`${indent(depth + 2)}textDirection: TextDirection.rtl,`] : []),
-    ...(flex.direction === "column-reverse" ? [`${indent(depth + 2)}verticalDirection: VerticalDirection.up,`] : []),
-    `${indent(depth + 2)}mainAxisAlignment: MainAxisAlignment.${mainAxisAlignment(flex.justifyContent)},`,
-    `${indent(depth + 2)}crossAxisAlignment: CrossAxisAlignment.${crossAxisAlignment(flex.alignItems)},`,
-    `${indent(depth + 2)}children: [`,
-    ...renderedChildren.map((child) => `${indent(depth + 3)}${child},`),
-    `${indent(depth + 2)}],`,
-    `${indent(depth + 1)}),`,
+    ...(flex.direction === "row-reverse" ? [`${indent(depth + 1)}textDirection: TextDirection.rtl,`] : []),
+    ...(flex.direction === "column-reverse" ? [`${indent(depth + 1)}verticalDirection: VerticalDirection.up,`] : []),
+    ...(gap === 0 ? [] : [`${indent(depth + 1)}spacing: ${number(gap)},`]),
+    ...(main === "start" ? [] : [`${indent(depth + 1)}mainAxisAlignment: MainAxisAlignment.${main},`]),
+    ...(cross === "center" ? [] : [`${indent(depth + 1)}crossAxisAlignment: CrossAxisAlignment.${cross},`]),
+    `${indent(depth + 1)}children: [`,
+    ...children.map((child) => `${commentFor(child, depth + 2, renderFlexChild(child, depth + 2, isRow))},`),
+    `${indent(depth + 1)}],`,
+    `${indent(depth)})`,
   ];
+  if (paddingIsZero(flex.padding)) return flow.join("\n");
   return [
     "Padding(",
-    `${indent(depth + 1)}padding: EdgeInsets.only(top: ${number(flex.padding.top)}, right: ${number(flex.padding.right)}, bottom: ${number(flex.padding.bottom)}, left: ${number(flex.padding.left)}),`,
-    `${indent(depth + 1)}child: ${layout.join("\n")}`,
+    `${indent(depth + 1)}padding: ${edgeInsetsDirectional(flex.padding)},`,
+    `${indent(depth + 1)}child: ${flow.join("\n")},`,
     `${indent(depth)})`,
   ].join("\n");
 }
@@ -219,7 +220,7 @@ function renderGroup(node: GroupNode, depth: number): string {
     `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
     `${indent(depth + 1)}child: Stack(`,
     `${indent(depth + 2)}children: [`,
-    ...node.children.map((child) => `${indent(depth + 3)}${renderNode(child, depth + 3, true)},`),
+    ...node.children.map((child) => `${commentFor(child, depth + 3, renderNode(child, depth + 3, true))},`),
     `${indent(depth + 2)}],`,
     `${indent(depth + 1)}),`,
     `${indent(depth)})`,
@@ -228,12 +229,22 @@ function renderGroup(node: GroupNode, depth: number): string {
 
 function renderShape(style: NodeStyle, width: number, height: number, depth: number, ellipse: boolean): string {
   const decoration = renderDecoration(style, depth + (ellipse ? 3 : 2));
-  const child = decoration === undefined
-    ? "const SizedBox.expand()"
-    : ["DecoratedBox(", `${indent(depth + (ellipse ? 3 : 2))}decoration: ${decoration},`, `${indent(depth + (ellipse ? 2 : 1))})`].join("\n");
-  const content = !ellipse
-    ? child
-    : ["ClipOval(", `${indent(depth + 2)}child: ${child},`, `${indent(depth + 1)})`].join("\n");
+  if (decoration === undefined) {
+    return [
+      "SizedBox(",
+      `${indent(depth + 1)}width: ${number(width)},`,
+      `${indent(depth + 1)}height: ${number(height)},`,
+      `${indent(depth)})`,
+    ].join("\n");
+  }
+  const decorated = [
+    "DecoratedBox(",
+    `${indent(depth + (ellipse ? 3 : 2))}decoration: ${decoration},`,
+    `${indent(depth + (ellipse ? 2 : 1))})`,
+  ].join("\n");
+  const content = ellipse
+    ? ["ClipOval(", `${indent(depth + 2)}child: ${decorated},`, `${indent(depth + 1)})`].join("\n")
+    : decorated;
   return [
     "SizedBox(",
     `${indent(depth + 1)}width: ${number(width)},`,
@@ -302,14 +313,17 @@ function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, sty
 }
 
 function renderDecoration(style: NodeStyle, depth: number): string | undefined {
-  if (style.fill === undefined && style.gradient === undefined && style.image === undefined && style.border === undefined && style.radius === undefined && style.shadows === undefined) return undefined;
+  const border = style.border !== undefined && style.border.width > 0 ? style.border : undefined;
+  const radius = style.radius !== undefined && [style.radius.topLeft, style.radius.topRight, style.radius.bottomRight, style.radius.bottomLeft].some((value) => value > 0) ? style.radius : undefined;
+  const shadows = style.shadows !== undefined && style.shadows.length > 0 ? style.shadows : undefined;
+  if (style.fill === undefined && style.gradient === undefined && style.image === undefined && border === undefined && radius === undefined && shadows === undefined) return undefined;
   const properties = [
     ...(style.fill === undefined ? [] : [`color: ${dartColor(style.fill.color, style.fill.opacity)}`]),
     ...(style.gradient === undefined ? [] : [`gradient: ${renderGradient(style.gradient, depth + 1)}`]),
     ...(style.image === undefined ? [] : [`image: DecorationImage(\n${indent(depth + 2)}image: AssetImage('${escapeDart(style.image.assetPath)}'),\n${indent(depth + 2)}fit: BoxFit.${style.image.keepAspectRatio ? "cover" : "fill"},\n${indent(depth + 1)})`]),
-    ...(style.border === undefined ? [] : [`border: Border.all(color: ${dartColor(style.border.color, style.border.opacity)}, width: ${number(style.border.width)})`]),
-    ...(style.radius === undefined ? [] : [`borderRadius: ${borderRadius(style.radius, depth + 2)}`]),
-    ...(style.shadows === undefined ? [] : [`boxShadow: [\n${style.shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`]),
+    ...(border === undefined ? [] : [`border: Border.all(color: ${dartColor(border.color, border.opacity)}, width: ${number(border.width)})`]),
+    ...(radius === undefined ? [] : [`borderRadius: ${borderRadius(radius, depth + 2)}`]),
+    ...(shadows === undefined ? [] : [`boxShadow: [\n${shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`]),
   ];
   return properties.length === 1 && !properties[0].includes("\n")
     ? `const BoxDecoration(${properties[0]})`
@@ -333,6 +347,18 @@ function borderRadius(radius: NonNullable<NodeStyle["radius"]>, depth: number): 
 
 function renderShadow(shadow: NonNullable<NodeStyle["shadows"]>[number], depth: number): string {
   return ["BoxShadow(", `${indent(depth)}color: ${dartColor(shadow.color, shadow.opacity)},`, `${indent(depth)}offset: Offset(${number(shadow.offsetX)}, ${number(shadow.offsetY)}),`, `${indent(depth)}blurRadius: ${number(shadow.blur)},`, `${indent(depth)}spreadRadius: ${number(shadow.spread)},`, `${indent(depth - 1)})`].join("\n");
+}
+
+function commentFor(node: IrNode, depth: number, rendered: string): string {
+  return `${indent(depth)}// ${node.sourceName}\n${indent(depth)}${rendered}`;
+}
+
+function paddingIsZero(padding: EdgeInsets): boolean {
+  return padding.top === 0 && padding.right === 0 && padding.bottom === 0 && padding.left === 0;
+}
+
+function edgeInsetsDirectional(padding: EdgeInsets): string {
+  return `EdgeInsetsDirectional.only(top: ${number(padding.top)}, start: ${number(padding.left)}, end: ${number(padding.right)}, bottom: ${number(padding.bottom)})`;
 }
 
 function dartColor(hex: string, opacity: number): string {

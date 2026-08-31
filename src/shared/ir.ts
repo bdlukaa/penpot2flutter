@@ -147,6 +147,7 @@ export interface LayoutChild {
 
 export interface BaseNode {
   readonly sourceId: string;
+  readonly sourceName: string;
   readonly name: string;
   readonly geometry: NodeGeometry;
   readonly visible: boolean;
