@@ -525,3 +525,116 @@ test("extracts and generates solid strokes, per-corner radii, and drop shadows",
   execFileSync("dart", ["format", styledDartPath.pathname]);
   assert.equal(dart, readFileSync(styledDartPath, "utf8"));
 });
+
+test("extracts and generates ellipses, gradients, and transforms", () => {
+  const result = extractSelection([{
+    id: "gradient-orb",
+    name: "Gradient orb",
+    type: "ellipse",
+    x: 0,
+    y: 0,
+    width: 80,
+    height: 48,
+    visible: true,
+    rotation: 45,
+    flipX: true,
+    fills: [{
+      fillColorGradient: {
+        type: "linear",
+        startX: 0,
+        startY: 0,
+        endX: 1,
+        endY: 1,
+        width: 1,
+        stops: [
+          { color: "#ff0000", opacity: 1, offset: 0 },
+          { color: "#0000ff", opacity: 0.5, offset: 1 },
+        ],
+      },
+    }],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.equal(result.root.kind, "ellipse");
+  assert.equal(result.root.style.gradient?.type, "linear");
+  assert.deepEqual(result.root.transform, { rotation: 45, flipX: true, flipY: false });
+  assert.match(dart, /import 'dart:math' as math;/);
+  assert.match(dart, /Transform\.rotate\(\n\s*angle: 45 \* math\.pi \/ 180,/);
+  assert.match(dart, /Matrix4\.diagonal3Values\(-1, 1, 1\)/);
+  assert.match(dart, /ClipOval\(/);
+  assert.match(dart, /LinearGradient\(/);
+  assert.match(dart, /Color\(0x80?0000ff\)/);
+
+  const transformedDartPath = new URL("../transformed_generated_widget.dart", import.meta.url);
+  writeFileSync(transformedDartPath, dart);
+  execFileSync("dart", ["format", transformedDartPath.pathname]);
+  assert.equal(dart, readFileSync(transformedDartPath, "utf8"));
+});
+
+test("generates a simple grid and falls back with diagnostics for unsupported grid semantics", () => {
+  const supported = extractSelection([{
+    id: "catalogue",
+    name: "Catalogue",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 240,
+    height: 120,
+    visible: true,
+    grid: {
+      dir: "row",
+      rows: [{ type: "flex", value: 1 }],
+      columns: [{ type: "flex", value: 1 }, { type: "flex", value: 1 }],
+      rowGap: 8,
+      columnGap: 12,
+      topPadding: 4,
+      rightPadding: 4,
+      bottomPadding: 4,
+      leftPadding: 4,
+    },
+    children: [
+      { id: "card-one", name: "Card one", type: "rectangle", x: 0, y: 0, width: 100, height: 100, visible: true },
+      { id: "card-two", name: "Card two", type: "rectangle", x: 120, y: 0, width: 100, height: 100, visible: true },
+    ],
+  }]);
+  const fallback = extractSelection([{
+    id: "spanning-grid",
+    name: "Spanning grid",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 240,
+    height: 120,
+    visible: true,
+    grid: {
+      dir: "row",
+      rows: [{ type: "fixed", value: 60 }],
+      columns: [{ type: "flex", value: 1 }, { type: "flex", value: 1 }],
+      rowGap: 0,
+      columnGap: 0,
+      topPadding: 0,
+      rightPadding: 0,
+      bottomPadding: 0,
+      leftPadding: 0,
+    },
+    children: [{
+      id: "spanning-card",
+      name: "Spanning card",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 120,
+      height: 60,
+      visible: true,
+      layoutCell: { row: 0, column: 0, columnSpan: 2, position: "manual" },
+    }],
+  }]);
+
+  assert.equal(supported.root.kind, "board");
+  assert.equal(supported.root.grid?.supported, true);
+  assert.match(generateFlutterWidget(supported.root), /GridView\.count\(/);
+  assert.equal(fallback.root.kind, "board");
+  assert.equal(fallback.root.grid?.supported, false);
+  assert.match(fallback.diagnostics.map((diagnostic) => diagnostic.code).join(","), /unsupported-grid/);
+  assert.match(generateFlutterWidget(fallback.root), /Stack\(/);
+});

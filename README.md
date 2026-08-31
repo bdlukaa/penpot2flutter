@@ -1,25 +1,51 @@
 # Penpot to Flutter
 
-A Penpot plugin that generates readable Flutter widget source from the current selection.
+A read-only Penpot plugin that converts the current selection into deterministic, formatted Flutter/Dart widget source.
 
-## Current slice
-
-This first vertical slice implements the compiler boundary:
+## Compiler pipeline
 
 ```text
-Penpot selection -> serializable IR -> Dart widget source -> iframe preview
+Penpot selection
+  -> normalized serializable IR
+  -> Flutter widget generator
+  -> formatted Dart preview, copy, or source download
 ```
 
-Supported input:
+The generator never consumes Penpot objects directly. `src/plugin.ts` is the only Penpot API boundary; the UI receives typed, JSON-serializable conversion messages.
 
-- a selected board, rectangle, or text layer;
-- nested board/group children, preserving their source order;
-- solid `#RRGGBB` fills and fill opacity;
-- board/shape geometry through a faithful `Stack`/`Positioned` fallback;
-- common text content, font family, size, weight, line height, letter spacing, and alignment;
-- selection changes, an empty selection state, multiple selection roots via a synthetic group, and copying generated Dart.
+## Implemented conversion scope
 
-The plugin only requests `content:read`. It neither changes Penpot content nor downloads project files.
+- Selection changes, empty selection state, and multiple roots through a synthetic parent
+- Boards, groups, rectangles, ellipses, images, and text
+- Nested children and source/z-order preservation
+- Flex rows and columns, reverse direction, padding, gaps, alignment, fill sizing, and absolute children
+- Simple grids containing only flex tracks and unspanned auto-positioned children, generated as `GridView.count`
+- Stack/`Positioned` fallback for absolute containers and unsupported grid semantics
+- Solid fills, linear gradients, radial gradients, image fills, opacity, solid borders, corner radii, and drop shadows
+- Board clipping, rotation, and horizontal/vertical flips
+- Text content, family, size, weight, line height, letter spacing, and alignment
+- Deterministic Flutter asset path and `pubspec.yaml` asset snippet generation
+- Preview syntax highlighting, Copy Dart, and Download Dart actions
+- Node-associated warnings for unsupported or approximate conversion
+
+## Intentional fallbacks and limitations
+
+- A grid containing fixed, percent, or auto tracks; spans; or manual/area placement falls back to `Stack`/`Positioned` and reports an `unsupported-grid` warning. This preserves placement instead of guessing incorrect Flutter grid constraints.
+- Mixed text runs are reported and use the common text style. `RichText` conversion is not available yet.
+- Inner shadows, non-solid strokes, unsupported colors, malformed geometry, and malformed image IDs report warnings.
+- Vector/path shapes are currently omitted with an explicit warning; SVG export is not implemented.
+- Asset references and the pubspec snippet are generated, but original image binary files are not downloaded. The plugin does not claim to export an image bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
+- Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
+
+## Permissions
+
+The manifest requests only:
+
+```json
+"permissions": ["content:read"]
+```
+
+The plugin reads selected content but does not modify Penpot documents. Download Dart uses a browser-generated text file and requires no Penpot content-write permission.
 
 ## Development
 
@@ -30,24 +56,35 @@ npm run build
 npm run dev
 ```
 
-`npm test` checks source-to-IR extraction, diagnostics, deterministic IR-to-Dart generation, and formats the emitted Dart with the installed Dart SDK. `npm run build` produces the installable plugin in `dist/`.
+- `npm test` validates source-like fixtures -> IR -> deterministic Dart and verifies representative generated output against `dart format` when the Dart SDK is available.
+- `npm run build` runs strict TypeScript checking and produces the plugin in `dist/`.
+- `npm run dev` hosts the manifest for local Penpot installation.
 
-To try the plugin locally, start the dev server and install `http://localhost:4400/manifest.json` through Penpot’s Plugin Manager. The Vite server and preview server explicitly enable CORS and private-network preflight access because `design.penpot.app` is an HTTPS origin. Restart the existing dev process after changing `vite.config.ts`; only one process can listen on port 4400. If the hosted Penpot browser cannot access localhost because of its network/browser policy, expose port 4400 through an HTTPS tunnel or deploy `dist/` to an HTTPS host instead.
-
-The official starter convention exposes `manifest.json` at the server root and emits `plugin.js` next to `index.html`.
+Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while the dev server is running. If hosted Penpot cannot access localhost due to browser/network policy, expose it through an HTTPS tunnel or deploy `dist/` to an HTTPS host.
 
 ## Manual verification
 
-1. Create a 360×240 Penpot board with a filled rectangle and a text layer.
+1. Create a board containing a flex row, a gradient rectangle, an ellipse, text, and an image fill.
 2. Select the board and open **Penpot to Flutter**.
-3. Confirm the preview contains a `StatelessWidget`, a `Container`, `Positioned` children, the rectangle color, and the text style.
-4. Change selection and confirm the preview updates. Clear the selection and confirm the empty state appears.
-5. Use **Copy Dart** and paste the result into a Flutter project.
+3. Confirm the preview uses `Row`/`Column` for flex, `LinearGradient` or `RadialGradient`, `ClipOval` for ellipses, and `Transform.rotate` for rotated layers.
+4. Create a simple all-flex grid and confirm it emits `GridView.count`.
+5. Add a spanning or fixed-track grid child and confirm a warning is shown and the generated widget uses a `Stack` fallback.
+6. Confirm **Copy Dart** copies the unmodified source and **Download Dart** downloads `generated_widget.dart`.
+7. For images, add the displayed `pubspec.yaml` snippet and place the corresponding image files at the generated asset paths before running the Flutter app.
 
-## Known limitations
+## Project structure
 
-This is deliberately the smallest end-to-end slice. It uses absolute `Stack` layout until flex/grid semantics are implemented. It does not yet convert padding/gaps, constraints/fill sizing, radius/borders/shadows, gradients, ellipses, clipping, transforms, images/assets, rich text ranges, or vectors. Unsupported shapes and fills produce visible warnings rather than being silently ignored. Asset export and download bundles are deferred, so no download permission is requested.
+```text
+src/
+  plugin.ts                  Penpot execution boundary
+  main.ts                    Iframe UI and code preview
+  core/extractor.ts          Penpot-like data -> normalized IR
+  core/flutter-generator.ts  IR -> Dart source
+  shared/ir.ts               Serializable compiler IR
+  shared/messages.ts         Typed UI/plugin protocol
+  shared/version.ts          UI version indicator
+```
 
 ## Next milestone
 
-Add flex extraction and Flutter `Row`/`Column` generation, then map padding, gaps, child sizing, and basic decoration while retaining the IR and generator boundary.
+The remaining post-MVP work is rich text runs, actual image/vector export with a verified archive/download workflow, design tokens, components/variants, responsive inference, and project-wide export.

@@ -22,7 +22,10 @@ app.innerHTML = `
   <section id="result" hidden>
     <div class="toolbar">
       <strong id="selection-summary"></strong>
-      <button id="copy" type="button" disabled>Copy Dart</button>
+      <div class="toolbar-actions">
+        <button id="copy" type="button" disabled>Copy Dart</button>
+        <button id="download" type="button" disabled>Download Dart</button>
+      </div>
     </div>
     <pre id="dart-preview" class="code-preview" aria-label="Generated Dart"><code></code></pre>
     <textarea id="dart" class="copy-source" readonly hidden spellcheck="false" aria-label="Generated Dart"></textarea>
@@ -44,6 +47,7 @@ const summary = requiredElement<HTMLElement>("selection-summary");
 const dart = requiredElement<HTMLTextAreaElement>("dart");
 const dartPreview = requiredElement<HTMLElement>("dart-preview");
 const copy = requiredElement<HTMLButtonElement>("copy");
+const download = requiredElement<HTMLButtonElement>("download");
 const assets = requiredElement<HTMLElement>("assets");
 const pubspecAssets = requiredElement<HTMLTextAreaElement>("pubspec-assets");
 const diagnostics = requiredElement<HTMLElement>("diagnostics");
@@ -58,6 +62,15 @@ copy.addEventListener("click", async () => {
     dart.select();
     copy.textContent = "Select code to copy";
   }
+});
+
+download.addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([latestDart], { type: "text/x-dart" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "generated_widget.dart";
+  link.click();
+  URL.revokeObjectURL(url);
 });
 
 window.addEventListener("message", (event) => {
@@ -87,6 +100,7 @@ function render(message: PluginToUiMessage): void {
   pubspecAssets.value = message.pubspecAssets ?? "";
   copy.disabled = false;
   copy.textContent = "Copy Dart";
+  download.disabled = false;
 
   const warnings = message.result.diagnostics;
   diagnostics.hidden = warnings.length === 0;

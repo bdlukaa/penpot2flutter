@@ -12,6 +12,20 @@ export interface ColorFill {
   readonly opacity: number;
 }
 
+export interface GradientStop extends ColorFill {
+  readonly offset: number;
+}
+
+export interface GradientFill {
+  readonly type: "linear" | "radial";
+  readonly startX: number;
+  readonly startY: number;
+  readonly endX: number;
+  readonly endY: number;
+  readonly width: number;
+  readonly stops: readonly GradientStop[];
+}
+
 export interface ImageFill {
   readonly assetPath: string;
   readonly keepAspectRatio: boolean;
@@ -50,6 +64,7 @@ export interface DropShadow {
 
 export interface NodeStyle {
   readonly fill?: ColorFill;
+  readonly gradient?: GradientFill;
   readonly image?: ImageFill;
   readonly border?: Border;
   readonly radius?: CornerRadii;
@@ -64,6 +79,12 @@ export interface NodeGeometry {
   readonly height: number;
 }
 
+export interface NodeTransform {
+  readonly rotation: number;
+  readonly flipX: boolean;
+  readonly flipY: boolean;
+}
+
 export interface TextStyle {
   readonly fontFamily?: string;
   readonly fontSize?: number;
@@ -75,15 +96,9 @@ export interface TextStyle {
 
 export type FlexDirection = "row" | "row-reverse" | "column" | "column-reverse";
 export type FlexAlignment = "start" | "end" | "center" | "stretch";
-export type FlexJustification =
-  | "start"
-  | "end"
-  | "center"
-  | "space-between"
-  | "space-around"
-  | "space-evenly"
-  | "stretch";
+export type FlexJustification = "start" | "end" | "center" | "space-between" | "space-around" | "space-evenly" | "stretch";
 export type LayoutSizing = "auto" | "fill" | "fix";
+export type GridTrackType = "flex" | "fixed" | "percent" | "auto";
 
 export interface EdgeInsets {
   readonly top: number;
@@ -101,6 +116,21 @@ export interface FlexLayout {
   readonly alignItems?: FlexAlignment;
 }
 
+export interface GridTrack {
+  readonly type: GridTrackType;
+  readonly value?: number;
+}
+
+export interface GridLayout {
+  readonly direction: "row" | "column";
+  readonly rows: readonly GridTrack[];
+  readonly columns: readonly GridTrack[];
+  readonly rowGap: number;
+  readonly columnGap: number;
+  readonly padding: EdgeInsets;
+  readonly supported: boolean;
+}
+
 export interface LayoutChild {
   readonly absolute: boolean;
   readonly horizontalSizing: LayoutSizing;
@@ -113,6 +143,7 @@ export interface BaseNode {
   readonly geometry: NodeGeometry;
   readonly visible: boolean;
   readonly style: NodeStyle;
+  readonly transform?: NodeTransform;
   readonly layoutChild?: LayoutChild;
   readonly diagnostics: readonly Diagnostic[];
 }
@@ -121,6 +152,7 @@ export interface BoardNode extends BaseNode {
   readonly kind: "board";
   readonly clipContent: boolean;
   readonly flex?: FlexLayout;
+  readonly grid?: GridLayout;
   readonly children: readonly IrNode[];
 }
 
@@ -131,6 +163,10 @@ export interface GroupNode extends BaseNode {
 
 export interface RectangleNode extends BaseNode {
   readonly kind: "rectangle";
+}
+
+export interface EllipseNode extends BaseNode {
+  readonly kind: "ellipse";
 }
 
 export interface ImageNode extends BaseNode {
@@ -148,7 +184,7 @@ export interface UnsupportedNode extends BaseNode {
   readonly sourceType: string;
 }
 
-export type IrNode = BoardNode | GroupNode | RectangleNode | ImageNode | TextNode | UnsupportedNode;
+export type IrNode = BoardNode | GroupNode | RectangleNode | EllipseNode | ImageNode | TextNode | UnsupportedNode;
 
 export interface ConversionResult {
   readonly root: IrNode;
