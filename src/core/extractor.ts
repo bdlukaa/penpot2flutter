@@ -24,6 +24,10 @@ import type {
   IrComponentInstanceNode,
   IrComponentParameter,
   IrNode,
+  IrVariantAxis,
+  IrVariantFamily,
+  IrVariantMember,
+  IrVariantSelection,
   LayoutChild,
   LayoutSizing,
   NodeGeometry,
@@ -148,6 +152,19 @@ export interface PenpotComponentSource {
   readonly root: PenpotSourceShape;
 }
 
+export interface PenpotVariantMemberSource extends PenpotComponentSource {
+  readonly values: Readonly<Record<string, string>>;
+}
+
+export interface PenpotVariantFamilySource {
+  readonly id: string;
+  readonly libraryId?: string | null;
+  readonly name: string;
+  readonly properties: readonly string[];
+  readonly members: readonly PenpotVariantMemberSource[];
+  readonly defaultComponentId: string;
+}
+
 export interface PenpotSourceShape {
   readonly id: string;
   readonly name: string;
@@ -211,28 +228,38 @@ interface ComponentBuilder {
   readonly usedParameterNames: Set<string>;
   readonly overridden: Set<string>;
   readonly dependencies: Set<string>;
+  readonly variant?: PenpotVariantFamilySource;
+  readonly variantAxes?: readonly IrVariantAxis[];
+  variantMembers?: readonly IrVariantMember[];
 }
 
 interface ExtractionContext {
   readonly diagnostics: Diagnostic[];
   readonly assets: Map<string, AssetManifestEntry>;
   readonly componentSources: Map<string, PenpotSourceShape>;
+  readonly componentAliases: Map<string, string>;
   readonly components: Map<string, ComponentBuilder>;
   readonly componentOrder: string[];
   readonly usedDartNames: Map<string, string>;
   currentComponent?: string;
 }
 
-export function extractSelection(selection: readonly PenpotSourceShape[], components: readonly PenpotComponentSource[] = []): ConversionResult {
+export function extractSelection(
+  selection: readonly PenpotSourceShape[],
+  components: readonly PenpotComponentSource[] = [],
+  variants: readonly PenpotVariantFamilySource[] = [],
+): ConversionResult {
   const context: ExtractionContext = {
     diagnostics: [],
     assets: new Map<string, AssetManifestEntry>(),
     componentSources: new Map(),
+    componentAliases: new Map(),
     components: new Map(),
     componentOrder: [],
     usedDartNames: new Map(),
   };
 
+  registerVariants(variants, context);
   registerComponents(components, context);
   for (const componentId of context.componentOrder) {
     collectSlots(context.componentSources.get(componentId)!, componentId, context, "");
@@ -241,6 +268,16 @@ export function extractSelection(selection: readonly PenpotSourceShape[], compon
     const builder = context.components.get(componentId)!;
     context.currentComponent = componentId;
     builder.root = extractNode(context.componentSources.get(componentId)!, context, "");
+    if (builder.variant !== undefined && builder.variantAxes !== undefined) {
+      const variantAxes = builder.variantAxes;
+      builder.variantMembers = [...builder.variant.members]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((member) => ({
+          componentId: componentKey(builder.libraryId, member.id),
+          values: variantMemberSelections(member, variantAxes),
+          root: extractNode(canonicalComponentRoot(member.root), context, ""),
+        }));
+    }
     context.currentComponent = undefined;
   }
 
@@ -352,19 +389,62 @@ function pathKey(path: string, index: number): string {
   return path === "" ? String(index) : `${path}.${index}`;
 }
 
+function registerVariants(variants: readonly PenpotVariantFamilySource[], context: ExtractionContext): void {
+  for (const variant of variants) {
+    const libraryId = typeof variant.libraryId === "string" && variant.libraryId !== "" ? variant.libraryId : undefined;
+    const id = componentKey(libraryId, `variant-${variant.id}`);
+    if (context.components.has(id) || variant.members.length === 0) continue;
+    const defaultMember = variant.members.find((member) => member.id === variant.defaultComponentId) ?? [...variant.members].sort((a, b) => a.id.localeCompare(b.id))[0];
+    for (const member of variant.members) {
+      const memberId = componentKey(libraryId, member.id);
+      context.componentAliases.set(memberId, id);
+      context.componentSources.set(memberId, canonicalComponentRoot(member.root));
+    }
+    context.componentSources.set(id, canonicalComponentRoot(defaultMember.root));
+    const sourceName = variant.name.trim() === "" ? `Variant ${variant.id}` : variant.name;
+    const structures = new Set(variant.members.map((member) => shapeStructure(member.root)));
+    if (structures.size > 1) {
+      context.diagnostics.push({ severity: "warning", sourceId: variant.id, code: "VARIANT_STRUCTURE_DIVERGENCE", message: `Variant family "${sourceName}" has structurally different members; generated code switches between private member subtrees.` });
+    }
+    const dartName = dartNameFor(sourceName, id, context, "VARIANT_FAMILY_NAME_COLLISION");
+    context.components.set(id, {
+      id,
+      sourceComponentId: variant.id,
+      sourceName,
+      dartName,
+      ...(libraryId === undefined ? {} : { libraryId }),
+      slots: new Map(),
+      usedParameterNames: new Set(),
+      overridden: new Set(),
+      dependencies: new Set(),
+      variant,
+      variantAxes: variantAxesOf(variant, dartName, context),
+    });
+    context.componentOrder.push(id);
+  }
+}
+
+function shapeStructure(shape: PenpotSourceShape): string {
+  return `${shape.type}(${(shape.children ?? []).map(shapeStructure).join(",")})`;
+}
+
+function canonicalComponentRoot(root: PenpotSourceShape): PenpotSourceShape {
+  return {
+    ...root,
+    ...(root.children == null ? {} : { children: root.children }),
+    isComponentInstance: false,
+  };
+}
+
 function registerComponents(components: readonly PenpotComponentSource[], context: ExtractionContext): void {
   for (const component of components) {
     if (typeof component.id !== "string" || component.id === "") continue;
     const libraryId = typeof component.libraryId === "string" && component.libraryId !== "" ? component.libraryId : undefined;
     const id = componentKey(libraryId, component.id);
-    if (context.componentSources.has(id)) continue;
+    if (context.componentAliases.has(id) || context.componentSources.has(id)) continue;
     // Penpot's main-instance root can also report itself as a component instance.
     // It is the canonical definition here, so only its root must not become a self-call.
-    context.componentSources.set(id, {
-      ...component.root,
-      ...(component.root.children == null ? {} : { children: component.root.children }),
-      isComponentInstance: false,
-    });
+    context.componentSources.set(id, canonicalComponentRoot(component.root));
     const sourceName = typeof component.name === "string" && component.name.trim() !== "" ? component.name : `Component ${component.id}`;
     const dartName = dartNameFor(sourceName, id, context);
     context.components.set(id, {
@@ -418,11 +498,12 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
     };
     return { node, diagnostics };
   }
-  const componentIdentity = componentKey(
+  const sourceComponentIdentity = componentKey(
     typeof shape.componentLibraryId === "string" && shape.componentLibraryId !== "" ? shape.componentLibraryId : undefined,
     componentId,
   );
-  const main = context.componentSources.get(componentIdentity);
+  const componentIdentity = context.componentAliases.get(sourceComponentIdentity) ?? sourceComponentIdentity;
+  const main = context.componentSources.get(sourceComponentIdentity) ?? context.componentSources.get(componentIdentity);
   if (main === undefined) {
     const sharedLibraryId = typeof shape.componentLibraryId === "string" && shape.componentLibraryId !== "" ? shape.componentLibraryId : undefined;
     diagnostics.push({
@@ -453,6 +534,7 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
 
   const args: IrArgument[] = [];
   walkOverrides(main, shape, "", componentIdentity, context, args);
+  const variantValues = variantSelectionsFor(componentIdentity, componentId, context);
 
   const transform = transformOf(shape, diagnostics);
   const node: IrComponentInstanceNode = {
@@ -466,6 +548,7 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
     ...(transform === undefined ? {} : { transform }),
     diagnostics,
     componentId: componentIdentity,
+    ...(variantValues.length === 0 ? {} : { variantValues }),
     arguments: args,
   };
   return { node, diagnostics };
@@ -506,6 +589,76 @@ function walkOverrides(main: PenpotSourceShape, instance: PenpotSourceShape, pat
   }
 }
 
+function variantAxesOf(variant: PenpotVariantFamilySource, dartName: string, context: ExtractionContext): readonly IrVariantAxis[] {
+  const usedAxisNames = new Set<string>();
+  const axes = variant.properties.map((sourceName, axisIndex) => {
+    const baseName = parameterNameFor(sourceName);
+    const name = dedupeName(baseName, usedAxisNames);
+    if (name !== baseName) {
+      context.diagnostics.push({ severity: "warning", sourceId: variant.id, code: "VARIANT_AXIS_UNSUPPORTED", message: `Variant axes named "${sourceName}" normalize to the same Dart property; generated "${name}".` });
+    }
+    for (const member of variant.members) {
+      if (typeof member.values[sourceName] !== "string") {
+        context.diagnostics.push({ severity: "warning", sourceId: member.id, code: "VARIANT_MEMBER_MISSING", message: `Variant member ${member.id} has no value for axis "${sourceName}".` });
+      }
+    }
+    const sourceValues = [...new Set(variant.members.map((member) => member.values[sourceName]).filter((value): value is string => typeof value === "string"))].sort();
+    const usedValues = new Set<string>();
+    const values = sourceValues.map((sourceValue) => {
+      const baseValue = dartEnumValue(sourceValue);
+      const valueName = dedupeName(baseValue, usedValues);
+      if (valueName !== baseValue) {
+        context.diagnostics.push({ severity: "warning", sourceId: variant.id, code: "VARIANT_VALUE_COLLISION", message: `Variant values for axis "${sourceName}" normalize to the same Dart enum value; generated "${valueName}".` });
+      }
+      return { sourceValue, name: valueName };
+    });
+    const defaultMember = variant.members.find((member) => member.id === variant.defaultComponentId) ?? variant.members[0];
+    const defaultValue = defaultMember?.values[sourceName] ?? sourceValues[0] ?? "unknown";
+    return { sourceName, name, enumName: `${dartName}${pascalCase(name || `Axis${axisIndex + 1}`)}`, values, defaultValue };
+  });
+  const possibleCombinations = axes.reduce((count, axis) => count * Math.max(axis.values.length, 1), 1);
+  if (possibleCombinations > variant.members.length) {
+    context.diagnostics.push({ severity: "warning", sourceId: variant.id, code: "VARIANT_COMBINATION_UNSUPPORTED", message: `Variant family "${variant.name}" defines ${variant.members.length} of ${possibleCombinations} possible axis combinations; unsupported combinations throw at runtime.` });
+  }
+  return axes;
+}
+
+function variantSelectionsFor(componentIdentity: string, sourceComponentId: string, context: ExtractionContext): readonly IrVariantSelection[] {
+  const builder = context.components.get(componentIdentity);
+  if (builder?.variant === undefined || builder.variantAxes === undefined) return [];
+  const member = builder.variant.members.find((candidate) => candidate.id === sourceComponentId);
+  if (member === undefined) {
+    context.diagnostics.push({ severity: "warning", sourceId: sourceComponentId, code: "VARIANT_MEMBER_MISSING", message: `Variant member ${sourceComponentId} is not registered in family "${builder.sourceName}".` });
+    return [];
+  }
+  return variantMemberSelections(member, builder.variantAxes).filter((selection) => {
+    const axis = builder.variantAxes!.find((candidate) => candidate.name === selection.axisName);
+    return axis !== undefined && member.values[axis.sourceName] !== axis.defaultValue;
+  });
+}
+
+function variantMemberSelections(member: PenpotVariantMemberSource, axes: readonly IrVariantAxis[]): readonly IrVariantSelection[] {
+  return axes.map((axis) => {
+    const sourceValue = member.values[axis.sourceName] ?? axis.defaultValue;
+    const valueName = axis.values.find((value) => value.sourceValue === sourceValue)?.name ?? dartEnumValue(sourceValue);
+    return { axisName: axis.name, enumName: axis.enumName, valueName };
+  });
+}
+
+function dedupeName(base: string, used: Set<string>): string {
+  let candidate = base || "value";
+  let suffix = 2;
+  while (used.has(candidate)) candidate = `${base || "value"}${suffix++}`;
+  used.add(candidate);
+  return candidate;
+}
+
+function dartEnumValue(value: string): string {
+  const normalized = parameterNameFor(value);
+  if (normalized === "default") return "defaultState";
+  return normalized === "" ? "value" : normalized;
+}
+
 function fillColorKey(shape: PenpotSourceShape): string | undefined {
   const fills = shape.fills;
   if (fills == null || fills === "mixed" || fills.length === 0) return undefined;
@@ -536,6 +689,14 @@ function finalizeComponents(context: ExtractionContext): IrComponentDefinition[]
       name: builder.dartName,
       ...(builder.libraryId === undefined ? {} : { sourceLibraryId: builder.libraryId }),
       root: builder.root!,
+      ...(builder.variant === undefined || builder.variantAxes === undefined || builder.variantMembers === undefined ? {} : {
+        variant: {
+          id: builder.variant.id,
+          sourceName: builder.variant.name,
+          axes: builder.variantAxes,
+          members: builder.variantMembers,
+        } satisfies IrVariantFamily,
+      }),
       parameters,
       dependencies: [...builder.dependencies],
     };
@@ -559,7 +720,7 @@ function detectDependencyCycles(context: ExtractionContext): void {
   for (const componentId of context.componentOrder) visit(componentId);
 }
 
-function dartNameFor(sourceName: string, componentId: string, context: ExtractionContext): string {
+function dartNameFor(sourceName: string, componentId: string, context: ExtractionContext, collisionCode = "COMPONENT_NAME_COLLISION"): string {
   const base = pascalCase(sourceName) || "Component";
   let candidate = base;
   let suffix = 2;
@@ -568,7 +729,7 @@ function dartNameFor(sourceName: string, componentId: string, context: Extractio
     suffix++;
   }
   if (candidate !== base) {
-    context.diagnostics.push({ severity: "warning", sourceId: componentId, code: "COMPONENT_NAME_COLLISION", message: `Component "${sourceName}" collides with another component name; generated "${candidate}".` });
+    context.diagnostics.push({ severity: "warning", sourceId: componentId, code: collisionCode, message: `Component "${sourceName}" collides with another component name; generated "${candidate}".` });
   }
   context.usedDartNames.set(candidate, componentId);
   return candidate;

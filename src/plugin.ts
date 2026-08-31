@@ -1,4 +1,4 @@
-import { extractSelection, type PenpotComponentSource, type PenpotSourceShape, type PenpotSourceTextRun } from "./core/extractor.js";
+import { extractSelection, type PenpotComponentSource, type PenpotSourceShape, type PenpotSourceTextRun, type PenpotVariantFamilySource, type PenpotVariantMemberSource } from "./core/extractor.js";
 import { generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet } from "./core/flutter-generator.js";
 import { LibraryResolver, type ComponentResolution, type LibraryComponentLike, type ReadOnlyLibraryContext } from "./penpot/library-resolver.js";
 import { componentKey } from "./shared/component-key.js";
@@ -45,7 +45,7 @@ async function sendConversion(): Promise<void> {
   const selection = rawSelection.map(enrichShape);
   const resolution = await resolveComponentSources(selection);
   const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues));
-  const result = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components);
+  const result = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants);
   const message: PluginToUiMessage = {
     source: "penpot-to-flutter",
     type: "conversion",
@@ -93,9 +93,10 @@ function enrichComponent(shape: PenpotSourceShape): PenpotSourceShape {
   }
 }
 
-async function resolveComponentSources(selection: readonly PenpotSourceShape[]): Promise<{ components: readonly PenpotComponentSource[]; issues: ReadonlyMap<string, ResolutionIssue> }> {
+async function resolveComponentSources(selection: readonly PenpotSourceShape[]): Promise<{ components: readonly PenpotComponentSource[]; variants: readonly PenpotVariantFamilySource[]; issues: ReadonlyMap<string, ResolutionIssue> }> {
   const resolver = new LibraryResolver(penpot.library as unknown as ReadOnlyLibraryContext);
   const sources = new Map<string, PenpotComponentSource>();
+  const variantFamilies = new Map<string, PenpotVariantFamilySource>();
   const issues = new Map<string, ResolutionIssue>();
   const queue: PenpotSourceShape[] = [...selection];
   const visitedInstances = new Set<string>();
@@ -111,6 +112,10 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
 
   return {
     components: [...sources.values()].map((source) => ({ ...source, root: withResolutionIssues(source.root, issues) })),
+    variants: [...variantFamilies.values()].map((variant) => ({
+      ...variant,
+      members: variant.members.map((member) => ({ ...member, root: withResolutionIssues(member.root, issues) })),
+    })),
     issues,
   };
 
@@ -129,6 +134,11 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
     });
     if (result.status !== "resolved") {
       issues.set(shape.id, issueFor(result, shape));
+      return;
+    }
+
+    if (result.component.isVariant?.() === true && result.component.variants != null) {
+      await resolveVariantFamily(result.component, shape);
       return;
     }
 
@@ -153,6 +163,49 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
       });
     }
   }
+
+  async function resolveVariantFamily(component: LibraryComponentLike, sourceShape: PenpotSourceShape): Promise<void> {
+    const variants = component.variants;
+    if (variants == null) {
+      issues.set(sourceShape.id, { code: "VARIANT_FAMILY_UNRESOLVED", message: `Variant family metadata is unavailable for component "${component.name}" (${component.id}).` });
+      return;
+    }
+    const familyKey = componentKey(variants.libraryId, `variant-${variants.id}`);
+    if (variantFamilies.has(familyKey)) return;
+    const members: PenpotVariantMemberSource[] = [];
+    for (const member of [...variants.variantComponents()].sort((a, b) => a.id.localeCompare(b.id))) {
+      try {
+        const main = member.mainInstance() as PenpotSourceShape | null;
+        if (main == null) continue;
+        const root = enrichShape(main);
+        const source = { id: member.id, libraryId: member.libraryId, name: member.name, root };
+        sources.set(componentKey(member.libraryId, member.id), source);
+        members.push({ ...source, values: member.variantProps ?? {} });
+        for (const child of root.children ?? []) queue.push(child);
+      } catch {
+        // Missing members are diagnosed below with the family context.
+      }
+    }
+    if (members.length === 0) {
+      issues.set(sourceShape.id, { code: "VARIANT_MEMBER_MISSING", message: `No canonical members could be read for variant family ${variants.id} in library ${variants.libraryId}.` });
+      return;
+    }
+    const familyName = variantFamilyName(component);
+    variantFamilies.set(familyKey, {
+      id: variants.id,
+      libraryId: variants.libraryId,
+      name: familyName,
+      properties: [...variants.properties],
+      members,
+      defaultComponentId: members[0].id,
+    });
+  }
+}
+
+function variantFamilyName(component: LibraryComponentLike): string {
+  const path = component.path?.trim();
+  if (path !== undefined && path !== "") return path.split("/").filter(Boolean).pop() ?? component.name;
+  return component.name;
 }
 
 function issueFor(result: Exclude<ComponentResolution, { status: "resolved" }>, shape: PenpotSourceShape): ResolutionIssue {

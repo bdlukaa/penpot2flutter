@@ -213,9 +213,42 @@ export interface IrArgument {
   readonly value: string;
 }
 
+export interface IrVariantValue {
+  readonly sourceValue: string;
+  readonly name: string;
+}
+
+export interface IrVariantAxis {
+  readonly sourceName: string;
+  readonly name: string;
+  readonly enumName: string;
+  readonly values: readonly IrVariantValue[];
+  readonly defaultValue: string;
+}
+
+export interface IrVariantSelection {
+  readonly axisName: string;
+  readonly enumName: string;
+  readonly valueName: string;
+}
+
+export interface IrVariantMember {
+  readonly componentId: string;
+  readonly values: readonly IrVariantSelection[];
+  readonly root: IrNode;
+}
+
+export interface IrVariantFamily {
+  readonly id: string;
+  readonly sourceName: string;
+  readonly axes: readonly IrVariantAxis[];
+  readonly members: readonly IrVariantMember[];
+}
+
 export interface IrComponentInstanceNode extends BaseNode {
   readonly kind: "component-instance";
   readonly componentId: string;
+  readonly variantValues?: readonly IrVariantSelection[];
   readonly arguments: readonly IrArgument[];
 }
 
@@ -227,6 +260,7 @@ export interface IrComponentDefinition {
   readonly name: string;
   readonly sourceLibraryId?: string;
   readonly root: IrNode;
+  readonly variant?: IrVariantFamily;
   readonly parameters: readonly IrComponentParameter[];
   readonly dependencies: readonly string[];
 }

@@ -948,6 +948,67 @@ function buttonInstance(id: string, label: string) {
   };
 }
 
+test("maps a multi-axis variant family to one typed Flutter component", () => {
+  const member = (id: string, fillColor: string) => ({
+    id,
+    name: id,
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 40,
+    visible: true,
+    fills: [{ fillColor, fillOpacity: 1 }],
+    children: buttonMain.children,
+  });
+  const primarySmall = member("primary-small", "#0000ff");
+  const primaryLarge = member("primary-large", "#0000cc");
+  const secondaryLarge = member("secondary-large", "#eeeeee");
+  const result = extractSelection(
+    [{ ...buttonInstance("variant-instance", "Buy now"), componentId: "secondary-large", componentLibraryId: "design-system" }],
+    [
+      { id: "primary-small", libraryId: "design-system", name: "Primary small", root: primarySmall },
+      { id: "primary-large", libraryId: "design-system", name: "Primary large", root: primaryLarge },
+      { id: "secondary-large", libraryId: "design-system", name: "Secondary large", root: secondaryLarge },
+    ],
+    [{
+      id: "button-family",
+      libraryId: "design-system",
+      name: "Button",
+      properties: ["Style", "Size"],
+      defaultComponentId: "primary-small",
+      members: [
+        { id: "primary-small", libraryId: "design-system", name: "Primary small", root: primarySmall, values: { Style: "Primary", Size: "Small" } },
+        { id: "primary-large", libraryId: "design-system", name: "Primary large", root: primaryLarge, values: { Style: "Primary", Size: "Large" } },
+        { id: "secondary-large", libraryId: "design-system", name: "Secondary large", root: secondaryLarge, values: { Style: "Secondary", Size: "Large" } },
+      ],
+    }],
+  );
+
+  assert.equal(result.components.length, 1);
+  const component = result.components[0];
+  assert.equal(component.name, "Button");
+  assert.deepEqual(component.variant?.axes.map((axis) => axis.enumName), ["ButtonStyle", "ButtonSize"]);
+  assert.equal(component.variant?.members.length, 3);
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "VARIANT_COMBINATION_UNSUPPORTED"));
+  assert.equal(result.root.kind, "component-instance");
+  assert.equal(result.root.componentId, "design-system:variant-button-family");
+  assert.deepEqual(result.root.variantValues?.map((selection) => selection.valueName), ["secondary", "large"]);
+
+  const componentDart = generateComponentWidget(component, result.components);
+  assert.match(componentDart, /enum ButtonStyle \{/);
+  assert.match(componentDart, /enum ButtonSize \{/);
+  assert.match(componentDart, /this\.style = ButtonStyle\.primary,/);
+  assert.match(componentDart, /this\.size = ButtonSize\.small,/);
+  assert.match(componentDart, /return switch \(\(style, size\)\)/);
+  assert.match(componentDart, /_ => throw ArgumentError\('Unsupported Button variant combination'\)/);
+  assert.match(generateFlutterWidget(result.root, result.components), /Button\(\n\s*style: ButtonStyle\.secondary,\n\s*size: ButtonSize\.large,\n\s*label: 'Buy now',/);
+
+  const variantDartPath = new URL("../variant_button.dart", import.meta.url);
+  writeFileSync(variantDartPath, componentDart);
+  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", variantDartPath.pathname]));
+});
+
 test("maps a Penpot component to a reusable widget and instances to invocations", () => {
   const result = extractSelection(
     [buttonInstance("i1", "Buy now"), buttonInstance("i2", "Continue"), buttonInstance("i3", "Cancel")],

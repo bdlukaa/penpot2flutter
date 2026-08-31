@@ -2,11 +2,22 @@ import { componentKey } from "../shared/component-key.js";
 
 export { componentKey } from "../shared/component-key.js";
 
+export interface VariantsLike {
+  readonly id: string;
+  readonly libraryId: string;
+  readonly properties: readonly string[];
+  currentValues(property: string): string[];
+  variantComponents(): LibraryComponentLike[];
+}
+
 export interface LibraryComponentLike {
   readonly id: string;
   readonly libraryId: string;
   readonly name: string;
   readonly path?: string;
+  readonly variants?: VariantsLike | null;
+  readonly variantProps?: Readonly<Record<string, string>>;
+  isVariant?(): boolean;
   mainInstance(): unknown;
 }
 

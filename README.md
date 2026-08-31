@@ -30,6 +30,7 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Preview syntax highlighting, Copy Dart, Download Dart, and per-file preview/copy/download for multi-file component output
 - Explicit Penpot component definitions and component instances: one Flutter widget per canonical component, with callers generated as widget invocations
 - Local and connected shared-library component resolution, including nested and cross-library component dependencies, composite library/component identity, deterministic name collision handling, and conservative text-override (`String`) parameters
+- Penpot variant families as one reusable Flutter widget with deterministic typed enum axes, default values, explicit member matrices, instance arguments, and runtime rejection of undefined combinations
 - Node-associated warnings for unsupported or approximate conversion
 - A `// layer-name` comment above every generated widget for traceability back to the Penpot layer
 
@@ -52,8 +53,10 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Shared components resolve first from `Shape.component()`, then from the local/connected library index. Only components reachable from the selected roots are exported.
 - The plugin is read-only. A shared library that is available but not connected produces `SHARED_LIBRARY_NOT_CONNECTED` with remediation guidance; the plugin intentionally does not call `connectLibrary()` because it persistently modifies the Penpot file and requires `library:write`.
 - Missing libraries, missing components, unavailable canonical instances, and failed resolution produce source-node diagnostics rather than being silently flattened.
-- Component parameter inference currently supports only meaningful text overrides as defaulted `String` parameters. Color, visibility, dimensions, component swaps, and variant properties remain diagnostics/future work.
-- The installed Penpot Plugin API typings do not expose component-family or variant metadata, so variant-specific Flutter APIs are not generated. This is intentionally not inferred from names or visual structure.
+- Component override inference currently supports meaningful text overrides as defaulted `String` parameters. Color, visibility, dimensions, and component swaps remain diagnostics/future work.
+- Variant metadata comes from `LibraryComponent.isVariant()`, `Variants.properties`, `Variants.variantComponents()`, and `variantProps`; family membership is never inferred from display names.
+- Structurally different variant members use a readable internal switch between complete member subtrees. Shared-value factoring into smaller conditional style expressions is a future optimization; public variant APIs already remain unified.
+- Incomplete variant matrices generate `VARIANT_COMBINATION_UNSUPPORTED`, and unsupported constructor combinations throw an `ArgumentError` instead of selecting an arbitrary member.
 - Component output is generated as deterministic source files (`screens/`, `components/`, and `penpot_ui.dart`). The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
 - Asset references and the pubspec snippet are generated, but original image and SVG binary files are not downloaded. The plugin does not claim to export a binary bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
 - Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
@@ -135,4 +138,4 @@ Each main component becomes one `StatelessWidget`; each linked instance becomes 
 
 ## Next milestone
 
-The remaining post-MVP work is a verified archive/download workflow for images and SVG assets, broader component parameters and variants, design tokens, responsive inference, and project-wide export.
+The remaining post-MVP work is a verified archive/download workflow for images and SVG assets, broader component override parameters, finer-grained factoring of variant-member differences, design tokens, responsive inference, and project-wide export.

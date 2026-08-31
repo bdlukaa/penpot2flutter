@@ -1,4 +1,4 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrNode, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrNode, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
 let declaredParameters: ReadonlySet<string> = new Set();
@@ -41,29 +41,58 @@ export function generateFlutterWidget(root: IrNode, components: readonly IrCompo
 export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[]): string {
   componentNames = buildNameMap(components);
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
+  const axes = component.variant?.axes ?? [];
   const lines = [
-    ...(containsRotation(component.root) ? ["import 'dart:math' as math;", ""] : []),
+    ...(componentRoots(component).some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
-    ...(containsSvg(component.root) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
+    ...(componentRoots(component).some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
     ...componentImports(component.dependencies, components, ""),
     "",
+    ...axes.flatMap((axis) => [`enum ${axis.enumName} {`, ...axis.values.map((value) => `  ${value.name},`), "}", ""]),
     `class ${component.name} extends StatelessWidget {`,
   ];
   const parameters = component.parameters;
-  if (parameters.length === 0) {
+  if (parameters.length === 0 && axes.length === 0) {
     lines.push(`  const ${component.name}({super.key});`);
   } else {
     lines.push(`  const ${component.name}({`);
     lines.push("    super.key,");
+    for (const axis of axes) lines.push(`    this.${axis.name} = ${axis.enumName}.${variantDefaultName(axis)},`);
     for (const parameter of parameters) {
       lines.push(`    this.${parameter.name}${parameter.defaultValue === undefined ? "" : ` = ${stringLiteral(parameter.defaultValue)}`},`);
     }
     lines.push("  });");
     lines.push("");
+    for (const axis of axes) lines.push(`  final ${axis.enumName} ${axis.name};`);
     for (const parameter of parameters) lines.push(`  final String ${parameter.name};`);
   }
-  lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${component.sourceName}`, `    return ${renderNode(component.root, 2, false)};`, "  }", "}", "");
+  lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${component.sourceName}`, ...renderVariantComponentBody(component), "  }", "}", "");
   return lines.join("\n");
+}
+
+function componentRoots(component: IrComponentDefinition): readonly IrNode[] {
+  return component.variant === undefined ? [component.root] : component.variant.members.map((member) => member.root);
+}
+
+function variantDefaultName(axis: IrVariantAxis): string {
+  return axis.values.find((value) => value.sourceValue === axis.defaultValue)?.name ?? axis.values[0]?.name ?? "value";
+}
+
+function renderVariantComponentBody(component: IrComponentDefinition): string[] {
+  const variant = component.variant;
+  if (variant === undefined || variant.axes.length === 0 || variant.members.length === 0) {
+    return [`    return ${renderNode(component.root, 2, false)};`];
+  }
+  const selector = variant.axes.length === 1 ? variant.axes[0].name : `(${variant.axes.map((axis) => axis.name).join(", ")})`;
+  const lines = [`    return switch (${selector}) {`];
+  for (const member of variant.members) {
+    const pattern = variant.axes.length === 1
+      ? `${member.values[0].enumName}.${member.values[0].valueName}`
+      : `(${member.values.map((value) => `${value.enumName}.${value.valueName}`).join(", ")})`;
+    lines.push(`      ${pattern} => ${renderNode(member.root, 3, false)},`);
+  }
+  lines.push(`      _ => throw ArgumentError('Unsupported ${escapeDart(component.name)} variant combination'),`, "    };");
+  return lines;
 }
 
 export function generateFlutterFiles(root: IrNode, components: readonly IrComponentDefinition[]): GeneratedFile[] {
@@ -374,10 +403,13 @@ function renderShape(style: NodeStyle, width: number, height: number, depth: num
 function renderComponentInstance(node: IrComponentInstanceNode, depth: number): string {
   const name = componentNames.get(node.componentId);
   if (name === undefined) return "const SizedBox.shrink()";
-  if (node.arguments.length === 0) return `${name}()`;
+  const variantArguments = (node.variantValues ?? []).map((selection) => `${selection.axisName}: ${selection.enumName}.${selection.valueName},`);
+  const overrideArguments = node.arguments.map((argument) => `${argument.name}: '${escapeDart(argument.value)}',`);
+  const argumentsList = [...variantArguments, ...overrideArguments];
+  if (argumentsList.length === 0) return `${name}()`;
   return [
     `${name}(`,
-    ...node.arguments.map((argument) => `${indent(depth + 1)}${argument.name}: '${escapeDart(argument.value)}',`),
+    ...argumentsList.map((argument) => `${indent(depth + 1)}${argument}`),
     `${indent(depth)})`,
   ].join("\n");
 }
