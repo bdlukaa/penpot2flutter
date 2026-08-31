@@ -424,6 +424,7 @@ A feature is complete only when:
 - generated output remains deterministic
 - unsupported behavior is surfaced through diagnostics
 - documentation is updated when developer behavior changes
+- the version number is incremented
 
 Minimum project-level success criterion:
 
