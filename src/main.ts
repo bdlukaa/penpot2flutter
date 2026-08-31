@@ -1,4 +1,5 @@
 import { isPluginToUiMessage, type PluginToUiMessage } from "./shared/messages.js";
+import { APP_VERSION } from "./shared/version.js";
 import "./style.css";
 
 const app = document.querySelector<HTMLElement>("#app");
@@ -10,7 +11,7 @@ let latestDart = "";
 
 app.innerHTML = `
   <header>
-    <p class="eyebrow">PENPOT TO FLUTTER</p>
+    <p class="eyebrow">PENPOT TO FLUTTER <span class="version">v${APP_VERSION}</span></p>
     <h1>Selection export</h1>
     <p id="status" class="muted">Reading the current selection…</p>
   </header>

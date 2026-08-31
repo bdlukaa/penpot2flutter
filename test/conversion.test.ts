@@ -45,7 +45,7 @@ const board = {
       fontFamily: "Inter",
       fontSize: "24",
       fontWeight: "600",
-      lineHeight: "28",
+      lineHeight: "1.1666666666666667",
       letterSpacing: "0",
       align: "left",
     },
@@ -60,6 +60,23 @@ test("extracts a serializable board, rectangle, and text IR", () => {
   assert.equal(result.root.children.length, 2);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
   assert.equal(result.diagnostics.length, 0);
+});
+
+test("uses parent coordinates, default opacity, and Penpot line-height factors", () => {
+  const result = extractSelection([
+    {
+      ...board,
+      opacity: null,
+      children: [{ ...board.children[1], parentX: 5, parentY: 7, opacity: null }],
+    },
+  ]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.doesNotMatch(dart, /opacity: null/);
+  assert.equal(result.root.style.opacity, 1);
+  assert.equal(result.root.kind, "board");
+  assert.deepEqual(result.root.children[0].geometry, { x: 5, y: 7, width: 312, height: 28 });
+  assert.match(dart, /height: 1\.1666666666666667,/);
 });
 
 test("clamps invalid source dimensions and reports a geometry warning", () => {

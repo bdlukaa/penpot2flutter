@@ -24,10 +24,12 @@ export interface PenpotSourceShape {
   readonly type: string;
   readonly x: number;
   readonly y: number;
+  readonly parentX?: number | null;
+  readonly parentY?: number | null;
   readonly width: number;
   readonly height: number;
   readonly visible: boolean;
-  readonly opacity: number;
+  readonly opacity?: number | null;
   readonly fills?: readonly PenpotSourceFill[] | "mixed";
   readonly children?: readonly PenpotSourceShape[];
   readonly clipContent?: boolean;
@@ -111,6 +113,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext): IrNo
       } satisfies GroupNode;
       break;
     case "rectangle":
+    case "rect":
       node = { ...base, kind: "rectangle" } satisfies RectangleNode;
       break;
     case "text":
@@ -144,8 +147,8 @@ function extractChildren(shape: PenpotSourceShape, context: ExtractionContext): 
 }
 
 function geometryOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): NodeGeometry {
-  const x = finiteCoordinate(shape.x);
-  const y = finiteCoordinate(shape.y);
+  const x = finiteCoordinate(shape.parentX ?? shape.x);
+  const y = finiteCoordinate(shape.parentY ?? shape.y);
   const width = nonNegativeDimension(shape.width);
   const height = nonNegativeDimension(shape.height);
 
@@ -183,7 +186,30 @@ function boundsOf(children: readonly IrNode[]): NodeGeometry {
 
 function styleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[]): NodeStyle {
   const fill = solidFillOf(shape.fills, shape.id, diagnostics);
-  return { ...(fill === undefined ? {} : { fill }), opacity: shape.opacity };
+  return {
+    ...(fill === undefined ? {} : { fill }),
+    opacity: normalizedOpacity(shape.opacity, shape.id, diagnostics),
+  };
+}
+
+function normalizedOpacity(
+  value: number | null | undefined,
+  sourceId: string,
+  diagnostics: Diagnostic[],
+): number {
+  if (value === null || value === undefined) {
+    return 1;
+  }
+  if (!Number.isFinite(value)) {
+    diagnostics.push({
+      severity: "warning",
+      sourceId,
+      code: "invalid-opacity",
+      message: "Invalid opacity defaulted to 1 before code generation.",
+    });
+    return 1;
+  }
+  return Math.min(Math.max(value, 0), 1);
 }
 
 function solidFillOf(

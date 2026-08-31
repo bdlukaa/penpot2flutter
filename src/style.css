@@ -13,6 +13,7 @@ body { margin: 0; }
 header { border-bottom: 1px solid #e7e0ec; padding-bottom: 12px; }
 
 .eyebrow { color: #6750a4; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; margin: 0 0 6px; }
+.version { color: #625b71; font-size: 10px; font-weight: 600; letter-spacing: normal; margin-left: 4px; }
 
 h1, h2, p { margin-top: 0; }
 h1 { font-size: 22px; margin-bottom: 6px; }

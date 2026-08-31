@@ -117,7 +117,7 @@ function renderText(node: TextNode, depth: number): string {
     ...(style.fontWeight === undefined ? [] : [`fontWeight: ${fontWeight(style.fontWeight)}`]),
     ...(style.lineHeight === undefined || style.fontSize === undefined
       ? []
-      : [`height: ${number(style.lineHeight / style.fontSize)}`]),
+      : [`height: ${number(style.lineHeight)}`]),
     ...(style.letterSpacing === undefined ? [] : [`letterSpacing: ${number(style.letterSpacing)}`]),
     ...(node.style.fill === undefined ? [] : [`color: ${dartColor(node.style.fill.color, node.style.fill.opacity)}`]),
   ];
