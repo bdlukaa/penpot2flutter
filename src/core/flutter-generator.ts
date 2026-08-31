@@ -1,7 +1,8 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrNode, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrNode, IrToken, IrTokenSet, IrTokenTheme, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
 let declaredParameters: ReadonlySet<string> = new Set();
+let tokenDefinitions: ReadonlyMap<string, IrToken> = new Map();
 
 export function generatePubspecSnippet(assets: readonly AssetManifestEntry[]): string {
   if (assets.length === 0) return "";
@@ -15,14 +16,60 @@ export function generatePubspecSnippet(assets: readonly AssetManifestEntry[]): s
   ].join("\n");
 }
 
-export function generateFlutterWidget(root: IrNode, components: readonly IrComponentDefinition[] = []): string {
+export function generateFlutterTokens(
+  tokens: readonly IrToken[],
+  sets: readonly IrTokenSet[] = [],
+  themes: readonly IrTokenTheme[] = [],
+): string {
+  const byId = new Map(tokens.map((token) => [token.id, token]));
+  const groups = new Map<string, IrToken[]>();
+  for (const token of [...tokens].sort((a, b) => a.dartClass.localeCompare(b.dartClass) || a.dartName.localeCompare(b.dartName))) {
+    if (tokenDartLiteral(token) === undefined) continue;
+    const group = groups.get(token.dartClass) ?? [];
+    group.push(token);
+    groups.set(token.dartClass, group);
+  }
+  const lines = ["import 'package:flutter/material.dart';", ""];
+  for (const [className, classTokens] of [...groups].sort(([left], [right]) => left.localeCompare(right))) {
+    lines.push(`abstract final class ${className} {`);
+    for (const token of classTokens) {
+      lines.push(`  static const ${token.dartName} = ${tokenExpression(token, byId)};`);
+    }
+    lines.push("}", "");
+  }
+  const usedIds = new Set(tokens.map((token) => token.id));
+  const relevantSets = sets.filter((set) => set.tokenIds.some((id) => usedIds.has(id)));
+  if (relevantSets.length > 0) {
+    lines.push("abstract final class AppTokenSets {");
+    for (const set of relevantSets) {
+      const members = set.tokenIds.filter((id) => usedIds.has(id)).map(stringLiteral).join(", ");
+      lines.push(`  static const ${dartMemberName(set.name, "set")} = <String>[${members}];`);
+    }
+    lines.push("}", "");
+  }
+  const relevantSetIds = new Set(relevantSets.map((set) => set.id));
+  const relevantThemes = themes.filter((theme) => theme.enabledSets.some((id) => relevantSetIds.has(id)));
+  if (relevantThemes.length > 0) {
+    lines.push("abstract final class AppTokenThemes {");
+    for (const theme of relevantThemes) {
+      const enabledSets = theme.enabledSets.filter((id) => relevantSetIds.has(id)).map(stringLiteral).join(", ");
+      lines.push(`  static const ${dartMemberName(theme.name, "theme")} = <String>[${enabledSets}];`);
+    }
+    lines.push("}", "");
+  }
+  return lines.join("\n");
+}
+
+export function generateFlutterWidget(root: IrNode, components: readonly IrComponentDefinition[] = [], tokens: readonly IrToken[] = []): string {
   componentNames = buildNameMap(components);
+  tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
   declaredParameters = new Set();
   const className = toPascalCase(root.name) || "GeneratedWidget";
   return [
     ...(containsRotation(root) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(containsSvg(root) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
+    ...(containsTokens(root) ? ["import '../app_tokens.dart';"] : []),
     ...componentImports(collectInstanceComponentIds(root), components, "../components/"),
     "",
     `class ${className} extends StatelessWidget {`,
@@ -38,14 +85,16 @@ export function generateFlutterWidget(root: IrNode, components: readonly IrCompo
   ].join("\n");
 }
 
-export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[]): string {
+export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = []): string {
   componentNames = buildNameMap(components);
+  tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
   const axes = component.variant?.axes ?? [];
   const lines = [
     ...(componentRoots(component).some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(componentRoots(component).some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
+    ...(componentRoots(component).some(containsTokens) ? ["import '../app_tokens.dart';"] : []),
     ...componentImports(component.dependencies, components, ""),
     "",
     ...axes.flatMap((axis) => [`enum ${axis.enumName} {`, ...axis.values.map((value) => `  ${value.name},`), "}", ""]),
@@ -95,21 +144,30 @@ function renderVariantComponentBody(component: IrComponentDefinition): string[] 
   return lines;
 }
 
-export function generateFlutterFiles(root: IrNode, components: readonly IrComponentDefinition[]): GeneratedFile[] {
+export function generateFlutterFiles(
+  root: IrNode,
+  components: readonly IrComponentDefinition[],
+  tokens: readonly IrToken[] = [],
+  tokenSets: readonly IrTokenSet[] = [],
+  tokenThemes: readonly IrTokenTheme[] = [],
+): GeneratedFile[] {
   const screenName = toPascalCase(root.name) || "GeneratedScreen";
-  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components) }];
+  const usedTokens = reachableTokens(root, components, tokens);
+  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, usedTokens) }];
   for (const component of components) {
-    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components) });
+    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, usedTokens) });
   }
-  if (components.length > 0) {
-    files.push({ path: "penpot_ui.dart", source: generateBarrelExport(components, snakeCase(screenName)) });
+  if (usedTokens.length > 0) files.push({ path: "app_tokens.dart", source: generateFlutterTokens(usedTokens, tokenSets, tokenThemes) });
+  if (components.length > 0 || usedTokens.length > 0) {
+    files.push({ path: "penpot_ui.dart", source: generateBarrelExport(components, snakeCase(screenName), usedTokens.length > 0) });
   }
   return files;
 }
 
-function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string): string {
+function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string, hasTokens: boolean): string {
   return [
     `export 'screens/${screenFileName}.dart';`,
+    ...(hasTokens ? ["export 'app_tokens.dart';"] : []),
     ...components.map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
     "",
   ].join("\n");
@@ -156,6 +214,10 @@ function containsSvg(node: IrNode): boolean {
   return node.kind === "svg" || ("children" in node && node.children.some(containsSvg));
 }
 
+function containsTokens(node: IrNode): boolean {
+  return (node.tokenReferences?.length ?? 0) > 0 || ("children" in node && node.children.some(containsTokens));
+}
+
 function renderNode(node: IrNode, depth: number, positioned: boolean): string {
   if (!node.visible || node.kind === "unsupported") return "const SizedBox.shrink()";
 
@@ -164,10 +226,10 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
   const opacityDepth = node.style.opacity === 1 ? 0 : 1;
   let content = renderContent(node, contentDepth + transformDepth + opacityDepth);
   if (node.transform !== undefined) content = renderTransform(node, content, contentDepth + opacityDepth);
-  if (node.style.opacity !== 1) {
+  if (node.style.opacity !== 1 || hasToken(node, "opacity")) {
     content = [
       "Opacity(",
-      `${indent(contentDepth + 1)}opacity: ${number(node.style.opacity)},`,
+      `${indent(contentDepth + 1)}opacity: ${tokenValue(node, "opacity", number(node.style.opacity))},`,
       `${indent(contentDepth + 1)}child: ${content},`,
       `${indent(contentDepth)})`,
     ].join("\n");
@@ -175,8 +237,8 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
   if (!positioned) return content;
   return [
     "Positioned(",
-    `${indent(depth + 1)}left: ${number(node.geometry.x)},`,
-    `${indent(depth + 1)}top: ${number(node.geometry.y)},`,
+    `${indent(depth + 1)}left: ${tokenValue(node, "x", number(node.geometry.x))},`,
+    `${indent(depth + 1)}top: ${tokenValue(node, "y", number(node.geometry.y))},`,
     `${indent(depth + 1)}child: ${content},`,
     `${indent(depth)})`,
   ].join("\n");
@@ -218,34 +280,34 @@ function renderContent(node: Exclude<IrNode, { kind: "unsupported" }>, depth: nu
       return renderGroup(node, depth);
     case "rectangle":
     case "image":
-      return renderShape(node.style, node.geometry.width, node.geometry.height, depth, false);
+      return renderShape(node, depth, false);
     case "svg":
       return renderSvg(node, depth);
     case "component-instance":
       return renderComponentInstance(node, depth);
     case "ellipse":
-      return renderShape(node.style, node.geometry.width, node.geometry.height, depth, true);
+      return renderShape(node, depth, true);
     case "text":
       return renderText(node, depth);
   }
 }
 
 function renderContainer(node: BoardNode, depth: number, clipBehavior: string): string {
-  const decoration = renderDecoration(node.style, depth + 1);
-  const child = node.flex !== undefined ? renderFlex(node, depth + 1, clipBehavior) : node.grid?.supported === true ? renderGrid(node.grid, node.children, depth + 1) : renderStack(node.children, depth + 1, clipBehavior);
+  const decoration = renderDecoration(node, depth + 1);
+  const child = node.flex !== undefined ? renderFlex(node, depth + 1, clipBehavior) : node.grid?.supported === true ? renderGrid(node, node.grid, node.children, depth + 1) : renderStack(node.children, depth + 1, clipBehavior);
   if (decoration === undefined) {
     return [
       "SizedBox(",
-      `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
-      `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+      `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
+      `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
       `${indent(depth + 1)}child: ${child},`,
       `${indent(depth)})`,
     ].join("\n");
   }
   return [
     "Container(",
-    `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
-    `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+    `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
+    `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
     `${indent(depth + 1)}decoration: ${decoration},`,
     ...(clipBehavior === "Clip.hardEdge" ? [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`] : []),
     `${indent(depth + 1)}child: ${child},`,
@@ -264,13 +326,13 @@ function renderStack(children: readonly IrNode[], depth: number, clipBehavior: s
   ].join("\n");
 }
 
-function renderGrid(grid: GridLayout, children: readonly IrNode[], depth: number): string {
+function renderGrid(node: BoardNode, grid: GridLayout, children: readonly IrNode[], depth: number): string {
   return [
     "GridView.count(",
     `${indent(depth + 1)}crossAxisCount: ${grid.columns.length},`,
-    ...(grid.rowGap === 0 ? [] : [`${indent(depth + 1)}mainAxisSpacing: ${number(grid.rowGap)},`]),
-    ...(grid.columnGap === 0 ? [] : [`${indent(depth + 1)}crossAxisSpacing: ${number(grid.columnGap)},`]),
-    ...(paddingIsZero(grid.padding) ? [] : [`${indent(depth + 1)}padding: ${edgeInsetsDirectional(grid.padding)},`]),
+    ...(grid.rowGap === 0 && !hasToken(node, "rowGap") ? [] : [`${indent(depth + 1)}mainAxisSpacing: ${tokenValue(node, "rowGap", number(grid.rowGap))},`]),
+    ...(grid.columnGap === 0 && !hasToken(node, "columnGap") ? [] : [`${indent(depth + 1)}crossAxisSpacing: ${tokenValue(node, "columnGap", number(grid.columnGap))},`]),
+    ...(paddingIsZero(grid.padding) && !hasPaddingToken(node) ? [] : [`${indent(depth + 1)}padding: ${edgeInsetsDirectional(grid.padding, node)},`]),
     `${indent(depth + 1)}physics: const NeverScrollableScrollPhysics(),`,
     `${indent(depth + 1)}children: [`,
     ...children.map((child) => `${commentFor(child, depth + 2, renderNode(child, depth + 2, false))},`),
@@ -308,7 +370,7 @@ function renderFlexFlow(node: BoardNode, children: readonly IrNode[], depth: num
     `${isRow ? "Row" : "Column"}(`,
     ...(flex.direction === "row-reverse" ? [`${indent(depth + 1)}textDirection: TextDirection.rtl,`] : []),
     ...(flex.direction === "column-reverse" ? [`${indent(depth + 1)}verticalDirection: VerticalDirection.up,`] : []),
-    ...(gap === 0 ? [] : [`${indent(depth + 1)}spacing: ${number(gap)},`]),
+    ...(gap === 0 && !hasToken(node, isRow ? "columnGap" : "rowGap") ? [] : [`${indent(depth + 1)}spacing: ${tokenValue(node, isRow ? "columnGap" : "rowGap", number(gap))},`]),
     ...(main === "start" ? [] : [`${indent(depth + 1)}mainAxisAlignment: MainAxisAlignment.${main},`]),
     ...(cross === "center" ? [] : [`${indent(depth + 1)}crossAxisAlignment: CrossAxisAlignment.${cross},`]),
     `${indent(depth + 1)}children: [`,
@@ -316,10 +378,10 @@ function renderFlexFlow(node: BoardNode, children: readonly IrNode[], depth: num
     `${indent(depth + 1)}],`,
     `${indent(depth)})`,
   ];
-  if (paddingIsZero(flex.padding)) return flow.join("\n");
+  if (paddingIsZero(flex.padding) && !hasPaddingToken(node)) return flow.join("\n");
   return [
     "Padding(",
-    `${indent(depth + 1)}padding: ${edgeInsetsDirectional(flex.padding)},`,
+    `${indent(depth + 1)}padding: ${edgeInsetsDirectional(flex.padding, node)},`,
     `${indent(depth + 1)}child: ${flow.join("\n")},`,
     `${indent(depth)})`,
   ].join("\n");
@@ -360,8 +422,8 @@ function crossAxisAlignment(value: string | undefined): string {
 function renderGroup(node: GroupNode, depth: number): string {
   return [
     "SizedBox(",
-    `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
-    `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+    `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
+    `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
     `${indent(depth + 1)}child: Stack(`,
     `${indent(depth + 2)}children: [`,
     ...node.children.map((child) => `${commentFor(child, depth + 3, renderNode(child, depth + 3, true))},`),
@@ -371,15 +433,17 @@ function renderGroup(node: GroupNode, depth: number): string {
   ].join("\n");
 }
 
-function renderShape(style: NodeStyle, width: number, height: number, depth: number, ellipse: boolean): string {
+function renderShape(node: IrNode, depth: number, ellipse: boolean): string {
+  const width = node.geometry.width;
+  const height = node.geometry.height;
   const circle = ellipse && width === height;
   const clipDepth = ellipse && !circle ? 1 : 0;
-  const decoration = renderDecoration(style, depth + 2 + clipDepth, circle);
+  const decoration = renderDecoration(node, depth + 2 + clipDepth, circle);
   if (decoration === undefined) {
     return [
       "SizedBox(",
-      `${indent(depth + 1)}width: ${number(width)},`,
-      `${indent(depth + 1)}height: ${number(height)},`,
+      `${indent(depth + 1)}width: ${tokenValue(node, "width", number(width))},`,
+      `${indent(depth + 1)}height: ${tokenValue(node, "height", number(height))},`,
       `${indent(depth)})`,
     ].join("\n");
   }
@@ -393,8 +457,8 @@ function renderShape(style: NodeStyle, width: number, height: number, depth: num
     : decorated;
   return [
     "SizedBox(",
-    `${indent(depth + 1)}width: ${number(width)},`,
-    `${indent(depth + 1)}height: ${number(height)},`,
+    `${indent(depth + 1)}width: ${tokenValue(node, "width", number(width))},`,
+    `${indent(depth + 1)}height: ${tokenValue(node, "height", number(height))},`,
     `${indent(depth + 1)}child: ${content},`,
     `${indent(depth)})`,
   ].join("\n");
@@ -418,8 +482,8 @@ function renderSvg(node: SvgNode, depth: number): string {
   return [
     "SvgPicture.asset(",
     `${indent(depth + 1)}'${escapeDart(node.assetPath)}',`,
-    `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
-    `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+    `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
+    `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
     `${indent(depth)})`,
   ].join("\n");
 }
@@ -427,14 +491,14 @@ function renderSvg(node: SvgNode, depth: number): string {
 function renderText(node: TextNode, depth: number): string {
   if (node.runs !== undefined) return renderRichText(node, depth);
   const style = node.textStyle;
-  const textStyle = renderTextStyle(style, node.style.fill, depth + 2);
+  const textStyle = renderTextStyle(style, node.style.fill, depth + 2, node);
   const text = node.parameterName !== undefined && declaredParameters.has(node.parameterName)
     ? `this.${node.parameterName}`
     : stringLiteral(node.text);
   return [
     "SizedBox(",
-    `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
-    `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+    `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
+    `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
     `${indent(depth + 1)}child: Text(`,
     `${indent(depth + 2)}${text},`,
     ...(style.align === undefined ? [] : [`${indent(depth + 2)}textAlign: TextAlign.${style.align},`]),
@@ -447,8 +511,8 @@ function renderText(node: TextNode, depth: number): string {
 function renderRichText(node: TextNode, depth: number): string {
   return [
     "SizedBox(",
-    `${indent(depth + 1)}width: ${number(node.geometry.width)},`,
-    `${indent(depth + 1)}height: ${number(node.geometry.height)},`,
+    `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
+    `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
     `${indent(depth + 1)}child: RichText(`,
     ...(node.textStyle.align === undefined ? [] : [`${indent(depth + 2)}textAlign: TextAlign.${node.textStyle.align},`]),
     `${indent(depth + 2)}text: TextSpan(`,
@@ -471,33 +535,35 @@ function renderTextSpan(run: TextRun, depth: number): string {
   ].join("\n");
 }
 
-function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, styleDepth: number): string | undefined {
+function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, styleDepth: number, node?: IrNode): string | undefined {
+  if (node !== undefined && hasToken(node, "typography")) return tokenValue(node, "typography", "const TextStyle()");
   const properties = [
-    ...(style.fontFamily === undefined ? [] : [`fontFamily: '${escapeDart(style.fontFamily)}'`]),
-    ...(style.fontSize === undefined ? [] : [`fontSize: ${number(style.fontSize)}`]),
-    ...(style.fontWeight === undefined ? [] : [`fontWeight: ${fontWeight(style.fontWeight)}`]),
+    ...(style.fontFamily === undefined ? [] : [`fontFamily: ${tokenValue(node, "fontFamily", `'${escapeDart(style.fontFamily)}'`)}`]),
+    ...(style.fontSize === undefined ? [] : [`fontSize: ${tokenValue(node, "fontSize", number(style.fontSize))}`]),
+    ...(style.fontWeight === undefined ? [] : [`fontWeight: ${tokenValue(node, "fontWeight", fontWeight(style.fontWeight))}`]),
     ...(style.fontStyle === "italic" ? ["fontStyle: FontStyle.italic"] : style.fontStyle === "normal" ? ["fontStyle: FontStyle.normal"] : []),
-    ...(style.lineHeight === undefined || style.fontSize === undefined ? [] : [`height: ${number(style.lineHeight)}`]),
-    ...(style.letterSpacing === undefined ? [] : [`letterSpacing: ${number(style.letterSpacing)}`]),
+    ...(style.lineHeight === undefined || style.fontSize === undefined ? [] : [`height: ${tokenValue(node, "lineHeight", number(style.lineHeight))}`]),
+    ...(style.letterSpacing === undefined ? [] : [`letterSpacing: ${tokenValue(node, "letterSpacing", number(style.letterSpacing))}`]),
     ...(style.decoration === "underline" ? ["decoration: TextDecoration.underline"] : style.decoration === "line-through" ? ["decoration: TextDecoration.lineThrough"] : []),
-    ...(style.color !== undefined ? [`color: ${dartColor(style.color.color, style.color.opacity)}`] : fillColor === undefined ? [] : [`color: ${dartColor(fillColor.color, fillColor.opacity)}`]),
+    ...(style.color !== undefined ? [`color: ${tokenValue(node, "textColor", dartColor(style.color.color, style.color.opacity))}`] : fillColor === undefined ? [] : [`color: ${tokenValue(node, "textColor", dartColor(fillColor.color, fillColor.opacity))}`]),
   ];
   return properties.length === 0 ? undefined : [`TextStyle(`, ...properties.map((property) => `${indent(styleDepth + 1)}${property},`), `${indent(styleDepth)})`].join("\n");
 }
 
-function renderDecoration(style: NodeStyle, depth: number, circle = false): string | undefined {
-  const border = style.border !== undefined && style.border.width > 0 ? style.border : undefined;
+function renderDecoration(node: IrNode, depth: number, circle = false): string | undefined {
+  const style = node.style;
+  const border = style.border !== undefined && (style.border.width > 0 || hasToken(node, "strokeWidth")) ? style.border : undefined;
   const radius = !circle && style.radius !== undefined && [style.radius.topLeft, style.radius.topRight, style.radius.bottomRight, style.radius.bottomLeft].some((value) => value > 0) ? style.radius : undefined;
   const shadows = style.shadows !== undefined && style.shadows.length > 0 ? style.shadows : undefined;
   if (style.fill === undefined && style.gradient === undefined && style.image === undefined && border === undefined && radius === undefined && shadows === undefined) return undefined;
   const properties = [
     ...(circle ? ["shape: BoxShape.circle"] : []),
-    ...(style.fill === undefined ? [] : [`color: ${dartColor(style.fill.color, style.fill.opacity)}`]),
-    ...(style.gradient === undefined ? [] : [`gradient: ${renderGradient(style.gradient, depth + 1)}`]),
+    ...(style.fill === undefined ? [] : [`color: ${tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity))}`]),
+    ...(style.gradient === undefined ? [] : [`gradient: ${tokenValue(node, "gradient", renderGradient(style.gradient, depth + 1))}`]),
     ...(style.image === undefined ? [] : [`image: DecorationImage(\n${indent(depth + 2)}image: AssetImage('${escapeDart(style.image.assetPath)}'),\n${indent(depth + 2)}fit: BoxFit.${style.image.keepAspectRatio ? "cover" : "fill"},\n${indent(depth + 1)})`]),
-    ...(border === undefined ? [] : [`border: Border.all(color: ${dartColor(border.color, border.opacity)}, width: ${number(border.width)})`]),
-    ...(radius === undefined ? [] : [`borderRadius: ${borderRadius(radius, depth + 2)}`]),
-    ...(shadows === undefined ? [] : [`boxShadow: [\n${shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`]),
+    ...(border === undefined ? [] : [`border: Border.all(color: ${tokenValue(node, "strokeColor", dartColor(border.color, border.opacity))}, width: ${tokenValue(node, "strokeWidth", number(border.width))})`]),
+    ...(radius === undefined ? [] : [`borderRadius: ${borderRadius(radius, depth + 2, node)}`]),
+    ...(shadows === undefined ? [] : [`boxShadow: ${tokenValue(node, "shadow", `[\n${shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`)}`]),
   ];
   return properties.length === 1 && !properties[0].includes("\n")
     ? `const BoxDecoration(${properties[0]})`
@@ -513,10 +579,19 @@ function renderGradient(gradient: GradientFill, depth: number): string {
   return ["LinearGradient(", `${indent(depth + 1)}begin: Alignment(${number(gradient.startX * 2 - 1)}, ${number(gradient.startY * 2 - 1)}),`, `${indent(depth + 1)}end: Alignment(${number(gradient.endX * 2 - 1)}, ${number(gradient.endY * 2 - 1)}),`, `${indent(depth + 1)}colors: [${colors}],`, `${indent(depth + 1)}stops: [${stops}],`, `${indent(depth)})`].join("\n");
 }
 
-function borderRadius(radius: NonNullable<NodeStyle["radius"]>, depth: number): string {
+function borderRadius(radius: NonNullable<NodeStyle["radius"]>, depth: number, node: IrNode): string {
   const values = [radius.topLeft, radius.topRight, radius.bottomRight, radius.bottomLeft];
-  if (values.every((value) => value === values[0])) return `BorderRadius.circular(${number(values[0])})`;
-  return ["BorderRadius.only(", `${indent(depth)}topLeft: Radius.circular(${number(radius.topLeft)}),`, `${indent(depth)}topRight: Radius.circular(${number(radius.topRight)}),`, `${indent(depth)}bottomRight: Radius.circular(${number(radius.bottomRight)}),`, `${indent(depth)}bottomLeft: Radius.circular(${number(radius.bottomLeft)}),`, `${indent(depth - 1)})`].join("\n");
+  if (values.every((value) => value === values[0]) || hasToken(node, "borderRadius")) {
+    return `BorderRadius.circular(${tokenValue(node, "borderRadius", number(values[0]))})`;
+  }
+  return [
+    "BorderRadius.only(",
+    `${indent(depth)}topLeft: Radius.circular(${tokenValue(node, "borderRadiusTopLeft", number(radius.topLeft))}),`,
+    `${indent(depth)}topRight: Radius.circular(${tokenValue(node, "borderRadiusTopRight", number(radius.topRight))}),`,
+    `${indent(depth)}bottomRight: Radius.circular(${tokenValue(node, "borderRadiusBottomRight", number(radius.bottomRight))}),`,
+    `${indent(depth)}bottomLeft: Radius.circular(${tokenValue(node, "borderRadiusBottomLeft", number(radius.bottomLeft))}),`,
+    `${indent(depth - 1)})`,
+  ].join("\n");
 }
 
 function renderShadow(shadow: NonNullable<NodeStyle["shadows"]>[number], depth: number): string {
@@ -531,13 +606,132 @@ function paddingIsZero(padding: EdgeInsets): boolean {
   return padding.top === 0 && padding.right === 0 && padding.bottom === 0 && padding.left === 0;
 }
 
-function edgeInsetsDirectional(padding: EdgeInsets): string {
-  return `EdgeInsetsDirectional.only(top: ${number(padding.top)}, start: ${number(padding.left)}, end: ${number(padding.right)}, bottom: ${number(padding.bottom)})`;
+function edgeInsetsDirectional(padding: EdgeInsets, node: IrNode): string {
+  return `EdgeInsetsDirectional.only(top: ${tokenValue(node, "paddingTop", number(padding.top))}, start: ${tokenValue(node, "paddingLeft", number(padding.left))}, end: ${tokenValue(node, "paddingRight", number(padding.right))}, bottom: ${tokenValue(node, "paddingBottom", number(padding.bottom))})`;
+}
+
+function hasPaddingToken(node: IrNode): boolean {
+  return ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].some((property) => hasToken(node, property));
+}
+
+function hasToken(node: IrNode | undefined, property: string): boolean {
+  return node?.tokenReferences?.some((reference) => reference.property === property && tokenDefinitions.has(reference.tokenId)) === true;
+}
+
+function tokenValue(node: IrNode | undefined, property: string, fallback: string): string {
+  const reference = node?.tokenReferences?.find((candidate) => candidate.property === property);
+  if (reference === undefined) return fallback;
+  const token = tokenDefinitions.get(reference.tokenId);
+  return token === undefined || tokenDartLiteral(token) === undefined ? fallback : `${token.dartClass}.${token.dartName}`;
 }
 
 function dartColor(hex: string, opacity: number): string {
   const alpha = Math.round(Math.min(Math.max(opacity, 0), 1) * 255).toString(16).padStart(2, "0");
   return `Color(0x${alpha}${hex.slice(1)})`;
+}
+
+function reachableTokens(root: IrNode, components: readonly IrComponentDefinition[], tokens: readonly IrToken[]): readonly IrToken[] {
+  const byId = new Map(tokens.map((token) => [token.id, token]));
+  const ids = new Set<string>();
+  const collect = (node: IrNode): void => {
+    for (const reference of node.tokenReferences ?? []) ids.add(reference.tokenId);
+    if ("children" in node) node.children.forEach(collect);
+  };
+  collect(root);
+  for (const component of components) componentRoots(component).forEach(collect);
+  const includeAliasTargets = (id: string): void => {
+    const target = byId.get(id)?.aliasTargetId;
+    if (target === undefined || ids.has(target)) return;
+    ids.add(target);
+    includeAliasTargets(target);
+  };
+  for (const id of [...ids]) includeAliasTargets(id);
+  return tokens.filter((token) => ids.has(token.id));
+}
+
+function tokenExpression(token: IrToken, tokens: ReadonlyMap<string, IrToken>): string {
+  const target = token.aliasTargetId === undefined ? undefined : tokens.get(token.aliasTargetId);
+  if (target !== undefined && compatibleTokenTypes(token, target) && !aliasCycleFrom(token.id, tokens)) {
+    return `${target.dartClass}.${target.dartName}`;
+  }
+  return tokenDartLiteral(token) ?? "0.0";
+}
+
+function aliasCycleFrom(id: string, tokens: ReadonlyMap<string, IrToken>): boolean {
+  const visited = new Set<string>();
+  let current: string | undefined = id;
+  while (current !== undefined) {
+    if (visited.has(current)) return true;
+    visited.add(current);
+    current = tokens.get(current)?.aliasTargetId;
+  }
+  return false;
+}
+
+function compatibleTokenTypes(left: IrToken, right: IrToken): boolean {
+  return tokenRuntimeType(left) === tokenRuntimeType(right);
+}
+
+function tokenRuntimeType(token: IrToken): string {
+  switch (token.type) {
+    case "color": return "Color";
+    case "font-family": return "String";
+    case "font-weight": return "FontWeight";
+    case "typography": return "TextStyle";
+    case "shadow": return "List<BoxShadow>";
+    case "gradient": return "Gradient";
+    case "duration": return "Duration";
+    default: return "double";
+  }
+}
+
+function tokenDartLiteral(token: IrToken): string | undefined {
+  switch (token.type) {
+    case "color": return typeof token.value === "string" ? tokenColor(token.value) : undefined;
+    case "font-family": return typeof token.value === "string" ? stringLiteral(token.value) : undefined;
+    case "font-weight": return typeof token.value === "number" && Number.isFinite(token.value) ? fontWeight(token.value) : undefined;
+    case "typography": return typographyTokenLiteral(token.value);
+    case "shadow": return Array.isArray(token.value) ? shadowTokenLiteral(token.value as readonly DropShadow[]) : undefined;
+    case "gradient": return isGradientTokenValue(token.value) ? renderGradient(token.value, 0) : undefined;
+    case "duration": return typeof token.value === "number" && Number.isFinite(token.value) ? `Duration(milliseconds: ${number(token.value)})` : undefined;
+    case "unknown": return undefined;
+    default: return typeof token.value === "number" && Number.isFinite(token.value) ? doubleLiteral(token.value) : undefined;
+  }
+}
+
+function tokenColor(value: string): string | undefined {
+  const normalized = value.trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{6}$/.test(normalized)) return `Color(0xff${normalized.toLowerCase()})`;
+  if (/^[0-9a-fA-F]{8}$/.test(normalized)) return `Color(0x${normalized.toLowerCase()})`;
+  return undefined;
+}
+
+function typographyTokenLiteral(value: IrToken["value"]): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || isGradientTokenValue(value)) return undefined;
+  const typography = value as { fontFamily?: string; fontSize?: number; fontWeight?: number; lineHeight?: number; letterSpacing?: number; color?: string };
+  const properties = [
+    ...(typeof typography.fontFamily === "string" ? [`fontFamily: ${stringLiteral(typography.fontFamily)}`] : []),
+    ...(typeof typography.fontSize === "number" ? [`fontSize: ${number(typography.fontSize)}`] : []),
+    ...(typeof typography.fontWeight === "number" ? [`fontWeight: ${fontWeight(typography.fontWeight)}`] : []),
+    ...(typeof typography.lineHeight === "number" ? [`height: ${number(typography.lineHeight)}`] : []),
+    ...(typeof typography.letterSpacing === "number" ? [`letterSpacing: ${number(typography.letterSpacing)}`] : []),
+    ...(typeof typography.color === "string" && tokenColor(typography.color) !== undefined ? [`color: ${tokenColor(typography.color)}`] : []),
+  ];
+  return `TextStyle(${properties.join(", ")})`;
+}
+
+function shadowTokenLiteral(shadows: readonly DropShadow[]): string {
+  return `<BoxShadow>[${shadows.map((shadow) => renderShadow(shadow, 1)).join(", ")}]`;
+}
+
+function isGradientTokenValue(value: IrToken["value"]): value is GradientFill {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && "type" in value && (value.type === "linear" || value.type === "radial") && "stops" in value && Array.isArray(value.stops);
+}
+
+function dartMemberName(value: string, fallback: string): string {
+  const pascal = value.split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
+  const camel = pascal === "" ? fallback : pascal.charAt(0).toLowerCase() + pascal.slice(1);
+  return /^[A-Za-z]/.test(camel) ? camel : `${fallback}${camel}`;
 }
 
 function fontWeight(value: number): string {
@@ -546,6 +740,11 @@ function fontWeight(value: number): string {
 
 function toPascalCase(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("").replace(/^[^A-Za-z]+/, "");
+}
+
+function doubleLiteral(value: number): string {
+  const literal = number(value);
+  return literal.includes(".") ? literal : `${literal}.0`;
 }
 
 function number(value: number): string {

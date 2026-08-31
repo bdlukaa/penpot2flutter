@@ -1254,3 +1254,127 @@ test("generates deterministic multi-file output with a barrel export", () => {
   const again = generateFlutterFiles(result.root, result.components);
   assert.deepEqual(again, files);
 });
+
+test("preserves color, spacing, radius, typography, aliases, sets, and themes as token references", () => {
+  const tokenBoard = {
+    id: "token-board",
+    name: "Token Card",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 100,
+    visible: true,
+    flex: { dir: "column", rowGap: 16, topPadding: 16, rightPadding: 16, bottomPadding: 16, leftPadding: 16 },
+    tokenBindings: { rowGap: "spacing-md", paddingTop: "spacing-md", paddingRight: "spacing-md", paddingBottom: "spacing-md", paddingLeft: "spacing-md" },
+    children: [{
+      id: "token-card",
+      name: "Card",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 168,
+      height: 68,
+      visible: true,
+      fills: [{ fillColor: "#6750a4", fillOpacity: 1 }],
+      borderRadius: 12,
+      tokenBindings: { fill: "color-button", borderRadius: "radius-md" },
+    }, {
+      id: "token-title",
+      name: "Title",
+      type: "text",
+      x: 0,
+      y: 0,
+      width: 168,
+      height: 30,
+      visible: true,
+      characters: "Tokens",
+      fontFamily: "Inter",
+      fontSize: "24",
+      fontWeight: "700",
+      lineHeight: "1.2",
+      tokenBindings: { typography: "type-heading" },
+    }],
+  } as const;
+  const result = extractSelection([tokenBoard], [], [], {
+    tokens: [
+      { id: "color-raw", name: "palette.purple.500", type: "color", value: "#6750a4", setId: "global" },
+      { id: "color-button", name: "color.button.background", type: "color", value: "#6750a4", aliasTargetId: "color-raw", setId: "light" },
+      { id: "spacing-md", name: "spacing.md", type: "spacing", value: 16, setId: "global" },
+      { id: "radius-md", name: "radius.md", type: "border-radius", value: 12, setId: "global" },
+      { id: "type-heading", name: "typography.heading.large", type: "typography", value: { fontFamily: "Inter", fontSize: 24, fontWeight: 700, lineHeight: 1.2 }, setId: "global" },
+    ],
+    sets: [
+      { id: "global", name: "Global", tokenIds: ["color-raw", "spacing-md", "radius-md", "type-heading"] },
+      { id: "light", name: "Light", tokenIds: ["color-button"] },
+    ],
+    themes: [{ id: "light-theme", name: "Light", enabledSets: ["global", "light"] }],
+  });
+
+  assert.equal(result.tokens.length, 5);
+  assert.deepEqual(result.root.tokenReferences?.map((reference) => reference.tokenId), ["spacing-md", "spacing-md", "spacing-md", "spacing-md", "spacing-md"]);
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes);
+  const screen = files.find((file) => file.path === "screens/token_card.dart")!.source;
+  const tokens = files.find((file) => file.path === "app_tokens.dart")!.source;
+  assert.match(screen, /spacing: AppSpacing\.md,/);
+  assert.match(screen, /EdgeInsetsDirectional\.only\(top: AppSpacing\.md, start: AppSpacing\.md, end: AppSpacing\.md, bottom: AppSpacing\.md\)/);
+  assert.match(screen, /color: AppColors\.buttonBackground/);
+  assert.match(screen, /BorderRadius\.circular\(AppRadius\.md\)/);
+  assert.match(tokens, /static const palettePurple500 = Color\(0xff6750a4\);/);
+  assert.match(tokens, /static const buttonBackground = AppColors\.palettePurple500;/);
+  assert.match(tokens, /static const headingLarge = TextStyle\(/);
+  assert.match(tokens, /abstract final class AppTokenThemes/);
+  const tokenDartPath = new URL("../app_tokens.dart", import.meta.url);
+  writeFileSync(tokenDartPath, tokens);
+  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", tokenDartPath.pathname]));
+});
+
+test("keeps component token usage and emits only reachable token definitions", () => {
+  const tokenizedButton = {
+    ...buttonMain,
+    fills: [{ fillColor: "#6750a4", fillOpacity: 1 }],
+    tokenBindings: { fill: "primary-color" },
+  };
+  const result = extractSelection(
+    [buttonInstance("token-button-instance", "Continue")],
+    [{ id: "comp-button", name: "Primary Button", root: tokenizedButton }],
+    [],
+    { tokens: [
+      { id: "primary-color", name: "color.primary", type: "color", value: "#6750a4" },
+      { id: "unused-color", name: "color.unused", type: "color", value: "#ff0000" },
+    ] },
+  );
+  const files = generateFlutterFiles(result.root, result.components, result.tokens);
+  const component = files.find((file) => file.path === "components/primary_button.dart")!.source;
+  const tokens = files.find((file) => file.path === "app_tokens.dart")!.source;
+  assert.match(component, /import '\.\.\/app_tokens\.dart';/);
+  assert.match(component, /color: AppColors\.primary/);
+  assert.doesNotMatch(tokens, /unused/);
+});
+
+test("diagnoses unresolved tokens, name collisions, invalid values, unsupported types, and alias cycles", () => {
+  const result = extractSelection([{
+    id: "bad-token-shape",
+    name: "Bad token shape",
+    type: "rectangle",
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    visible: true,
+    fills: [{ fillColor: "#000000", fillOpacity: 1 }],
+    tokenBindings: { fill: "missing-token" },
+  }], [], [], { tokens: [
+    { id: "cycle-a", name: "color.same-name", type: "color", value: "#000000", aliasTargetId: "cycle-b" },
+    { id: "cycle-b", name: "color.same name", type: "color", value: "#ffffff", aliasTargetId: "cycle-a" },
+    { id: "bad-number", name: "spacing.bad", type: "spacing", value: "large" },
+    { id: "unsupported", name: "asset.logo", type: "asset", value: "logo.svg" },
+  ] });
+  const codes = new Set(result.diagnostics.map((diagnostic) => diagnostic.code));
+  assert.ok(codes.has("TOKEN_UNRESOLVED"));
+  assert.ok(codes.has("TOKEN_NAME_COLLISION"));
+  assert.ok(codes.has("TOKEN_ALIAS_CYCLE"));
+  assert.ok(codes.has("TOKEN_VALUE_INVALID"));
+  assert.ok(codes.has("TOKEN_TYPE_UNSUPPORTED"));
+  assert.match(generateFlutterWidget(result.root, result.components, result.tokens), /Color\(0xff000000\)/);
+});

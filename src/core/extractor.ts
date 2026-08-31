@@ -1,4 +1,5 @@
 import { componentKey } from "../shared/component-key.js";
+import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource } from "./token-registry.js";
 import type {
   AssetManifestEntry,
   BoardNode,
@@ -24,6 +25,7 @@ import type {
   IrComponentInstanceNode,
   IrComponentParameter,
   IrNode,
+  IrTokenReference,
   IrVariantAxis,
   IrVariantFamily,
   IrVariantMember,
@@ -210,6 +212,14 @@ export interface PenpotSourceShape {
   readonly textDecoration?: "underline" | "line-through" | "none" | "mixed" | null;
   readonly align?: "left" | "center" | "right" | "justify" | "mixed" | null;
   readonly runs?: readonly PenpotSourceTextRun[] | null;
+  /** Future Penpot Token API adapter output: property key to stable token ID. */
+  readonly tokenBindings?: Readonly<Record<string, string>> | null;
+}
+
+export interface PenpotTokenInput {
+  readonly tokens?: readonly PenpotTokenSource[];
+  readonly sets?: readonly PenpotTokenSetSource[];
+  readonly themes?: readonly PenpotTokenThemeSource[];
 }
 
 interface ComponentSlot {
@@ -241,6 +251,7 @@ interface ExtractionContext {
   readonly components: Map<string, ComponentBuilder>;
   readonly componentOrder: string[];
   readonly usedDartNames: Map<string, string>;
+  readonly tokenIds: ReadonlySet<string>;
   currentComponent?: string;
 }
 
@@ -248,15 +259,18 @@ export function extractSelection(
   selection: readonly PenpotSourceShape[],
   components: readonly PenpotComponentSource[] = [],
   variants: readonly PenpotVariantFamilySource[] = [],
+  tokenInput: PenpotTokenInput = {},
 ): ConversionResult {
+  const tokenRegistry = buildTokenRegistry(tokenInput.tokens, tokenInput.sets, tokenInput.themes);
   const context: ExtractionContext = {
-    diagnostics: [],
+    diagnostics: [...tokenRegistry.diagnostics],
     assets: new Map<string, AssetManifestEntry>(),
     componentSources: new Map(),
     componentAliases: new Map(),
     components: new Map(),
     componentOrder: [],
     usedDartNames: new Map(),
+    tokenIds: new Set(tokenRegistry.tokens.map((token) => token.id)),
   };
 
   registerVariants(variants, context);
@@ -282,7 +296,15 @@ export function extractSelection(
   }
 
   const root = selection.length === 1 ? extractNode(selection[0], context, "") : extractSyntheticSelection(selection, context);
-  return { root, assets: [...context.assets.values()], diagnostics: context.diagnostics, components: finalizeComponents(context) };
+  return {
+    root,
+    assets: [...context.assets.values()],
+    diagnostics: context.diagnostics,
+    components: finalizeComponents(context),
+    tokens: tokenRegistry.tokens,
+    tokenSets: tokenRegistry.sets,
+    tokenThemes: tokenRegistry.themes,
+  };
 }
 
 function extractSyntheticSelection(selection: readonly PenpotSourceShape[], context: ExtractionContext): GroupNode {
@@ -324,6 +346,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
     ...(transform === undefined ? {} : { transform }),
     ...(shape.layoutChild == null ? {} : { layoutChild: layoutChildOf(shape.layoutChild) }),
     diagnostics,
+    ...tokenReferencesOf(shape, context, diagnostics),
   };
 
   let node: IrNode;
@@ -387,6 +410,30 @@ function extractChildren(shape: PenpotSourceShape, context: ExtractionContext, p
 
 function pathKey(path: string, index: number): string {
   return path === "" ? String(index) : `${path}.${index}`;
+}
+
+function tokenReferencesOf(
+  shape: PenpotSourceShape,
+  context: ExtractionContext,
+  diagnostics: Diagnostic[],
+): { readonly tokenReferences?: readonly IrTokenReference[] } {
+  const bindings = shape.tokenBindings;
+  if (bindings == null) return {};
+  const references = Object.entries(bindings)
+    .filter(([property, tokenId]) => property !== "" && typeof tokenId === "string" && tokenId !== "")
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([property, tokenId]) => {
+      if (!context.tokenIds.has(tokenId)) {
+        diagnostics.push({
+          severity: "warning",
+          sourceId: sourceIdOf(shape.id),
+          code: "TOKEN_UNRESOLVED",
+          message: `Property "${property}" references unavailable design token ${tokenId}; its literal value will be used.`,
+        });
+      }
+      return { property, tokenId };
+    });
+  return references.length === 0 ? {} : { tokenReferences: references };
 }
 
 function registerVariants(variants: readonly PenpotVariantFamilySource[], context: ExtractionContext): void {
@@ -547,6 +594,7 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
     style: { opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics) },
     ...(transform === undefined ? {} : { transform }),
     diagnostics,
+    ...tokenReferencesOf(shape, context, diagnostics),
     componentId: componentIdentity,
     ...(variantValues.length === 0 ? {} : { variantValues }),
     arguments: args,

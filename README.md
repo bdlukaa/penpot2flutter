@@ -7,7 +7,8 @@ A read-only Penpot plugin that converts the current selection into deterministic
 ```text
 Penpot selection
   -> normalized serializable IR
-  -> Flutter widget generator
+  -> component / variant / token registries
+  -> Flutter theme and widget generators
   -> formatted Dart preview, copy, or source download
 ```
 
@@ -31,6 +32,8 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Explicit Penpot component definitions and component instances: one Flutter widget per canonical component, with callers generated as widget invocations
 - Local and connected shared-library component resolution, including nested and cross-library component dependencies, composite library/component identity, deterministic name collision handling, and conservative text-override (`String`) parameters
 - Penpot variant families as one reusable Flutter widget with deterministic typed enum axes, default values, explicit member matrices, instance arguments, and runtime rejection of undefined combinations
+- First-class token IR for colors, dimensions, spacing, sizing, border widths/radii, opacity, typography values, shadows, gradients, durations, numbers, aliases, sets, and themes
+- Deterministic `app_tokens.dart` generation, semantic token aliases, reachable-token filtering, token references in generated widgets/components, and literal fallbacks with token diagnostics
 - Node-associated warnings for unsupported or approximate conversion
 - A `// layer-name` comment above every generated widget for traceability back to the Penpot layer
 
@@ -57,7 +60,9 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Variant metadata comes from `LibraryComponent.isVariant()`, `Variants.properties`, `Variants.variantComponents()`, and `variantProps`; family membership is never inferred from display names.
 - Structurally different variant members use a readable internal switch between complete member subtrees. Shared-value factoring into smaller conditional style expressions is a future optimization; public variant APIs already remain unified.
 - Incomplete variant matrices generate `VARIANT_COMBINATION_UNSUPPORTED`, and unsupported constructor combinations throw an `ArgumentError` instead of selecting an arbitrary member.
-- Component output is generated as deterministic source files (`screens/`, `components/`, and `penpot_ui.dart`). The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
+- The current official Penpot Plugin API and latest `@penpot/plugin-types` release (`1.4.2`) do not expose Design Token collections or shape token bindings. Penpot's Design Tokens documentation describes the plugins Tokens API as “coming soon.” The compiler, serializable token IR, diagnostics, and Flutter token generation are implemented and fixture-tested, but `src/plugin.ts` cannot discover live Penpot token usage until that public API ships. The plugin does not inspect private application state or infer bindings from equal literal values.
+- Token sets and themes are preserved as deterministic generated metadata. Theme-aware runtime value switching cannot be wired to live Penpot themes until the official API exposes active theme resolution and bound-token identities.
+- Component output is generated as deterministic source files (`screens/`, `components/`, `app_tokens.dart` when used, and `penpot_ui.dart`). The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
 - Asset references and the pubspec snippet are generated, but original image and SVG binary files are not downloaded. The plugin does not claim to export a binary bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
 - Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
 
@@ -118,6 +123,7 @@ src/
   main.ts                    Iframe UI and code preview
   core/extractor.ts          Penpot-like data -> normalized IR
   core/flutter-generator.ts  IR -> Dart source
+  core/token-registry.ts      Token sources -> deterministic token IR
   shared/ir.ts               Serializable compiler IR
   shared/messages.ts         Typed UI/plugin protocol
   shared/version.ts          UI version indicator
@@ -131,6 +137,7 @@ For a selected screen containing component instances, the compiler emits determi
 screens/checkout_screen.dart
 components/primary_button.dart
 components/product_card.dart
+app_tokens.dart
 penpot_ui.dart
 ```
 
@@ -138,4 +145,4 @@ Each main component becomes one `StatelessWidget`; each linked instance becomes 
 
 ## Next milestone
 
-The remaining post-MVP work is a verified archive/download workflow for images and SVG assets, broader component override parameters, finer-grained factoring of variant-member differences, design tokens, responsive inference, and project-wide export.
+The remaining post-MVP work is wiring live Design Token extraction when Penpot publishes its promised Plugin Tokens API, a verified archive/download workflow for images and SVG assets, broader component override parameters, finer-grained factoring of variant-member differences, responsive inference, and project-wide export.

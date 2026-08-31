@@ -7,6 +7,67 @@ export interface Diagnostic {
   readonly message: string;
 }
 
+export type IrTokenType =
+  | "color"
+  | "dimension"
+  | "spacing"
+  | "sizing"
+  | "border-width"
+  | "border-radius"
+  | "opacity"
+  | "typography"
+  | "font-family"
+  | "font-size"
+  | "font-weight"
+  | "line-height"
+  | "letter-spacing"
+  | "shadow"
+  | "gradient"
+  | "duration"
+  | "number"
+  | "unknown";
+
+export interface IrTypographyTokenValue {
+  readonly fontFamily?: string;
+  readonly fontSize?: number;
+  readonly fontWeight?: number;
+  readonly lineHeight?: number;
+  readonly letterSpacing?: number;
+  readonly color?: string;
+}
+
+export type IrTokenValue = string | number | IrTypographyTokenValue | readonly DropShadow[] | GradientFill;
+
+export interface IrToken {
+  readonly id: string;
+  readonly sourceName: string;
+  readonly path: readonly string[];
+  readonly type: IrTokenType;
+  readonly value: IrTokenValue;
+  readonly rawValue?: unknown;
+  readonly aliasTargetId?: string;
+  readonly setId?: string;
+  readonly dartClass: string;
+  readonly dartName: string;
+}
+
+export interface IrTokenReference {
+  readonly property: string;
+  readonly tokenId: string;
+}
+
+export interface IrTokenSet {
+  readonly id: string;
+  readonly name: string;
+  readonly tokenIds: readonly string[];
+}
+
+export interface IrTokenTheme {
+  readonly id: string;
+  readonly name: string;
+  readonly enabledSets: readonly string[];
+}
+
 export interface ColorFill {
   readonly color: string;
   readonly opacity: number;
@@ -155,6 +216,7 @@ export interface BaseNode {
   readonly transform?: NodeTransform;
   readonly layoutChild?: LayoutChild;
   readonly diagnostics: readonly Diagnostic[];
+  readonly tokenReferences?: readonly IrTokenReference[];
 }
 
 export interface BoardNode extends BaseNode {
@@ -272,6 +334,9 @@ export interface ConversionResult {
   readonly assets: readonly AssetManifestEntry[];
   readonly diagnostics: readonly Diagnostic[];
   readonly components: readonly IrComponentDefinition[];
+  readonly tokens: readonly IrToken[];
+  readonly tokenSets: readonly IrTokenSet[];
+  readonly tokenThemes: readonly IrTokenTheme[];
 }
 
 export interface GeneratedFile {

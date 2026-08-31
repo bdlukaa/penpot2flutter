@@ -54,9 +54,9 @@ async function sendConversion(): Promise<void> {
       ? {}
       : {
           result,
-          dart: generateFlutterWidget(result.root, result.components),
+          dart: generateFlutterWidget(result.root, result.components, result.tokens),
           pubspecAssets: generatePubspecSnippet(result.assets),
-          files: generateFlutterFiles(result.root, result.components),
+          files: generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes),
         }),
   };
   penpot.ui.sendMessage(message);
