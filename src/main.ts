@@ -51,8 +51,9 @@ app.innerHTML = `
     <pre id="dart-preview" class="code-preview" aria-label="Generated Dart"><code></code></pre>
     <textarea id="dart" class="copy-source" readonly hidden spellcheck="false" aria-label="Generated Dart"></textarea>
     <section id="assets" hidden>
-      <h2>Add exported assets to pubspec.yaml</h2>
+      <h2>Assets</h2>
       <textarea id="pubspec-assets" readonly spellcheck="false" aria-label="Generated pubspec assets"></textarea>
+      <div id="asset-download-list" class="generated-file-list" aria-label="Exported assets"></div>
     </section>
     <section id="diagnostics" hidden aria-live="polite">
       <h2>Conversion diagnostics</h2>
@@ -71,6 +72,7 @@ const copy = requiredElement<HTMLButtonElement>("copy");
 const download = requiredElement<HTMLButtonElement>("download");
 const assets = requiredElement<HTMLElement>("assets");
 const pubspecAssets = requiredElement<HTMLTextAreaElement>("pubspec-assets");
+const assetDownloadList = requiredElement<HTMLElement>("asset-download-list");
 const generatedFiles = requiredElement<HTMLElement>("generated-files");
 const generatedFileList = requiredElement<HTMLElement>("generated-file-list");
 const diagnostics = requiredElement<HTMLElement>("diagnostics");
@@ -138,8 +140,10 @@ function render(message: PluginToUiMessage): void {
   status.textContent = "Generated from the current selection";
   summary.textContent = `${message.selectionCount} selected ${message.selectionCount === 1 ? "layer" : "layers"}`;
   renderGeneratedFiles(message.files, message.dart);
-  assets.hidden = message.pubspecAssets === undefined || message.pubspecAssets === "";
+  assets.hidden = (message.pubspecAssets === undefined || message.pubspecAssets === "") && (message.exportedAssets?.length ?? 0) === 0;
+  pubspecAssets.hidden = message.pubspecAssets === undefined || message.pubspecAssets === "";
   pubspecAssets.value = message.pubspecAssets ?? "";
+  renderExportedAssets(message.exportedAssets ?? []);
   copy.disabled = false;
   copy.textContent = "Copy Dart";
   download.disabled = false;
@@ -177,6 +181,37 @@ function render(message: PluginToUiMessage): void {
       return [section];
     }),
   );
+}
+
+function renderExportedAssets(exported: PluginToUiMessage["exportedAssets"]): void {
+  assetDownloadList.replaceChildren(
+    ...(exported ?? []).map((asset) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "generated-file";
+      button.textContent = `Download ${asset.filename}`;
+      button.addEventListener("click", () => {
+        const content = asset.encoding === "base64" ? decodeBase64(asset.content) : asset.content;
+        const blobContent = typeof content === "string" ? content : new Uint8Array(content).buffer as ArrayBuffer;
+        const url = URL.createObjectURL(new Blob([blobContent], { type: assetMimeType(asset.type) }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = asset.filename.split("/").pop() ?? asset.filename;
+        link.click();
+        URL.revokeObjectURL(url);
+      });
+      return button;
+    }),
+  );
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function assetMimeType(type: "svg" | "png" | "jpg" | "webp"): string {
+  return type === "svg" ? "image/svg+xml" : type === "jpg" ? "image/jpeg" : `image/${type}`;
 }
 
 function renderGeneratedFiles(files: readonly GeneratedFile[] | undefined, fallback: string): void {

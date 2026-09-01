@@ -16,6 +16,13 @@ export interface TokenBindingStats {
   readonly other: number;
 }
 
+export interface ExportedAsset {
+  readonly filename: string;
+  readonly type: "svg" | "png" | "jpg" | "webp";
+  readonly content: string;
+  readonly encoding: "utf8" | "base64";
+}
+
 export interface ConversionMessage {
   readonly source: "penpot-to-flutter";
   readonly type: "conversion";
@@ -26,6 +33,8 @@ export interface ConversionMessage {
   readonly result?: { readonly diagnostics: readonly Diagnostic[] };
   readonly dart?: string;
   readonly pubspecAssets?: string;
+  /** Exportable asset payloads. Binary payloads are base64 to keep the message serializable. */
+  readonly exportedAssets?: readonly ExportedAsset[];
   /** Selection-specific files plus the merged penpot.dart barrel. */
   readonly files?: readonly GeneratedFile[];
   /** Stable catalog-derived files, sent once and cached by the iframe. */

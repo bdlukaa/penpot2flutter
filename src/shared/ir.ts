@@ -111,11 +111,26 @@ export interface GradientFill {
   readonly stops: readonly GradientStop[];
 }
 
-export interface ImageFill {
-  readonly assetPath: string;
-  readonly keepAspectRatio: boolean;
+export type IrAssetType = "svg" | "png" | "jpg" | "webp" | "font";
+
+/** A stable, reusable asset declaration emitted by the conversion pipeline. */
+export interface IrAsset {
+  readonly id: string;
+  readonly sourceNodeId: string;
+  readonly type: IrAssetType;
+  /** Project-relative path, including the `assets/` directory. */
+  readonly filename: string;
+  readonly contentHash?: string;
+  readonly dimensions?: {
+    readonly width: number;
+    readonly height: number;
+  };
 }
 
+/**
+ * Legacy asset shape kept for callers that only consume the pubspec snippet.
+ * New project generation uses `ConversionResult.assetRegistry` and `IrAsset`.
+ */
 export interface AssetManifestEntry {
   readonly id: string;
   readonly name?: string;
@@ -123,6 +138,17 @@ export interface AssetManifestEntry {
   readonly width: number;
   readonly height: number;
   readonly path: string;
+}
+
+export type ImageFit = "cover" | "contain" | "fill" | "fitWidth" | "fitHeight" | "none" | "scaleDown";
+export type ImageAlignment = "topLeft" | "topCenter" | "topRight" | "centerLeft" | "center" | "centerRight" | "bottomLeft" | "bottomCenter" | "bottomRight";
+
+export interface ImageFill {
+  readonly assetPath: string;
+  readonly assetId?: string;
+  readonly keepAspectRatio: boolean;
+  readonly fit?: ImageFit;
+  readonly alignment?: ImageAlignment;
 }
 
 export interface Border {
@@ -314,6 +340,8 @@ export interface ImageNode extends BaseNode {
 export interface SvgNode extends BaseNode {
   readonly kind: "svg";
   readonly assetPath: string;
+  readonly assetId?: string;
+  readonly assetType?: "svg" | "png" | "jpg" | "webp";
 }
 
 export interface TextNode extends BaseNode {
@@ -428,7 +456,9 @@ export interface IrResponsiveScreen {
 export interface ConversionResult {
   readonly root: IrNode;
   readonly responsiveScreen?: IrResponsiveScreen;
+  /** Legacy metadata projection. Prefer `assetRegistry` for generated projects. */
   readonly assets: readonly AssetManifestEntry[];
+  readonly assetRegistry: readonly IrAsset[];
   readonly diagnostics: readonly Diagnostic[];
   readonly components: readonly IrComponentDefinition[];
   readonly tokens: readonly IrToken[];

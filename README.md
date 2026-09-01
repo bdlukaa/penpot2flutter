@@ -27,7 +27,7 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Board clipping, rotation, and horizontal/vertical flips
 - Text content, family, size, weight, style, decoration, line height, letter spacing, and alignment
 - Mixed-style text runs as `RichText`/`TextSpan` with per-run style and color
-- Deterministic Flutter asset path and `pubspec.yaml` asset snippet generation
+- Deterministic semantic asset registry for SVG, PNG, JPG, WebP, and font assets, content-hash deduplication, collision diagnostics, generated `AppAssets` constants, binary/SVG export payloads, and duplicate-free `pubspec.yaml` declarations
 - Preview syntax highlighting, Copy Dart, Download Dart, and per-file preview/copy/download for multi-file component output
 - Explicit Penpot component definitions and component instances: one Flutter widget per canonical component, with callers generated as widget invocations
 - Local and connected shared-library component resolution, including nested and cross-library component dependencies, composite library/component identity, deterministic name collision handling, and conservative text-override (`String`) parameters
@@ -57,7 +57,7 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Mixed text runs are resolved into `RichText`/`TextSpan` from the live `Text.getRange` API when Penpot reports mixed styles; when runs cannot be resolved, the common style is used with a warning.
 - Inner shadows, non-solid strokes, unsupported colors, malformed geometry, and malformed image IDs report warnings.
 - `FONT_EXTERNAL_REQUIRED`, `FONT_WEIGHT_APPROXIMATED`, `TEXT_LINE_HEIGHT_INVALID`, `TEXT_STYLE_UNSUPPORTED`, `TEXT_OVERFLOW_INFERRED`, and `TEXT_MIXED_STYLE_UNSUPPORTED` identify typography requirements or data that cannot be represented exactly. External font requirements are aggregated once per conversion. Penpot exposes font metadata but no downloadable font files through the current Plugin API; an adapter must provide `assetPath` values before font assets are added to `pubspec.yaml`.
-- Vector/path shapes become `SvgPicture.asset` references; the SVG binary files themselves are not exported by the plugin yet.
+- Simple and complex vector/path shapes become SVG asset references; `penpot.generateMarkup` exports SVG payloads when available. Vectors marked with unsupported effects use an adapter-provided raster fallback; without one, `ASSET_EXPORT_FAILED` is shown rather than silently dropping the effect.
 - Shared components resolve first from `Shape.component()`, then from the local/connected library index. Only components reachable from the selected roots are exported.
 - The plugin is read-only. A shared library that is available but not connected produces `SHARED_LIBRARY_NOT_CONNECTED` with remediation guidance; the plugin intentionally does not call `connectLibrary()` because it persistently modifies the Penpot file and requires `library:write`.
 - Missing libraries, missing components, unavailable canonical instances, and failed resolution produce source-node diagnostics rather than being silently flattened.
@@ -74,7 +74,7 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Whole-token aliases and supported composite arithmetic expressions are resolved at generation time through a dependency graph with cycle detection; original references and dependencies remain in the IR. Unresolvable references use the source resolved fallback and a grouped diagnostic. Inset shadows are diagnosed because Flutter `BoxShadow` cannot represent them.
 - Material `ColorScheme`/`TextTheme` roles are mapped only for explicit semantic names such as `color.primary` and `typography.bodyMedium`; the complete catalog remains available through `ThemeExtension`. Theme-specific domain values are exposed through generated nested namespaces and `BuildContext.penpot`.
 - Component output is generated as deterministic source files under `screens/`, `components/`, `theme/`, plus `penpot.dart` and `penpot_manifest.json`. The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
-- Asset references and the pubspec snippet are generated, but original image and SVG binary files are not downloaded. The plugin does not claim to export a binary bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
+- Asset binaries are exported as individual downloadable files in the plugin UI (raster bytes are transferred as base64; SVG is transferred as text). The plugin intentionally does not claim to create a ZIP bundle because the current browser/plugin setup provides no verified archive workflow.
 - Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
 
 ## Permissions
@@ -113,21 +113,20 @@ Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while
 7. Create a local component, use several instances in a board, and override a text label. Confirm **Generated files** contains a component file and the screen calls that widget with a `String` argument instead of duplicating its internals.
 8. Place a component instance inside another component and confirm the parent component imports and calls the nested component. In a second Penpot file, connect a published shared library and use its component in the selected board; confirm it resolves to the same reusable component output. A library that is available but not connected must show `SHARED_LIBRARY_NOT_CONNECTED`, not expanded markup.
 9. Confirm **Copy Dart** and **Download Dart** act on the visible file; select each generated file to review component, screen, and barrel sources.
-10. For images, add the displayed `pubspec.yaml` snippet and place the corresponding image files at the generated asset paths before running the Flutter app.
-11. For vectors, add `flutter_svg` to your Flutter project (`flutter pub add flutter_svg`) and export the SVG assets to the generated `assets/images/*.svg` paths.
+10. For images and vectors, download each listed asset, add the displayed `pubspec.yaml` snippet, and place files at the generated `assets/images/`, `assets/icons/`, or `assets/vectors/` paths before running the Flutter app. Vector selections also include the `flutter_svg` dependency snippet when needed.
 12. Select matching boards named `Screen / Mobile`, `Screen / Tablet`, and `Screen / Desktop`. Confirm one generated screen uses `LayoutBuilder`, omits fixed top-level board dimensions, preserves component calls, and reports inferred breakpoints.
 13. In a file with tokens, compare the Tokens tab with the plugin's Design System counts and console set/theme lists. Confirm `theme/penpot_tokens.dart`, `theme/penpot_themes.dart`, and `penpot_manifest.json` are non-empty.
 14. Inspect at least three token-bound layers and verify generated properties use `context.penpot.<semantic.path>` rather than resolved literals. Export the generated tree, then run `dart format lib/generated/penpot` and `flutter analyze` in the target Flutter project.
 
 ## Adding the SVG dependency
 
-Generated code that contains vector paths references `SvgPicture.asset` from `package:flutter_svg/flutter_svg.dart`. Add it to your Flutter app:
+Generated code that contains vector paths references `SvgPicture.asset` from `package:flutter_svg/flutter_svg.dart`. The generated pubspec snippet declares this dependency; if applying snippets manually, add it to your Flutter app:
 
 ```sh
 flutter pub add flutter_svg
 ```
 
-The generated `pubspec.yaml` snippet includes the `flutter_svg` dependency and the asset entries. Export each vector shape as `.svg` into the generated path (e.g. `assets/images/<node-id>.svg`) so `SvgPicture.asset` can load it.
+The generated `pubspec.yaml` snippet includes the `flutter_svg` dependency and asset entries. Download exported SVG files into the generated `assets/icons/` or `assets/vectors/` paths so `SvgPicture.asset` can load them. Raster payloads are available as individual downloads in the plugin UI.
 
 ## Project structure
 
@@ -137,6 +136,7 @@ src/
   main.ts                    Iframe UI and code preview
   core/extractor.ts          Penpot-like data -> normalized IR
   core/flutter-generator.ts  IR -> Dart source
+  core/asset-pipeline.ts      deterministic asset registry and naming
   penpot/token-catalog.ts      Official TokenCatalog -> serializable compiler input
   core/token-registry.ts       Token sources -> deterministic token IR/resolution
   core/flutter-theme-generator.ts Token IR -> typed ThemeExtension/ThemeData files
@@ -153,6 +153,7 @@ For a selected screen containing component instances, the compiler emits determi
 ```text
 screens/checkout_screen.dart
 components/primary_button.dart
+assets.dart
 components/product_card.dart
 theme/penpot_token_namespaces.dart
 theme/penpot_tokens.dart

@@ -1,4 +1,5 @@
 import { extractSelection, type PenpotComponentSource, type PenpotSourceShape, type PenpotSourceTextRun, type PenpotTokenInput, type PenpotVariantFamilySource, type PenpotVariantMemberSource } from "./core/extractor.js";
+import { contentHashOf } from "./core/asset-pipeline.js";
 import { generateFlutterFiles, generatePubspecSnippet } from "./core/flutter-generator.js";
 import { generateFlutterThemeFiles, validateFlutterThemeGeneration } from "./core/flutter-theme-generator.js";
 import { buildTokenRegistry } from "./core/token-registry.js";
@@ -6,8 +7,9 @@ import { LibraryResolver, type ComponentResolution, type LibraryComponentLike, t
 import { withTokenBindings } from "./penpot/shape-token-bindings.js";
 import { extractTokenCatalog, type ExtractedTokenCatalog } from "./penpot/token-catalog.js";
 import { componentKey } from "./shared/component-key.js";
-import type { Diagnostic, GeneratedFile, IrNode } from "./shared/ir.js";
-import type { PluginToUiMessage, TokenBindingStats } from "./shared/messages.js";
+import type { Diagnostic, GeneratedFile, IrAsset, IrNode } from "./shared/ir.js";
+import type { ExportedAsset, PluginToUiMessage, TokenBindingStats } from "./shared/messages.js";
+import type { Shape } from "@penpot/plugin-types";
 
 interface LiveTextRange {
   readonly fontId?: unknown;
@@ -21,6 +23,11 @@ interface LiveTextRange {
   readonly textTransform?: unknown;
   readonly fills?: unknown;
 }
+
+interface LiveImageData {
+  readonly data?: () => Promise<Uint8Array>;
+}
+
 
 interface LiveTextShape extends PenpotSourceShape {
   readonly getRange?: (start: number, end: number) => LiveTextRange;
@@ -67,18 +74,21 @@ function isUiToPluginMessage(value: unknown): boolean {
 async function sendConversion(): Promise<void> {
   const request = ++conversionRequest;
   const rawSelection = penpot.selection as unknown as readonly PenpotSourceShape[];
-  const selection = rawSelection.map(enrichShape);
+  const selection = await Promise.all(rawSelection.map((shape) => enrichAssetTree(enrichShape(shape), shape)));
   const designSystem = getDesignSystem();
   const { catalog, diagnostics: catalogDiagnostics } = designSystem;
   const resolution = await resolveComponentSources(selection);
   if (request !== conversionRequest) return;
   const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues, resolution.identities));
   const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, designSystem.tokenInput, designSystem.typography);
-  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, designSystem.themeFiles);
+  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, designSystem.themeFiles, extracted.assetRegistry);
   const files = generatedFiles?.filter((file) => !isStableDesignSystemFile(file));
+  const exportedAssets = extracted === undefined
+    ? { assets: [] as readonly ExportedAsset[], diagnostics: [] as readonly Diagnostic[] }
+    : exportAssets(extracted.assetRegistry, [...selection, ...resolution.components.map((component) => component.root), ...resolution.variants.flatMap((variant) => variant.members.map((member) => member.root))]);
   const result = extracted === undefined ? undefined : {
     ...extracted,
-    diagnostics: [...catalogDiagnostics, ...extracted.diagnostics, ...validateFlutterThemeGeneration(extracted.tokens, extracted.tokenThemes, generatedFiles!)],
+    diagnostics: [...catalogDiagnostics, ...extracted.diagnostics, ...exportedAssets.diagnostics, ...validateFlutterThemeGeneration(extracted.tokens, extracted.tokenThemes, generatedFiles!)],
   };
   const sendDesignSystemFiles = !designSystemFilesSent;
   designSystemFilesSent = true;
@@ -95,7 +105,8 @@ async function sendConversion(): Promise<void> {
       : {
           result: { diagnostics: result.diagnostics },
           dart: generatedFiles![0].source,
-          pubspecAssets: generatePubspecSnippet(result.assets, result.fonts),
+          pubspecAssets: generatePubspecSnippet(result.assetRegistry, result.fonts),
+          exportedAssets: exportedAssets.assets,
           files,
         }),
   };
@@ -104,6 +115,42 @@ async function sendConversion(): Promise<void> {
 
 function isStableDesignSystemFile(file: GeneratedFile): boolean {
   return file.path.startsWith("theme/") || file.path === "penpot_manifest.json";
+}
+
+function exportAssets(assets: readonly IrAsset[], roots: readonly PenpotSourceShape[]): { readonly assets: readonly ExportedAsset[]; readonly diagnostics: readonly Diagnostic[] } {
+  const bytesById = new Map<string, readonly number[]>();
+  const svgById = new Map<string, string>();
+  const visit = (shape: PenpotSourceShape): void => {
+    const fills = shape.fills === "mixed" || shape.fills == null ? [] : shape.fills;
+    for (const fill of fills) {
+      const image = fill.fillImage;
+      if (typeof image?.id === "string" && image.data !== undefined) bytesById.set(image.id, image.data);
+    }
+    if (shape.svgContent !== undefined && shape.svgContent !== null) svgById.set(shape.id, shape.svgContent);
+    if (shape.vectorRasterFallback?.data !== undefined) bytesById.set(shape.id, shape.vectorRasterFallback.data);
+    (shape.children ?? []).forEach(visit);
+  };
+  roots.forEach(visit);
+  const diagnostics: Diagnostic[] = [];
+  const exported: ExportedAsset[] = [];
+  for (const asset of assets) {
+    const bytes = bytesById.get(asset.id);
+    const svg = svgById.get(asset.id);
+    if (asset.type === "svg" && svg !== undefined) {
+      exported.push({ filename: asset.filename, type: asset.type, content: svg, encoding: "utf8" });
+    } else if (bytes !== undefined && asset.type !== "font") {
+      exported.push({ filename: asset.filename, type: asset.type, content: encodeBase64(bytes), encoding: "base64" });
+    } else {
+      diagnostics.push({ severity: "warning", sourceId: asset.sourceNodeId, code: "ASSET_EXPORT_FAILED", message: `Could not export binary content for ${asset.filename}; place the source asset at this path manually.` });
+    }
+  }
+  return { assets: exported, diagnostics };
+}
+
+function encodeBase64(bytes: readonly number[]): string {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.slice(index, index + 0x8000));
+  return btoa(binary);
 }
 
 function tokenBindingStats(result: ReturnType<typeof extractSelection> | undefined): TokenBindingStats {
@@ -169,6 +216,45 @@ function enrichShape(shape: PenpotSourceShape): PenpotSourceShape {
   }
   const enrichedChildren = enriched.children;
   return enrichedChildren == null || enrichedChildren.length === 0 ? enriched : { ...enriched, children: enrichedChildren.map(enrichShape) };
+}
+
+async function enrichAssetTree(shape: PenpotSourceShape, liveShape: PenpotSourceShape): Promise<PenpotSourceShape> {
+  const enriched = await enrichAssetData(shape, liveShape);
+  const children = enriched.children;
+  const liveChildren = liveShape.children ?? [];
+  if (children == null || children.length === 0) return enriched;
+  return {
+    ...enriched,
+    children: await Promise.all(children.map((child, index) => enrichAssetTree(child, liveChildren[index] ?? child))),
+  };
+}
+
+async function enrichAssetData(enriched: PenpotSourceShape, liveShape: PenpotSourceShape): Promise<PenpotSourceShape> {
+  if (enriched.fills !== "mixed" && enriched.fills !== undefined && enriched.fills !== null) {
+    const fills = await Promise.all(enriched.fills.map(async (fill) => {
+      const image = fill.fillImage;
+      if (image == null) return fill;
+      const liveImage = image as unknown as LiveImageData;
+      if (typeof liveImage.data !== "function") return fill;
+      try {
+        const data = await liveImage.data();
+        return { ...fill, fillImage: { ...image, data: [...data], contentHash: contentHashOf(data) } };
+      } catch (error) {
+        console.warn("Unable to read Penpot image bytes", error);
+        return fill;
+      }
+    }));
+    enriched = { ...enriched, fills };
+  }
+  if (liveShape.type === "path" || liveShape.type === "svg-raw" || liveShape.type === "boolean") {
+    try {
+      const svg = penpot.generateMarkup([liveShape as unknown as Shape], { type: "svg" });
+      if (typeof svg === "string" && svg.trim() !== "") enriched = { ...enriched, svgContent: svg };
+    } catch (error) {
+      console.warn("Unable to export Penpot vector as SVG", error);
+    }
+  }
+  return enriched;
 }
 
 function enrichComponent(shape: PenpotSourceShape): PenpotSourceShape {
@@ -267,7 +353,7 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
         });
         return;
       }
-      const root = enrichShape(main);
+      const root = await enrichAssetTree(enrichShape(main), main);
       sources.set(key, { id: result.component.id, libraryId: result.component.libraryId, name: result.component.name, root });
       for (const child of root.children ?? []) queue.push(child);
     } catch {
@@ -291,7 +377,7 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
       try {
         const main = member.mainInstance() as PenpotSourceShape | null;
         if (main == null) continue;
-        const root = enrichShape(main);
+        const root = await enrichAssetTree(enrichShape(main), main);
         const source = { id: member.id, libraryId: member.libraryId, name: member.name, root };
         sources.set(componentKey(member.libraryId, member.id), source);
         members.push({ ...source, values: member.variantProps ?? {} });

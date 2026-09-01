@@ -1,4 +1,4 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 import { generateFlutterThemeFiles, tokenAccessPath } from "./flutter-theme-generator.js";
 export { dartMemberName } from "./token-naming.js";
 
@@ -7,15 +7,20 @@ let declaredParameters: ReadonlySet<string> = new Set();
 let tokenDefinitions: ReadonlyMap<string, IrToken> = new Map();
 let typographyDefinitions: ReadonlyMap<string, IrTypographyStyle> = new Map();
 let componentVariantEnums: ReadonlyMap<string, string> = new Map();
+let assetDefinitions: ReadonlyMap<string, IrAsset> = new Map();
+let assetConstants: ReadonlyMap<string, string> = new Map();
 
-export function generatePubspecSnippet(assets: readonly AssetManifestEntry[], fonts: readonly IrFontManifestEntry[] = []): string {
+type PubspecAsset = AssetManifestEntry | IrAsset;
+
+export function generatePubspecSnippet(assets: readonly PubspecAsset[], fonts: readonly IrFontManifestEntry[] = []): string {
   const fontFamilies = fonts.filter((font) => font.assets.length > 0);
-  if (assets.length === 0 && fontFamilies.length === 0) return "";
-  const hasSvg = assets.some((asset) => asset.mimeType === "image/svg+xml");
+  const paths = [...new Set(assets.filter((asset) => !("type" in asset && asset.type === "font")).map(assetFilename))].sort();
+  if (paths.length === 0 && fontFamilies.length === 0) return "";
+  const hasSvg = assets.some((asset) => "type" in asset ? asset.type === "svg" : asset.mimeType === "image/svg+xml");
   return [
     ...(hasSvg ? ["dependencies:", "  flutter_svg: ^2.3.0", ""] : []),
     "flutter:",
-    ...(assets.length === 0 ? [] : ["  assets:", ...assets.map((asset) => `    - ${asset.path}`)]),
+    ...(paths.length === 0 ? [] : ["  assets:", ...paths.map((path) => `    - ${path}`)]),
     ...(fontFamilies.length === 0 ? [] : [
       "  fonts:",
       ...fontFamilies.flatMap((font) => [
@@ -32,6 +37,49 @@ export function generatePubspecSnippet(assets: readonly AssetManifestEntry[], fo
   ].join("\n");
 }
 
+
+function assetFilename(asset: PubspecAsset): string {
+  return "filename" in asset ? asset.filename : asset.path;
+}
+
+export function generateFlutterAssets(assets: readonly IrAsset[]): string {
+  const lines = ["abstract final class AppAssets {"];
+  for (const asset of assets) lines.push(`  static const ${assetConstants.get(asset.id) ?? dartAssetName(asset.filename)} = '${escapeDart(asset.filename)}';`);
+  lines.push("}", "");
+  return lines.join("\n");
+}
+
+function buildAssetConstants(assets: readonly IrAsset[]): ReadonlyMap<string, string> {
+  const used = new Set<string>();
+  const entries = [...assets].sort((left, right) => left.filename.localeCompare(right.filename) || left.id.localeCompare(right.id));
+  const result = new Map<string, string>();
+  for (const asset of entries) {
+    const base = dartAssetName(asset.filename);
+    let name = base;
+    let suffix = 2;
+    while (used.has(name)) name = `${base}${suffix++}`;
+    used.add(name);
+    result.set(asset.id, name);
+  }
+  return result;
+}
+
+function dartAssetName(filename: string): string {
+  const basename = filename.split("/")[filename.split("/").length - 1]?.replace(/\.[^.]+$/, "") ?? "asset";
+  const words: string[] = basename.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  const value = words.map((word: string, index: number) => index === 0 ? word.charAt(0).toLowerCase() + word.slice(1) : word.charAt(0).toUpperCase() + word.slice(1)).join("");
+  return /^[A-Za-z_]/.test(value) ? value || "asset" : `asset${value}`;
+}
+
+function assetReference(assetId: string | undefined, fallback: string): string {
+  const constant = assetId === undefined ? undefined : assetConstants.get(assetId);
+  return constant === undefined ? stringLiteral(fallback) : `AppAssets.${constant}`;
+}
+
+function imageFit(image: NonNullable<NodeStyle["image"]>): string {
+  if (image.fit !== undefined) return image.fit;
+  return image.keepAspectRatio ? "cover" : "fill";
+}
 
 export function generateFlutterTypography(styles: readonly IrTypographyStyle[]): string {
   return [
@@ -50,11 +98,15 @@ export function generateFlutterWidget(
   tokens: readonly IrToken[] = [],
   responsiveScreen?: IrResponsiveScreen,
   typographyStyles: readonly IrTypographyStyle[] = [],
+  assets: readonly IrAsset[] = [],
+  assetImport?: string,
 ): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((component) => component.variant?.representation === "members").map((component) => [component.id, component.variant?.enumName ?? `${component.name}Variant`]));
   tokenDefinitions = tokenDefinitionMap(tokens);
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
+  assetDefinitions = new Map(assets.map((asset) => [asset.id, asset]));
+  assetConstants = buildAssetConstants(assets);
   declaredParameters = new Set();
   const roots = responsiveScreen?.variants.map((variant) => variant.root) ?? [root];
   const className = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedWidget";
@@ -62,6 +114,7 @@ export function generateFlutterWidget(
     ...(roots.some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(roots.some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
+    ...(assetImport !== undefined && roots.some(containsAssetReference) ? [`import '${assetImport}';`] : []),
     ...(roots.some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
     ...(roots.some(containsTypography) ? ["import '../app_typography.dart';"] : []),
     ...componentImports(roots.flatMap((variantRoot) => [...collectInstanceComponentIds(variantRoot)]), components, "../components/"),
@@ -119,17 +172,20 @@ function renderResponsiveRoot(root: IrNode, depth: number): string {
   ].join("\n");
 }
 
-export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = []): string {
+export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = [], assets: readonly IrAsset[] = [], assetImport?: string): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((candidate) => candidate.variant?.representation === "members").map((candidate) => [candidate.id, candidate.variant?.enumName ?? `${candidate.name}Variant`]));
   tokenDefinitions = tokenDefinitionMap(tokens);
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
+  assetDefinitions = new Map(assets.map((asset) => [asset.id, asset]));
+  assetConstants = buildAssetConstants(assets);
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
   const axes = component.variant?.representation === "members" ? [] : component.variant?.axes ?? [];
   const lines = [
     ...(componentRoots(component).some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(componentRoots(component).some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
+    ...(assetImport !== undefined && componentRoots(component).some(containsAssetReference) ? [`import '${assetImport}';`] : []),
     ...(componentRoots(component).some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
     ...(componentRoots(component).some(containsTypography) ? ["import '../app_typography.dart';"] : []),
     ...componentImports(component.dependencies, components, ""),
@@ -204,26 +260,29 @@ export function generateFlutterFiles(
   responsiveScreen?: IrResponsiveScreen,
   typographyStyles: readonly IrTypographyStyle[] = [],
   cachedThemeFiles?: readonly GeneratedFile[],
+  assets: readonly IrAsset[] = [],
 ): GeneratedFile[] {
   const screenName = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedScreen";
-  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles) }];
+  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles, assets, "../assets.dart") }];
   for (const component of components) {
-    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, tokens, typographyStyles) });
+    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, tokens, typographyStyles, assets, "../assets.dart") });
   }
+  if (assets.length > 0) files.push({ path: "assets.dart", source: generateFlutterAssets(assets) });
   files.push(...(cachedThemeFiles ?? generateFlutterThemeFiles(tokens, tokenSets, tokenThemes)));
   if (typographyStyles.length > 0) files.push({ path: "app_typography.dart", source: generateFlutterTypography(typographyStyles) });
   const barrel = files.find((file) => file.path === "penpot.dart");
-  const exports = generateBarrelExport(components, snakeCase(screenName), tokens.length > 0, typographyStyles.length > 0);
+  const exports = generateBarrelExport(components, snakeCase(screenName), tokens.length > 0, typographyStyles.length > 0, assets.length > 0);
   if (barrel === undefined) files.push({ path: "penpot.dart", source: exports });
   else files[files.indexOf(barrel)] = { ...barrel, source: barrel.source + exports };
   return files;
 }
 
-function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string, hasTokens: boolean, hasTypography: boolean): string {
+function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string, hasTokens: boolean, hasTypography: boolean, hasAssets: boolean): string {
   return [
     `export 'screens/${screenFileName}.dart';`,
     ...(hasTokens ? [] : []),
     ...(hasTypography ? ["export 'app_typography.dart';"] : []),
+    ...(hasAssets ? ["export 'assets.dart';"] : []),
     ...components.map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
     "",
   ].join("\n");
@@ -267,7 +326,13 @@ function containsRotation(node: IrNode): boolean {
 }
 
 function containsSvg(node: IrNode): boolean {
-  return node.kind === "svg" || ("children" in node && node.children.some(containsSvg));
+  return (node.kind === "svg" && (node.assetType === undefined || node.assetType === "svg")) || ("children" in node && node.children.some(containsSvg));
+}
+
+function containsAssetReference(node: IrNode): boolean {
+  return (node.kind === "svg" && node.assetId !== undefined && assetDefinitions.has(node.assetId))
+    || (node.style.image?.assetId !== undefined && assetDefinitions.has(node.style.image.assetId))
+    || ("children" in node && node.children.some(containsAssetReference));
 }
 
 function containsTokens(node: IrNode): boolean {
@@ -608,11 +673,28 @@ function renderComponentInstance(node: IrComponentInstanceNode, depth: number): 
 }
 
 function renderSvg(node: SvgNode, depth: number): string {
+  const asset = node.assetType !== undefined && node.assetType !== "svg"
+    ? [
+        "Image.asset(",
+        `${indent(depth + 1)}${assetReference(node.assetId, node.assetPath)},`,
+        `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
+        `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
+        `${indent(depth + 1)}fit: BoxFit.contain,`,
+        `${indent(depth)})`,
+      ].join("\n")
+    : [
+        "SvgPicture.asset(",
+        `${indent(depth + 1)}${assetReference(node.assetId, node.assetPath)},`,
+        `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
+        `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
+        `${indent(depth)})`,
+      ].join("\n");
+  const radius = node.style.radius;
+  if (radius === undefined || [radius.topLeft, radius.topRight, radius.bottomRight, radius.bottomLeft].every((value) => value === 0)) return asset;
   return [
-    "SvgPicture.asset(",
-    `${indent(depth + 1)}'${escapeDart(node.assetPath)}',`,
-    `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
-    `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
+    "ClipRRect(",
+    `${indent(depth + 1)}borderRadius: ${borderRadius(radius, depth + 2, node)},`,
+    `${indent(depth + 1)}child: ${asset},`,
     `${indent(depth)})`,
   ].join("\n");
 }
@@ -724,7 +806,7 @@ function renderDecoration(node: IrNode, depth: number, circle = false): string |
     ...(circle ? ["shape: BoxShape.circle"] : []),
     ...(style.fill === undefined ? [] : [`color: ${node.fillParameterName === undefined || !declaredParameters.has(node.fillParameterName) ? tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity)) : `this.${node.fillParameterName} ?? ${tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity))}`}`]),
     ...(style.gradient === undefined ? [] : [`gradient: ${tokenValue(node, "gradient", renderGradient(style.gradient, depth + 1))}`]),
-    ...(style.image === undefined ? [] : [`image: DecorationImage(\n${indent(depth + 2)}image: AssetImage('${escapeDart(style.image.assetPath)}'),\n${indent(depth + 2)}fit: BoxFit.${style.image.keepAspectRatio ? "cover" : "fill"},\n${indent(depth + 1)})`]),
+    ...(style.image === undefined ? [] : [`image: DecorationImage(\n${indent(depth + 2)}image: AssetImage(${assetReference(style.image.assetId, style.image.assetPath)}),\n${indent(depth + 2)}fit: BoxFit.${imageFit(style.image)},\n${style.image.alignment === undefined ? "" : `${indent(depth + 2)}alignment: Alignment.${style.image.alignment},\n`}${indent(depth + 1)})`]),
     ...(border === undefined ? [] : [`border: Border.all(color: ${tokenValue(node, "strokeColor", dartColor(border.color, border.opacity))}, width: ${tokenValue(node, "strokeWidth", number(border.width))})`]),
     ...(radius === undefined ? [] : [`borderRadius: ${borderRadius(radius, depth + 2, node)}`]),
     ...(shadows === undefined ? [] : [`boxShadow: ${tokenValue(node, "shadow", `[\n${shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`)}`]),

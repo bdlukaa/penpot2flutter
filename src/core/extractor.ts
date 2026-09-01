@@ -1,4 +1,5 @@
 import { componentKey } from "../shared/component-key.js";
+import { assetForId, assetTypeForMimeType, contentHashOf, createAssetRegistry, type AssetCandidate, type AssetRegistry } from "./asset-pipeline.js";
 import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsive-analyzer.js";
 import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource, type TokenRegistryResult } from "./token-registry.js";
 import type {
@@ -57,6 +58,9 @@ export interface PenpotSourceImageData {
   readonly height: number;
   readonly mtype?: string | null;
   readonly keepAspectRatio?: boolean | null;
+  /** Populated by the plugin boundary after ImageData.data() is read. */
+  readonly data?: readonly number[];
+  readonly contentHash?: string;
 }
 
 export interface PenpotSourceGradientStop {
@@ -208,6 +212,13 @@ export interface PenpotSourceShape {
   readonly componentResolutionIssue?: { readonly code: string; readonly message: string } | null;
   readonly fills?: readonly PenpotSourceFill[] | "mixed" | null;
   readonly strokes?: readonly PenpotSourceStroke[] | null;
+  readonly imageFit?: ImageFill["fit"] | null;
+  readonly imageAlignment?: ImageFill["alignment"] | null;
+  /** Adapter-provided vector export hints. */
+  readonly vectorEffectUnsupported?: boolean | null;
+  readonly vectorRasterFallback?: PenpotSourceImageData | null;
+  /** SVG markup captured at the Penpot boundary for safe export. */
+  readonly svgContent?: string | null;
   readonly borderRadius?: number | null;
   readonly borderRadiusTopLeft?: number | null;
   readonly borderRadiusTopRight?: number | null;
@@ -310,6 +321,7 @@ interface FontUsage {
 interface ExtractionContext {
   readonly diagnostics: Diagnostic[];
   readonly assets: Map<string, AssetManifestEntry>;
+  assetRegistry: AssetRegistry;
   readonly componentSources: Map<string, PenpotSourceShape>;
   readonly componentAliases: Map<string, string>;
   readonly components: Map<string, ComponentBuilder>;
@@ -336,6 +348,7 @@ export function extractSelection(
   const context: ExtractionContext = {
     diagnostics: [...tokenRegistry.diagnostics],
     assets: new Map<string, AssetManifestEntry>(),
+    assetRegistry: createAssetRegistry([]),
     componentSources: new Map(),
     componentAliases: new Map(),
     components: new Map(),
@@ -352,6 +365,9 @@ export function extractSelection(
 
   registerVariants(variants, context);
   registerComponents(components, context);
+  const assetRegistry = createAssetRegistry(assetCandidates(selection, components, variants, typographyInput));
+  context.assetRegistry = assetRegistry;
+  context.diagnostics.push(...assetRegistry.diagnostics);
   for (const componentId of context.componentOrder) {
     collectSlots(context.componentSources.get(componentId)!, componentId, context, "");
   }
@@ -389,6 +405,7 @@ export function extractSelection(
     root,
     ...(responsive.screen === undefined ? {} : { responsiveScreen: responsive.screen }),
     assets: [...context.assets.values()],
+    assetRegistry: context.assetRegistry.assets,
     diagnostics: context.diagnostics,
     components: finalizeComponents(context),
     tokens: tokenRegistry.tokens,
@@ -468,9 +485,17 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
       break;
     case "path":
     case "svg-raw":
-    case "boolean":
-      node = { ...base, kind: "svg", assetPath: svgAssetPathOf(shape, context) } satisfies SvgNode;
+    case "boolean": {
+      const asset = svgAssetPathOf(shape, context, diagnostics);
+      node = {
+        ...base,
+        kind: "svg",
+        assetPath: asset.path,
+        assetId: asset.id,
+        ...(asset.type === "svg" ? {} : { assetType: asset.type }),
+      } satisfies SvgNode;
       break;
+    }
     case "text": {
       const textStyle = textStyleOf(shape, diagnostics, context);
       const runs = textRunsOf(shape, diagnostics, context);
@@ -1191,10 +1216,16 @@ function boundsOf(children: readonly IrNode[]): NodeGeometry {
 }
 
 function styleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], context: ExtractionContext): NodeStyle {
-  if (isVectorType(shape.type)) return { opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics) };
+  if (isVectorType(shape.type)) {
+    const radius = cornerRadiiOf(shape);
+    return {
+      ...(radius === undefined ? {} : { radius }),
+      opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics),
+    };
+  }
   const fill = solidFillOf(shape.fills, sourceIdOf(shape.id), diagnostics);
   const gradient = gradientFillOf(shape.fills, sourceIdOf(shape.id), diagnostics);
-  const image = imageFillOf(shape.fills, shape.type === "image", sourceIdOf(shape.id), diagnostics, context);
+  const image = imageFillOf(shape.fills, shape.type === "image", sourceIdOf(shape.id), diagnostics, context, shape);
   const border = solidBorderOf(shape.strokes, sourceIdOf(shape.id), diagnostics);
   const radius = cornerRadiiOf(shape);
   const shadows = dropShadowsOf(shape.shadows, sourceIdOf(shape.id), diagnostics);
@@ -1261,7 +1292,7 @@ function normalizedOpacity(value: number | null | undefined, sourceId: string, d
   return Math.min(Math.max(value, 0), 1);
 }
 
-function imageFillOf(fills: PenpotSourceShape["fills"], isImageShape: boolean, sourceId: string, diagnostics: Diagnostic[], context: ExtractionContext): ImageFill | undefined {
+function imageFillOf(fills: PenpotSourceShape["fills"], isImageShape: boolean, sourceId: string, diagnostics: Diagnostic[], context: ExtractionContext, shape: PenpotSourceShape): ImageFill | undefined {
   if (fills == null || fills === "mixed") return undefined;
   const image = fills.find((fill) => fill.fillImage != null)?.fillImage;
   if (image == null) {
@@ -1276,7 +1307,13 @@ function imageFillOf(fills: PenpotSourceShape["fills"], isImageShape: boolean, s
   if (!context.assets.has(image.id)) {
     context.assets.set(image.id, { id: image.id, ...(typeof image.name === "string" ? { name: image.name } : {}), ...(typeof image.mtype === "string" ? { mimeType: image.mtype } : {}), width: nonNegativeDimension(image.width), height: nonNegativeDimension(image.height), path });
   }
-  return { assetPath: path, keepAspectRatio: image.keepAspectRatio === true };
+  return {
+    assetPath: path,
+    assetId: assetForId(context.assetRegistry, image.id)?.id ?? image.id,
+    keepAspectRatio: image.keepAspectRatio === true,
+    ...(shape.imageFit === undefined || shape.imageFit === null ? {} : { fit: shape.imageFit }),
+    ...(shape.imageAlignment === undefined || shape.imageAlignment === null ? {} : { alignment: shape.imageAlignment }),
+  };
 }
 
 function assetPathFor(id: string, mimeType: string | undefined): string {
@@ -1289,19 +1326,72 @@ function isVectorType(type: string): boolean {
   return type === "path" || type === "svg-raw" || type === "boolean";
 }
 
-function svgAssetPathOf(shape: PenpotSourceShape, context: ExtractionContext): string {
+function assetCandidates(
+  selection: readonly PenpotSourceShape[],
+  components: readonly PenpotComponentSource[],
+  variants: readonly PenpotVariantFamilySource[],
+  typographyInput: PenpotTypographyInput = {},
+): readonly AssetCandidate[] {
+  const candidates: AssetCandidate[] = [];
+  const visit = (shape: PenpotSourceShape): void => {
+    const sourceNodeId = sourceIdOf(shape.id);
+    const image = shape.fills === "mixed" || shape.fills == null ? undefined : shape.fills.find((fill) => fill.fillImage != null)?.fillImage;
+    if (image?.id != null && image.id.trim() !== "") {
+      candidates.push({
+        id: image.id,
+        sourceNodeId,
+        type: assetTypeForMimeType(image.mtype ?? undefined),
+        semanticName: image.name ?? shape.name,
+        ...(image.contentHash === undefined && image.data === undefined ? {} : { contentHash: image.contentHash ?? contentHashOf(image.data ?? []) }),
+        dimensions: { width: nonNegativeDimension(image.width), height: nonNegativeDimension(image.height) },
+      });
+    }
+    if (isVectorType(shape.type)) {
+      const fallback = shape.vectorRasterFallback;
+      candidates.push({
+        id: sourceNodeId,
+        sourceNodeId,
+        type: fallback == null ? "svg" : assetTypeForMimeType(fallback.mtype ?? undefined),
+        semanticName: shape.name,
+        ...(fallback?.contentHash === undefined && fallback?.data === undefined && shape.svgContent === undefined ? {} : { contentHash: fallback?.contentHash ?? (fallback?.data === undefined ? contentHashOf([...shape.svgContent!].map((character) => character.charCodeAt(0) & 0xff)) : contentHashOf(fallback.data)) }),
+        dimensions: { width: nonNegativeDimension(shape.width), height: nonNegativeDimension(shape.height) },
+      });
+    }
+    (shape.children ?? []).forEach(visit);
+  };
+  selection.forEach(visit);
+  components.forEach((component) => visit(component.root));
+  variants.forEach((variant) => variant.members.forEach((member) => visit(member.root)));
+  for (const font of typographyInput.fonts ?? []) {
+    for (const variant of font.variants) {
+      if (variant.assetPath === undefined) continue;
+      candidates.push({ id: `${font.id}:${variant.assetPath}`, sourceNodeId: font.id, type: "font", semanticName: `${font.family}/${variant.assetPath}` });
+    }
+  }
+  return candidates;
+}
+
+function svgAssetPathOf(shape: PenpotSourceShape, context: ExtractionContext, diagnostics: Diagnostic[]): { readonly id: string; readonly type: "svg" | "png" | "jpg" | "webp"; readonly path: string } {
   const sourceId = sourceIdOf(shape.id);
-  const path = assetPathFor(sourceId, "image/svg+xml");
+  const registered = assetForId(context.assetRegistry, sourceId);
+  const type = registered?.type === "png" || registered?.type === "jpg" || registered?.type === "webp" ? registered.type : "svg";
+  const mimeType = type === "svg" ? "image/svg+xml" : type === "jpg" ? "image/jpeg" : `image/${type}`;
+  const path = assetPathFor(sourceId, mimeType);
+  if (shape.vectorEffectUnsupported === true) {
+    diagnostics.push({ severity: "warning", sourceId, code: "VECTOR_EFFECT_UNSUPPORTED", message: "This vector uses an effect that cannot be represented reliably as SVG." });
+    if (type !== "svg") diagnostics.push({ severity: "warning", sourceId, code: "VECTOR_RASTERIZED", message: "The vector was assigned a raster fallback asset to preserve its unsupported effect." });
+    else diagnostics.push({ severity: "warning", sourceId, code: "ASSET_EXPORT_FAILED", message: "No raster fallback was supplied for this vector effect; export the vector as SVG manually." });
+  }
   if (!context.assets.has(sourceId)) {
     context.assets.set(sourceId, {
       id: sourceId,
-      mimeType: "image/svg+xml",
+      mimeType,
       width: nonNegativeDimension(shape.width),
       height: nonNegativeDimension(shape.height),
       path,
     });
   }
-  return path;
+  return { id: registered?.id ?? sourceId, type, path };
 }
 
 function solidFillOf(fills: PenpotSourceShape["fills"], sourceId: string, diagnostics: Diagnostic[]): ColorFill | undefined {

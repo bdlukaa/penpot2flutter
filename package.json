@@ -1,12 +1,12 @@
 {
   "name": "penpot-to-flutter",
   "private": true,
-  "version": "0.0.33",
+  "version": "0.0.34",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
     "build": "tsc && vite build",
-    "test": "rm -rf .test-build && tsc -p tsconfig.test.json && node --test .test-build/test/conversion.test.js"
+    "test": "rm -rf .test-build && tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js"
   },
   "dependencies": {
     "@penpot/plugin-types": "1.5.0"
