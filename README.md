@@ -91,13 +91,18 @@ The manifest requests only:
 
 ```sh
 npm install
+npm run typecheck
+npm run lint
 npm test
 npm run build
 npm run dev
 ```
 
+- `npm run typecheck` runs strict TypeScript checking without emitting files.
+- `npm run lint` runs the TypeScript-aware ESLint configuration.
 - `npm test` validates source-like fixtures -> IR -> deterministic Dart, including ordered-set precedence, aliases/cycles, multidimensional themes, official shape binding names, semantic component references, incremental coordinator lifecycle/cancellation, and 1,500/5,000-token indexing stress fixtures.
 - `npm run build` runs strict TypeScript checking and produces the plugin in `dist/`.
+- GitHub Actions runs typecheck, lint, test, and build on pushes to `main` and pull requests.
 - `npm run dev` hosts the manifest for local Penpot installation. Live preview reloads are deliberately disabled because a reload recreates the plugin context and discards the session index; refresh/reopen the plugin manually after a source rebuild.
 
 Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while the dev server is running. If hosted Penpot cannot access localhost due to browser/network policy, expose it through an HTTPS tunnel or deploy `dist/` to an HTTPS host.

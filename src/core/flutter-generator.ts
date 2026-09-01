@@ -390,7 +390,7 @@ function renderConstraints(node: Exclude<IrNode, { kind: "unsupported" }>, child
   const layout = node.layoutChild;
   if (layout === undefined) return child;
   let constrained = child;
-  let innerDepth = depth + Number(layout.minWidth !== undefined || layout.maxWidth !== undefined || layout.minHeight !== undefined || layout.maxHeight !== undefined);
+  const innerDepth = depth + Number(layout.minWidth !== undefined || layout.maxWidth !== undefined || layout.minHeight !== undefined || layout.maxHeight !== undefined);
   if (layout.aspectRatio !== undefined) {
     constrained = [
       "AspectRatio(",
