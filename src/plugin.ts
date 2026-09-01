@@ -1,8 +1,13 @@
-import { extractSelection, type PenpotComponentSource, type PenpotSourceShape, type PenpotSourceTextRun, type PenpotVariantFamilySource, type PenpotVariantMemberSource } from "./core/extractor.js";
-import { generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet } from "./core/flutter-generator.js";
+import { extractSelection, type PenpotComponentSource, type PenpotSourceShape, type PenpotSourceTextRun, type PenpotTokenInput, type PenpotVariantFamilySource, type PenpotVariantMemberSource } from "./core/extractor.js";
+import { generateFlutterFiles, generatePubspecSnippet } from "./core/flutter-generator.js";
+import { generateFlutterThemeFiles, validateFlutterThemeGeneration } from "./core/flutter-theme-generator.js";
+import { buildTokenRegistry } from "./core/token-registry.js";
 import { LibraryResolver, type ComponentResolution, type LibraryComponentLike, type ReadOnlyLibraryContext } from "./penpot/library-resolver.js";
+import { withTokenBindings } from "./penpot/shape-token-bindings.js";
+import { extractTokenCatalog, type ExtractedTokenCatalog } from "./penpot/token-catalog.js";
 import { componentKey } from "./shared/component-key.js";
-import type { PluginToUiMessage } from "./shared/messages.js";
+import type { Diagnostic, GeneratedFile, IrNode } from "./shared/ir.js";
+import type { PluginToUiMessage, TokenBindingStats } from "./shared/messages.js";
 
 interface LiveTextRange {
   readonly fontId?: unknown;
@@ -21,6 +26,10 @@ interface LiveTextShape extends PenpotSourceShape {
   readonly getRange?: (start: number, end: number) => LiveTextRange;
 }
 
+interface LiveTokenShape {
+  readonly tokens?: Readonly<Record<string, string>>;
+}
+
 interface LiveComponentShape {
   readonly isComponentInstance?: () => boolean;
   readonly isComponentCopyInstance?: () => boolean;
@@ -35,6 +44,18 @@ interface ResolutionIssue {
   readonly message: string;
 }
 
+interface CachedDesignSystem {
+  readonly catalog: ExtractedTokenCatalog;
+  readonly diagnostics: readonly Diagnostic[];
+  readonly tokenInput: PenpotTokenInput;
+  readonly themeFiles: readonly GeneratedFile[];
+  readonly typography: ReturnType<typeof typographyInput>;
+}
+
+let cachedDesignSystem: CachedDesignSystem | undefined;
+let designSystemFilesSent = false;
+let conversionRequest = 0;
+
 penpot.ui.open("Penpot to Flutter", `?theme=${penpot.theme}`, { width: 720, height: 640 });
 
 function isUiToPluginMessage(value: unknown): boolean {
@@ -44,35 +65,110 @@ function isUiToPluginMessage(value: unknown): boolean {
 }
 
 async function sendConversion(): Promise<void> {
+  const request = ++conversionRequest;
   const rawSelection = penpot.selection as unknown as readonly PenpotSourceShape[];
   const selection = rawSelection.map(enrichShape);
+  const designSystem = getDesignSystem();
+  const { catalog, diagnostics: catalogDiagnostics } = designSystem;
   const resolution = await resolveComponentSources(selection);
+  if (request !== conversionRequest) return;
   const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues, resolution.identities));
-  const result = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, {}, typographyInput());
+  const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, designSystem.tokenInput, designSystem.typography);
+  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, designSystem.themeFiles);
+  const files = generatedFiles?.filter((file) => !isStableDesignSystemFile(file));
+  const result = extracted === undefined ? undefined : {
+    ...extracted,
+    diagnostics: [...catalogDiagnostics, ...extracted.diagnostics, ...validateFlutterThemeGeneration(extracted.tokens, extracted.tokenThemes, generatedFiles!)],
+  };
+  const sendDesignSystemFiles = !designSystemFilesSent;
+  designSystemFilesSent = true;
   const message: PluginToUiMessage = {
     source: "penpot-to-flutter",
     type: "conversion",
     selectionCount: selection.length,
+    tokenCatalog: catalog.stats,
+    tokenCatalogDiagnostics: catalogDiagnostics,
+    tokenBindings: tokenBindingStats(result),
+    ...(sendDesignSystemFiles ? { designSystemFiles: designSystem.themeFiles.filter(isStableDesignSystemFile) } : {}),
     ...(result === undefined
       ? {}
       : {
-          result,
-          dart: generateFlutterWidget(result.root, result.components, result.tokens, result.responsiveScreen),
+          result: { diagnostics: result.diagnostics },
+          dart: generatedFiles![0].source,
           pubspecAssets: generatePubspecSnippet(result.assets, result.fonts),
-          files: generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen),
+          files,
         }),
   };
   penpot.ui.sendMessage(message);
 }
 
+function isStableDesignSystemFile(file: GeneratedFile): boolean {
+  return file.path.startsWith("theme/") || file.path === "penpot_manifest.json";
+}
+
+function tokenBindingStats(result: ReturnType<typeof extractSelection> | undefined): TokenBindingStats {
+  const stats = { colors: 0, spacing: 0, typography: 0, radius: 0, other: 0 };
+  if (result === undefined) return stats;
+  const visit = (node: IrNode): void => {
+    for (const reference of node.tokenReferences ?? []) {
+      if (reference.tokenType === "color") stats.colors++;
+      else if (reference.tokenType === "spacing") stats.spacing++;
+      else if (reference.tokenType === "typography" || reference.tokenType?.startsWith("font-") === true || reference.tokenType === "letter-spacing" || reference.tokenType === "line-height") stats.typography++;
+      else if (reference.tokenType === "border-radius") stats.radius++;
+      else stats.other++;
+    }
+    if ("children" in node) node.children.forEach(visit);
+  };
+  visit(result.root);
+  result.components.forEach((component) => visit(component.root));
+  return stats;
+}
+
+function getDesignSystem(): CachedDesignSystem {
+  if (cachedDesignSystem !== undefined) return cachedDesignSystem;
+  const loaded = loadTokenCatalog();
+  const registry = buildTokenRegistry(loaded.catalog.input.tokens, loaded.catalog.input.sets, loaded.catalog.input.themes);
+  cachedDesignSystem = {
+    ...loaded,
+    tokenInput: { ...loaded.catalog.input, registry },
+    themeFiles: generateFlutterThemeFiles(registry.tokens, registry.sets, registry.themes),
+    typography: typographyInput(),
+  };
+  console.info("Token catalog loaded", loaded.catalog.stats);
+  console.info("Token sets", loaded.catalog.stats.setNames);
+  console.info("Token themes", loaded.catalog.stats.themeNames);
+  return cachedDesignSystem;
+}
+
+function loadTokenCatalog(): { readonly catalog: ExtractedTokenCatalog; readonly diagnostics: readonly Diagnostic[] } {
+  try {
+    const catalog = extractTokenCatalog(penpot.library.local.tokens);
+    if (catalog.stats.sets > 0 || catalog.stats.themes > 0 || catalog.stats.tokens > 0) return { catalog, diagnostics: catalog.diagnostics };
+    return {
+      catalog,
+      diagnostics: [...catalog.diagnostics, { severity: "warning", sourceId: "token-catalog", code: "TOKEN_CATALOG_EMPTY_UNEXPECTEDLY", message: "Penpot returned an empty TokenCatalog. If the Tokens tab contains definitions, verify that this plugin is running against a Penpot version exposing the 1.5 TokenCatalog API." }],
+    };
+  } catch (error) {
+    console.error("Token catalog unavailable", error);
+    return {
+      catalog: { input: {}, diagnostics: [], stats: { sets: 0, themes: 0, tokens: 0, groups: [], setNames: [], themeNames: [] } },
+      diagnostics: [{ severity: "error", sourceId: "token-catalog", code: "TOKEN_CATALOG_UNAVAILABLE", message: "Unable to read penpot.library.local.tokens; token/theme generation was stopped rather than inferred from shape literals." }],
+    };
+  }
+}
+
 function enrichShape(shape: PenpotSourceShape): PenpotSourceShape {
+  const bindings = (shape as unknown as LiveTokenShape).tokens;
+  // Detect component metadata on the live Penpot proxy before cloning it: its
+  // component methods may be non-enumerable and would otherwise be lost.
   let enriched = enrichComponent(shape);
+  if (bindings !== undefined) enriched = withTokenBindings(enriched, bindings);
   if (enriched.type === "text") {
     const runs = textRunsOf(enriched as LiveTextShape);
     if (runs !== undefined) enriched = { ...enriched, runs };
   }
-  const children = enriched.children;
-  return children == null || children.length === 0 ? enriched : { ...enriched, children: children.map(enrichShape) };
+  const enrichedChildren = enriched.children;
+  return enrichedChildren == null || enrichedChildren.length === 0 ? enriched : { ...enriched, children: enrichedChildren.map(enrichShape) };
 }
 
 function enrichComponent(shape: PenpotSourceShape): PenpotSourceShape {
@@ -322,11 +418,18 @@ function typographyInput() {
 }
 
 penpot.ui.onMessage<unknown>((message) => {
-  if (isUiToPluginMessage(message)) void sendConversion();
+  if (isUiToPluginMessage(message)) {
+    designSystemFilesSent = false;
+    void sendConversion();
+  }
 });
 
 penpot.on("selectionchange", () => {
   void sendConversion();
 });
 
-void sendConversion();
+penpot.on("filechange", () => {
+  cachedDesignSystem = undefined;
+  designSystemFilesSent = false;
+  void sendConversion();
+});

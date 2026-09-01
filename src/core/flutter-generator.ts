@@ -1,4 +1,5 @@
 import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import { generateFlutterThemeFiles, tokenAccessPath } from "./flutter-theme-generator.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
 let declaredParameters: ReadonlySet<string> = new Set();
@@ -30,49 +31,6 @@ export function generatePubspecSnippet(assets: readonly AssetManifestEntry[], fo
   ].join("\n");
 }
 
-export function generateFlutterTokens(
-  tokens: readonly IrToken[],
-  sets: readonly IrTokenSet[] = [],
-  themes: readonly IrTokenTheme[] = [],
-): string {
-  const byId = new Map(tokens.map((token) => [token.id, token]));
-  const groups = new Map<string, IrToken[]>();
-  for (const token of [...tokens].sort((a, b) => a.dartClass.localeCompare(b.dartClass) || a.dartName.localeCompare(b.dartName))) {
-    if (tokenDartLiteral(token) === undefined) continue;
-    const group = groups.get(token.dartClass) ?? [];
-    group.push(token);
-    groups.set(token.dartClass, group);
-  }
-  const lines = ["import 'package:flutter/material.dart';", ""];
-  for (const [className, classTokens] of [...groups].sort(([left], [right]) => left.localeCompare(right))) {
-    lines.push(`abstract final class ${className} {`);
-    for (const token of classTokens) {
-      lines.push(`  static const ${token.dartName} = ${tokenExpression(token, byId)};`);
-    }
-    lines.push("}", "");
-  }
-  const usedIds = new Set(tokens.map((token) => token.id));
-  const relevantSets = sets.filter((set) => set.tokenIds.some((id) => usedIds.has(id)));
-  if (relevantSets.length > 0) {
-    lines.push("abstract final class AppTokenSets {");
-    for (const set of relevantSets) {
-      const members = set.tokenIds.filter((id) => usedIds.has(id)).map(stringLiteral).join(", ");
-      lines.push(`  static const ${dartMemberName(set.name, "set")} = <String>[${members}];`);
-    }
-    lines.push("}", "");
-  }
-  const relevantSetIds = new Set(relevantSets.map((set) => set.id));
-  const relevantThemes = themes.filter((theme) => theme.enabledSets.some((id) => relevantSetIds.has(id)));
-  if (relevantThemes.length > 0) {
-    lines.push("abstract final class AppTokenThemes {");
-    for (const theme of relevantThemes) {
-      const enabledSets = theme.enabledSets.filter((id) => relevantSetIds.has(id)).map(stringLiteral).join(", ");
-      lines.push(`  static const ${dartMemberName(theme.name, "theme")} = <String>[${enabledSets}];`);
-    }
-    lines.push("}", "");
-  }
-  return lines.join("\n");
-}
 
 export function generateFlutterTypography(styles: readonly IrTypographyStyle[]): string {
   return [
@@ -103,7 +61,7 @@ export function generateFlutterWidget(
     ...(roots.some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(roots.some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
-    ...(roots.some(containsTokens) ? ["import '../app_tokens.dart';"] : []),
+    ...(roots.some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
     ...(roots.some(containsTypography) ? ["import '../app_typography.dart';"] : []),
     ...componentImports(roots.flatMap((variantRoot) => [...collectInstanceComponentIds(variantRoot)]), components, "../components/"),
     "",
@@ -171,7 +129,7 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
     ...(componentRoots(component).some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(componentRoots(component).some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
-    ...(componentRoots(component).some(containsTokens) ? ["import '../app_tokens.dart';"] : []),
+    ...(componentRoots(component).some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
     ...(componentRoots(component).some(containsTypography) ? ["import '../app_typography.dart';"] : []),
     ...componentImports(component.dependencies, components, ""),
     "",
@@ -244,26 +202,26 @@ export function generateFlutterFiles(
   tokenThemes: readonly IrTokenTheme[] = [],
   responsiveScreen?: IrResponsiveScreen,
   typographyStyles: readonly IrTypographyStyle[] = [],
+  cachedThemeFiles?: readonly GeneratedFile[],
 ): GeneratedFile[] {
   const screenName = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedScreen";
-  const responsiveRoots = responsiveScreen?.variants.map((variant) => variant.root) ?? [];
-  const usedTokens = reachableTokens([root, ...responsiveRoots], components, tokens);
-  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, usedTokens, responsiveScreen, typographyStyles) }];
+  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles) }];
   for (const component of components) {
-    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, usedTokens, typographyStyles) });
+    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, tokens, typographyStyles) });
   }
-  if (usedTokens.length > 0) files.push({ path: "app_tokens.dart", source: generateFlutterTokens(usedTokens, tokenSets, tokenThemes) });
+  files.push(...(cachedThemeFiles ?? generateFlutterThemeFiles(tokens, tokenSets, tokenThemes)));
   if (typographyStyles.length > 0) files.push({ path: "app_typography.dart", source: generateFlutterTypography(typographyStyles) });
-  if (components.length > 0 || usedTokens.length > 0 || typographyStyles.length > 0) {
-    files.push({ path: "penpot_ui.dart", source: generateBarrelExport(components, snakeCase(screenName), usedTokens.length > 0, typographyStyles.length > 0) });
-  }
+  const barrel = files.find((file) => file.path === "penpot.dart");
+  const exports = generateBarrelExport(components, snakeCase(screenName), tokens.length > 0, typographyStyles.length > 0);
+  if (barrel === undefined) files.push({ path: "penpot.dart", source: exports });
+  else files[files.indexOf(barrel)] = { ...barrel, source: barrel.source + exports };
   return files;
 }
 
 function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string, hasTokens: boolean, hasTypography: boolean): string {
   return [
     `export 'screens/${screenFileName}.dart';`,
-    ...(hasTokens ? ["export 'app_tokens.dart';"] : []),
+    ...(hasTokens ? [] : []),
     ...(hasTypography ? ["export 'app_typography.dart';"] : []),
     ...components.map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
     "",
@@ -304,7 +262,7 @@ function snakeCase(value: string): string {
 }
 
 function containsRotation(node: IrNode): boolean {
-  return (node.transform?.rotation ?? 0) !== 0 || ("children" in node && node.children.some(containsRotation));
+  return (node.transform?.rotation ?? 0) !== 0 || hasToken(node, "rotation") || ("children" in node && node.children.some(containsRotation));
 }
 
 function containsSvg(node: IrNode): boolean {
@@ -392,7 +350,7 @@ function renderConstraints(node: Exclude<IrNode, { kind: "unsupported" }>, child
 
 function transformWrapperCount(node: Exclude<IrNode, { kind: "unsupported" }>): number {
   const transform = node.transform;
-  return transform === undefined ? 0 : Number(transform.rotation !== 0) + Number(transform.flipX || transform.flipY);
+  return transform === undefined ? 0 : Number(transform.rotation !== 0 || hasToken(node, "rotation")) + Number(transform.flipX || transform.flipY);
 }
 
 function renderTransform(node: Exclude<IrNode, { kind: "unsupported" }>, child: string, depth: number): string {
@@ -407,11 +365,11 @@ function renderTransform(node: Exclude<IrNode, { kind: "unsupported" }>, child: 
     `${indent(scaleDepth + 1)}child: ${child},`,
     `${indent(scaleDepth)})`,
   ].join("\n");
-  return transform.rotation === 0
+  return transform.rotation === 0 && !hasToken(node, "rotation")
     ? scaled
     : [
         "Transform.rotate(",
-        `${indent(depth + 1)}angle: ${number(transform.rotation)} * math.pi / 180,`,
+        `${indent(depth + 1)}angle: ${tokenValue(node, "rotation", number(transform.rotation))} * math.pi / 180,`,
         `${indent(depth + 1)}alignment: Alignment.center,`,
         `${indent(depth + 1)}child: ${scaled},`,
         `${indent(depth)})`,
@@ -623,6 +581,11 @@ function renderShape(node: IrNode, depth: number, ellipse: boolean): string {
   ].join("\n");
 }
 
+function argumentTokenValue(argument: IrComponentInstanceNode["arguments"][number]): string | undefined {
+  if (argument.tokenPath === undefined) return undefined;
+  return `context.penpot.${tokenAccessPath(argument.tokenPath)}`;
+}
+
 function variantEnumNameFor(componentId: string): string {
   return componentVariantEnums.get(componentId) ?? "Variant";
 }
@@ -633,7 +596,7 @@ function renderComponentInstance(node: IrComponentInstanceNode, depth: number): 
   const variantArguments = node.variantMemberName === undefined
     ? (node.variantValues ?? []).map((selection) => `${selection.axisName}: ${selection.enumName}.${selection.valueName},`)
     : [`variant: ${variantEnumNameFor(node.componentId)}.${node.variantMemberName},`];
-  const overrideArguments = node.arguments.map((argument) => `${argument.name}: ${argument.type === "Color" ? dartColor(argument.value, 1) : `'${escapeDart(argument.value)}'`},`);
+  const overrideArguments = node.arguments.map((argument) => `${argument.name}: ${argumentTokenValue(argument) ?? (argument.type === "Color" ? dartColor(argument.value, 1) : `'${escapeDart(argument.value)}'`)},`);
   const argumentsList = [...variantArguments, ...overrideArguments];
   if (argumentsList.length === 0) return `${name}()`;
   return [
@@ -744,8 +707,8 @@ function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, sty
     ...(style.fontStyle === "italic" ? ["fontStyle: FontStyle.italic"] : style.fontStyle === "normal" ? ["fontStyle: FontStyle.normal"] : []),
     ...(style.lineHeight === undefined || style.fontSize === undefined ? [] : [`height: ${tokenValue(node, "lineHeight", number(style.lineHeight))}`]),
     ...(style.letterSpacing === undefined ? [] : [`letterSpacing: ${tokenValue(node, "letterSpacing", number(style.letterSpacing))}`]),
-    ...(style.decoration === "underline" ? ["decoration: TextDecoration.underline"] : style.decoration === "line-through" ? ["decoration: TextDecoration.lineThrough"] : []),
-    ...(style.color !== undefined ? [`color: ${tokenValue(node, "textColor", dartColor(style.color.color, style.color.opacity))}`] : fillColor === undefined ? [] : [`color: ${tokenValue(node, "textColor", dartColor(fillColor.color, fillColor.opacity))}`]),
+    ...(style.decoration === "underline" ? [`decoration: ${tokenValue(node, "textDecoration", "TextDecoration.underline")}`] : style.decoration === "line-through" ? [`decoration: ${tokenValue(node, "textDecoration", "TextDecoration.lineThrough")}`] : hasToken(node, "textDecoration") ? [`decoration: ${tokenValue(node, "textDecoration", "TextDecoration.none")}`] : []),
+    ...(style.color !== undefined ? [`color: ${tokenValue(node, "textColor", dartColor(style.color.color, style.color.opacity), "fill")}`] : fillColor === undefined ? [] : [`color: ${tokenValue(node, "textColor", dartColor(fillColor.color, fillColor.opacity), "fill")}`]),
   ];
   return properties.length === 0 ? undefined : [`TextStyle(`, ...properties.map((property) => `${indent(styleDepth + 1)}${property},`), `${indent(styleDepth)})`].join("\n");
 }
@@ -765,7 +728,7 @@ function renderDecoration(node: IrNode, depth: number, circle = false): string |
     ...(radius === undefined ? [] : [`borderRadius: ${borderRadius(radius, depth + 2, node)}`]),
     ...(shadows === undefined ? [] : [`boxShadow: ${tokenValue(node, "shadow", `[\n${shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`)}`]),
   ];
-  const hasRuntimeValue = node.fillParameterName !== undefined && declaredParameters.has(node.fillParameterName);
+  const hasRuntimeValue = (node.fillParameterName !== undefined && declaredParameters.has(node.fillParameterName)) || (hasToken(node, "fill") && tokenDefinitions.get(node.tokenReferences?.find((reference) => reference.property === "fill")?.tokenId ?? "")?.type === "color");
   return properties.length === 1 && !properties[0].includes("\n") && !hasRuntimeValue
     ? `const BoxDecoration(${properties[0]})`
     : `BoxDecoration(\n${properties.map((property) => `${indent(depth + 1)}${property},`).join("\n")}\n${indent(depth)})`;
@@ -815,15 +778,14 @@ function hasPaddingToken(node: IrNode): boolean {
   return ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].some((property) => hasToken(node, property));
 }
 
-function hasToken(node: IrNode | undefined, property: string): boolean {
-  return node?.tokenReferences?.some((reference) => reference.property === property && tokenDefinitions.has(reference.tokenId)) === true;
+function hasToken(node: IrNode | undefined, property: string, ...aliases: readonly string[]): boolean {
+  return node?.tokenReferences?.some((reference) => [property, ...aliases].includes(reference.property) && reference.tokenId !== undefined && tokenDefinitions.has(reference.tokenId)) === true;
 }
 
-function tokenValue(node: IrNode | undefined, property: string, fallback: string): string {
-  const reference = node?.tokenReferences?.find((candidate) => candidate.property === property);
-  if (reference === undefined) return fallback;
-  const token = tokenDefinitions.get(reference.tokenId);
-  return token === undefined || tokenDartLiteral(token) === undefined ? fallback : `${token.dartClass}.${token.dartName}`;
+function tokenValue(node: IrNode | undefined, property: string, fallback: string, ...aliases: readonly string[]): string {
+  const reference = node?.tokenReferences?.find((candidate) => [property, ...aliases].includes(candidate.property));
+  if (reference?.tokenId === undefined || !tokenDefinitions.has(reference.tokenId)) return fallback;
+  return `context.penpot.${tokenAccessPath(reference.tokenPath)}`;
 }
 
 function dartColor(hex: string, opacity: number): string {
@@ -831,24 +793,6 @@ function dartColor(hex: string, opacity: number): string {
   return `Color(0x${alpha}${hex.slice(1)})`;
 }
 
-function reachableTokens(roots: readonly IrNode[], components: readonly IrComponentDefinition[], tokens: readonly IrToken[]): readonly IrToken[] {
-  const byId = new Map(tokens.map((token) => [token.id, token]));
-  const ids = new Set<string>();
-  const collect = (node: IrNode): void => {
-    for (const reference of node.tokenReferences ?? []) ids.add(reference.tokenId);
-    if ("children" in node) node.children.forEach(collect);
-  };
-  roots.forEach(collect);
-  for (const component of components) componentRoots(component).forEach(collect);
-  const includeAliasTargets = (id: string): void => {
-    const target = byId.get(id)?.aliasTargetId;
-    if (target === undefined || ids.has(target)) return;
-    ids.add(target);
-    includeAliasTargets(target);
-  };
-  for (const id of [...ids]) includeAliasTargets(id);
-  return tokens.filter((token) => ids.has(token.id));
-}
 
 function standaloneTextStyle(style: IrTypographyStyle): string {
   const properties = [
@@ -887,47 +831,30 @@ function verticalTextAlignment(vertical: "center" | "bottom", horizontal: TextSt
   return `${prefix}${suffix}`;
 }
 
-function tokenExpression(token: IrToken, tokens: ReadonlyMap<string, IrToken>): string {
-  const target = token.aliasTargetId === undefined ? undefined : tokens.get(token.aliasTargetId);
-  if (target !== undefined && compatibleTokenTypes(token, target) && !aliasCycleFrom(token.id, tokens)) {
-    return `${target.dartClass}.${target.dartName}`;
-  }
-  return tokenDartLiteral(token) ?? "0.0";
-}
 
-function aliasCycleFrom(id: string, tokens: ReadonlyMap<string, IrToken>): boolean {
-  const visited = new Set<string>();
-  let current: string | undefined = id;
-  while (current !== undefined) {
-    if (visited.has(current)) return true;
-    visited.add(current);
-    current = tokens.get(current)?.aliasTargetId;
-  }
-  return false;
-}
-
-function compatibleTokenTypes(left: IrToken, right: IrToken): boolean {
-  return tokenRuntimeType(left) === tokenRuntimeType(right);
-}
-
-function tokenRuntimeType(token: IrToken): string {
+export function tokenRuntimeType(token: IrToken): string {
   switch (token.type) {
     case "color": return "Color";
     case "font-family": return "String";
     case "font-weight": return "FontWeight";
+    case "text-case": return "String";
+    case "text-decoration": return "TextDecoration";
     case "typography": return "TextStyle";
     case "shadow": return "List<BoxShadow>";
     case "gradient": return "Gradient";
     case "duration": return "Duration";
+    case "unknown": return "Object";
     default: return "double";
   }
 }
 
-function tokenDartLiteral(token: IrToken): string | undefined {
+export function tokenDartLiteral(token: IrToken): string | undefined {
   switch (token.type) {
     case "color": return typeof token.value === "string" ? tokenColor(token.value) : undefined;
     case "font-family": return typeof token.value === "string" ? stringLiteral(token.value) : undefined;
     case "font-weight": return typeof token.value === "number" && Number.isFinite(token.value) ? fontWeight(token.value) : undefined;
+    case "text-case": return typeof token.value === "string" ? stringLiteral(token.value) : undefined;
+    case "text-decoration": return typeof token.value === "string" ? token.value === "underline" ? "TextDecoration.underline" : token.value === "line-through" || token.value === "strike-through" ? "TextDecoration.lineThrough" : "TextDecoration.none" : undefined;
     case "typography": return typographyTokenLiteral(token.value);
     case "shadow": return Array.isArray(token.value) ? shadowTokenLiteral(token.value as readonly DropShadow[]) : undefined;
     case "gradient": return isGradientTokenValue(token.value) ? renderGradient(token.value, 0) : undefined;
@@ -966,7 +893,7 @@ function isGradientTokenValue(value: IrToken["value"]): value is GradientFill {
   return typeof value === "object" && value !== null && !Array.isArray(value) && "type" in value && (value.type === "linear" || value.type === "radial") && "stops" in value && Array.isArray(value.stops);
 }
 
-function dartMemberName(value: string, fallback: string): string {
+export function dartMemberName(value: string, fallback: string): string {
   const pascal = value.split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
   const camel = pascal === "" ? fallback : pascal.charAt(0).toLowerCase() + pascal.slice(1);
   return /^[A-Za-z]/.test(camel) ? camel : `${fallback}${camel}`;

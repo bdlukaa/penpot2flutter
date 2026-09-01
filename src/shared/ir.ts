@@ -15,12 +15,15 @@ export type IrTokenType =
   | "border-width"
   | "border-radius"
   | "opacity"
+  | "rotation"
   | "typography"
   | "font-family"
   | "font-size"
   | "font-weight"
   | "line-height"
   | "letter-spacing"
+  | "text-case"
+  | "text-decoration"
   | "shadow"
   | "gradient"
   | "duration"
@@ -45,27 +48,41 @@ export interface IrToken {
   readonly type: IrTokenType;
   readonly value: IrTokenValue;
   readonly rawValue?: unknown;
+  readonly sourceType?: string;
+  readonly references: readonly string[];
   readonly aliasTargetId?: string;
   readonly setId?: string;
+  readonly setIndex?: number;
   readonly dartClass: string;
   readonly dartName: string;
 }
 
 export interface IrTokenReference {
   readonly property: string;
-  readonly tokenId: string;
+  /** Penpot applies tokens by semantic name, not by definition id. */
+  readonly tokenName: string;
+  readonly tokenId?: string;
+  /** Original semantic token path, preserved independently from its fallback value. */
+  readonly tokenPath: readonly string[];
+  readonly tokenType?: IrTokenType;
+  readonly resolvedValue?: IrTokenValue;
 }
 
 export interface IrTokenSet {
   readonly id: string;
   readonly name: string;
+  readonly index: number;
+  readonly active: boolean;
   readonly tokenIds: readonly string[];
 }
 
 export interface IrTokenTheme {
   readonly id: string;
+  readonly externalId?: string;
   readonly name: string;
-  readonly enabledSets: readonly string[];
+  readonly group: string;
+  readonly active: boolean;
+  readonly activeSetIds: readonly string[];
 }
 
 export interface ColorFill {
@@ -323,6 +340,9 @@ export interface IrArgument {
   readonly name: string;
   readonly value: string;
   readonly type?: ComponentParameterType;
+  readonly tokenId?: string;
+  readonly tokenPath?: readonly string[];
+  readonly tokenType?: IrTokenType;
 }
 
 export interface IrVariantValue {

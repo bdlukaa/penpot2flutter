@@ -1,6 +1,6 @@
 import { componentKey } from "../shared/component-key.js";
 import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsive-analyzer.js";
-import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource } from "./token-registry.js";
+import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource, type TokenRegistryResult } from "./token-registry.js";
 import type {
   AssetManifestEntry,
   BoardNode,
@@ -28,7 +28,9 @@ import type {
   IrFontManifestEntry,
   IrNode,
   IrTextTransform,
+  IrToken,
   IrTokenReference,
+  IrTokenSet,
   IrTypographyStyle,
   IrVariantAxis,
   IrVariantFamily,
@@ -235,7 +237,7 @@ export interface PenpotSourceShape {
   readonly overflow?: "ellipsis" | "clip" | "fade" | "visible" | null;
   readonly softWrap?: boolean | null;
   readonly runs?: readonly PenpotSourceTextRun[] | null;
-  /** Future Penpot Token API adapter output: property key to stable token ID. */
+  /** Penpot TokenProperty -> semantic token name, copied from Shape.tokens. */
   readonly tokenBindings?: Readonly<Record<string, string>> | null;
   /** Optional explicit grouping; name-based inference is used when absent. */
   readonly responsive?: ResponsiveMetadata | null;
@@ -262,6 +264,8 @@ export interface PenpotTokenInput {
   readonly tokens?: readonly PenpotTokenSource[];
   readonly sets?: readonly PenpotTokenSetSource[];
   readonly themes?: readonly PenpotTokenThemeSource[];
+  /** Prebuilt immutable registry for repeated conversions in the same file. */
+  readonly registry?: TokenRegistryResult;
 }
 
 interface ComponentSlot {
@@ -310,7 +314,7 @@ interface ExtractionContext {
   readonly components: Map<string, ComponentBuilder>;
   readonly componentOrder: string[];
   readonly usedDartNames: Map<string, string>;
-  readonly tokenIds: ReadonlySet<string>;
+  readonly tokenRegistry: ReadonlyMap<string, IrToken>;
   readonly typographyCandidates: Map<string, TypographyCandidate>;
   readonly usedTypographyNames: Set<string>;
   readonly fontSources: ReadonlyMap<string, PenpotFontSource>;
@@ -328,7 +332,7 @@ export function extractSelection(
   tokenInput: PenpotTokenInput = {},
   typographyInput: PenpotTypographyInput = {},
 ): ConversionResult {
-  const tokenRegistry = buildTokenRegistry(tokenInput.tokens, tokenInput.sets, tokenInput.themes);
+  const tokenRegistry = tokenInput.registry ?? buildTokenRegistry(tokenInput.tokens, tokenInput.sets, tokenInput.themes);
   const context: ExtractionContext = {
     diagnostics: [...tokenRegistry.diagnostics],
     assets: new Map<string, AssetManifestEntry>(),
@@ -337,7 +341,7 @@ export function extractSelection(
     components: new Map(),
     componentOrder: [],
     usedDartNames: new Map(),
-    tokenIds: new Set(tokenRegistry.tokens.map((token) => token.id)),
+    tokenRegistry: effectiveTokensByName(tokenRegistry.tokens, tokenRegistry.sets),
     typographyCandidates: new Map(),
     usedTypographyNames: new Set(),
     fontSources: new Map((typographyInput.fonts ?? []).map((font) => [font.family.toLowerCase(), font])),
@@ -528,20 +532,42 @@ function tokenReferencesOf(
   const bindings = shape.tokenBindings;
   if (bindings == null) return {};
   const references = Object.entries(bindings)
-    .filter(([property, tokenId]) => property !== "" && typeof tokenId === "string" && tokenId !== "")
+    .filter(([property, tokenName]) => property !== "" && typeof tokenName === "string" && tokenName !== "")
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([property, tokenId]) => {
-      if (!context.tokenIds.has(tokenId)) {
+    .map(([property, tokenName]): IrTokenReference => {
+      const normalizedProperty = canonicalTokenProperty(property);
+      const token = context.tokenRegistry.get(tokenName);
+      if (token === undefined) {
         diagnostics.push({
           severity: "warning",
           sourceId: sourceIdOf(shape.id),
-          code: "TOKEN_UNRESOLVED",
-          message: `Property "${property}" references unavailable design token ${tokenId}; its literal value will be used.`,
+          code: "TOKEN_BINDING_NOT_FOUND",
+          message: `Property "${property}" references unavailable design token "${tokenName}"; its literal value will be used.`,
         });
+        return { property: normalizedProperty, tokenName, tokenPath: tokenPathOf(tokenName) };
       }
-      return { property, tokenId };
+      return { property: normalizedProperty, tokenName, tokenId: token.id, tokenPath: token.path, tokenType: token.type, resolvedValue: token.value };
     });
   return references.length === 0 ? {} : { tokenReferences: references };
+}
+
+function effectiveTokensByName(tokens: readonly IrToken[], sets: readonly IrTokenSet[]): ReadonlyMap<string, IrToken> {
+  const byId = new Map(tokens.map((token) => [token.id, token]));
+  const result = new Map<string, IrToken>();
+  const activeSets = sets.filter((set) => set.active);
+  for (const set of activeSets.length === 0 ? sets : activeSets) {
+    for (const tokenId of set.tokenIds) {
+      const token = byId.get(tokenId);
+      if (token !== undefined) result.set(token.sourceName, token);
+    }
+  }
+  for (const token of tokens) if (!result.has(token.sourceName)) result.set(token.sourceName, token);
+  return result;
+}
+
+function tokenPathOf(name: string): readonly string[] {
+  const path = name.split(".").map((part) => part.trim()).filter(Boolean);
+  return path.length === 0 ? ["token"] : path;
 }
 
 function registerVariants(variants: readonly PenpotVariantFamilySource[], context: ExtractionContext): void {
@@ -736,7 +762,13 @@ function walkOverrides(main: PenpotSourceShape, instance: PenpotSourceShape, pat
   if (fillColorKey(main) !== fillColorKey(instance)) {
     const slot = builder.slots.get(path + ":fill");
     if (slot?.type === "Color" && fillColorKey(instance) !== undefined) {
-      args.push({ name: slot.parameterName, value: fillColorKey(instance)!, type: "Color" });
+      const token = tokenReferenceFor(instance, context, "fill", "fills", "fillColor", "backgroundColor");
+      args.push({
+        name: slot.parameterName,
+        value: fillColorKey(instance)!,
+        type: "Color",
+        ...(token === undefined ? {} : { tokenId: token.id, tokenPath: token.path, tokenType: token.type }),
+      });
       builder.overridden.add(slot.parameterName);
     } else {
       unsupportedOverride(instance, context, "fill color");
@@ -868,6 +900,38 @@ function fillColorKey(shape: PenpotSourceShape): string | undefined {
   const fills = shape.fills;
   if (fills == null || fills === "mixed" || fills.length === 0) return undefined;
   return fills[0].fillColor ?? undefined;
+}
+
+function canonicalTokenProperty(property: string): string {
+  const normalized = property.replace(/[-_]/g, "").toLowerCase();
+  const aliases: Readonly<Record<string, string>> = {
+    fills: "fill",
+    fillcolor: "fill",
+    backgroundcolor: "fill",
+    borderradius: "borderRadius",
+    strokecolor: "strokeColor",
+    strokewidth: "strokeWidth",
+    layoutpaddingtop: "paddingTop",
+    layoutpaddingright: "paddingRight",
+    layoutpaddingbottom: "paddingBottom",
+    layoutpaddingleft: "paddingLeft",
+    layoutitemminw: "minWidth",
+    layoutitemmaxw: "maxWidth",
+    layoutitemminh: "minHeight",
+    layoutitemmaxh: "maxHeight",
+    fontfamilies: "fontFamily",
+    textcase: "textCase",
+    rowgap: "rowGap",
+    columngap: "columnGap",
+  };
+  return aliases[normalized] ?? property;
+}
+
+function tokenReferenceFor(shape: PenpotSourceShape, context: ExtractionContext, ...properties: readonly string[]): IrToken | undefined {
+  const bindings = shape.tokenBindings;
+  if (bindings == null) return undefined;
+  const tokenId = properties.map((property) => bindings[property]).find((id): id is string => typeof id === "string" && id !== "");
+  return tokenId === undefined ? undefined : context.tokenRegistry.get(tokenId);
 }
 
 function unsupportedOverride(shape: PenpotSourceShape, context: ExtractionContext, property: string): void {

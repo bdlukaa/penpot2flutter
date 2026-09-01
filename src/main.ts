@@ -9,6 +9,7 @@ if (app === null) {
 }
 
 let latestDart = "";
+let cachedDesignSystemFiles: readonly GeneratedFile[] = [];
 
 app.innerHTML = `
   <header>
@@ -16,6 +17,21 @@ app.innerHTML = `
     <h1>Selection export</h1>
     <p id="status" class="muted">Reading the current selection…</p>
   </header>
+  <section id="design-system" aria-label="Design system statistics">
+    <h2>Design System</h2>
+    <dl>
+      <div><dt>Token sets</dt><dd id="token-set-count">0</dd></div>
+      <div><dt>Tokens</dt><dd id="token-count">0</dd></div>
+      <div><dt>Themes</dt><dd id="token-theme-count">0</dd></div>
+      <div><dt>Theme groups</dt><dd id="token-group-count">0</dd></div>
+      <div><dt>Color bindings</dt><dd id="token-color-binding-count">0</dd></div>
+      <div><dt>Spacing bindings</dt><dd id="token-spacing-binding-count">0</dd></div>
+      <div><dt>Typography bindings</dt><dd id="token-typography-binding-count">0</dd></div>
+      <div><dt>Radius bindings</dt><dd id="token-radius-binding-count">0</dd></div>
+      <div><dt>Other bindings</dt><dd id="token-other-binding-count">0</dd></div>
+    </dl>
+    <p id="token-catalog-status" class="muted"></p>
+  </section>
   <section id="empty-state" class="empty-state" hidden>
     <h2>Select a board, rectangle, or text layer</h2>
     <p>Generated Flutter code will update whenever the selection changes.</p>
@@ -59,6 +75,16 @@ const generatedFiles = requiredElement<HTMLElement>("generated-files");
 const generatedFileList = requiredElement<HTMLElement>("generated-file-list");
 const diagnostics = requiredElement<HTMLElement>("diagnostics");
 const diagnosticList = requiredElement<HTMLUListElement>("diagnostic-list");
+const tokenSetCount = requiredElement<HTMLElement>("token-set-count");
+const tokenCount = requiredElement<HTMLElement>("token-count");
+const tokenThemeCount = requiredElement<HTMLElement>("token-theme-count");
+const tokenGroupCount = requiredElement<HTMLElement>("token-group-count");
+const tokenCatalogStatus = requiredElement<HTMLElement>("token-catalog-status");
+const tokenColorBindingCount = requiredElement<HTMLElement>("token-color-binding-count");
+const tokenSpacingBindingCount = requiredElement<HTMLElement>("token-spacing-binding-count");
+const tokenTypographyBindingCount = requiredElement<HTMLElement>("token-typography-binding-count");
+const tokenRadiusBindingCount = requiredElement<HTMLElement>("token-radius-binding-count");
+const tokenOtherBindingCount = requiredElement<HTMLElement>("token-other-binding-count");
 
 copy.addEventListener("click", async () => {
   try {
@@ -89,6 +115,17 @@ window.addEventListener("message", (event) => {
 parent.postMessage({ source: "penpot-to-flutter", type: "request-conversion" }, "*");
 
 function render(message: PluginToUiMessage): void {
+  if (message.designSystemFiles !== undefined) cachedDesignSystemFiles = message.designSystemFiles;
+  tokenSetCount.textContent = String(message.tokenCatalog.sets);
+  tokenCount.textContent = String(message.tokenCatalog.tokens);
+  tokenThemeCount.textContent = String(message.tokenCatalog.themes);
+  tokenGroupCount.textContent = String(message.tokenCatalog.groups.length);
+  tokenCatalogStatus.textContent = message.tokenCatalogDiagnostics.map((diagnostic) => `${diagnostic.severity.toUpperCase()}: ${diagnostic.message}`).join(" ");
+  tokenColorBindingCount.textContent = String(message.tokenBindings.colors);
+  tokenSpacingBindingCount.textContent = String(message.tokenBindings.spacing);
+  tokenTypographyBindingCount.textContent = String(message.tokenBindings.typography);
+  tokenRadiusBindingCount.textContent = String(message.tokenBindings.radius);
+  tokenOtherBindingCount.textContent = String(message.tokenBindings.other);
   const hasSelection = message.result !== undefined && message.dart !== undefined;
   emptyState.hidden = hasSelection;
   result.hidden = !hasSelection;
@@ -126,7 +163,8 @@ function render(message: PluginToUiMessage): void {
 }
 
 function renderGeneratedFiles(files: readonly GeneratedFile[] | undefined, fallback: string): void {
-  const generated = files?.length === 0 || files === undefined ? [{ path: "generated_widget.dart", source: fallback }] : files;
+  const selectionFiles = files?.length === 0 || files === undefined ? [{ path: "generated_widget.dart", source: fallback }] : files;
+  const generated = [...selectionFiles, ...cachedDesignSystemFiles.filter((stable) => !selectionFiles.some((file) => file.path === stable.path))];
   generatedFiles.hidden = generated.length < 2;
   generatedFileList.replaceChildren(
     ...generated.map((file, index) => {

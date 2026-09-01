@@ -5,7 +5,12 @@ import test from "node:test";
 
 import { extractSelection, type PenpotSourceShape } from "../src/core/extractor.js";
 import { generateComponentWidget, generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
+import { validateFlutterThemeGeneration } from "../src/core/flutter-theme-generator.js";
+import { buildTokenRegistry, resolveTokenSets } from "../src/core/token-registry.js";
 import { LibraryResolver } from "../src/penpot/library-resolver.js";
+import { extractTokenCatalog } from "../src/penpot/token-catalog.js";
+import { withTokenBindings } from "../src/penpot/shape-token-bindings.js";
+import type { TokenCatalog } from "@penpot/plugin-types";
 
 const board = {
   id: "board-1",
@@ -1137,6 +1142,15 @@ test("preserves non-enumerable children from Penpot component proxies", () => {
   assert.equal(component.root.children[0].sourceName, "Background");
 });
 
+test("preserves non-enumerable children while adding shape token bindings", () => {
+  const proxyLikeShape = { id: "token-parent", name: "Token parent", type: "board", x: 0, y: 0, width: 40, height: 40, visible: true };
+  const children = [{ id: "instance", name: "Button", type: "rectangle", x: 0, y: 0, width: 40, height: 40, visible: true }];
+  Object.defineProperty(proxyLikeShape, "children", { enumerable: false, value: children });
+  const enriched = withTokenBindings(proxyLikeShape, { fill: "color.primary" });
+  assert.equal(enriched.children, children);
+  assert.deepEqual(enriched.tokenBindings, { fill: "color.primary" });
+});
+
 test("keeps layers inside a component tree as ordinary component content", () => {
   const mainWithInternalLayer = {
     ...buttonMain,
@@ -1333,136 +1347,184 @@ test("generates deterministic multi-file output with a barrel export", () => {
 
   const files = generateFlutterFiles(result.root, result.components);
   const paths = files.map((file) => file.path);
-  assert.deepEqual(paths, ["screens/checkout_screen.dart", "components/primary_button.dart", "components/product_card.dart", "penpot_ui.dart"]);
-  assert.match(files.find((file) => file.path === "penpot_ui.dart")!.source, /export 'components\/primary_button\.dart';/);
+  assert.deepEqual(paths, ["screens/checkout_screen.dart", "components/primary_button.dart", "components/product_card.dart", "penpot.dart"]);
+  assert.match(files.find((file) => file.path === "penpot.dart")!.source, /export 'components\/primary_button\.dart';/);
 
   const again = generateFlutterFiles(result.root, result.components);
   assert.deepEqual(again, files);
 });
 
-test("preserves color, spacing, radius, typography, aliases, sets, and themes as token references", () => {
+test("generates typed theme fields and component references from semantic token names", () => {
   const tokenBoard = {
-    id: "token-board",
-    name: "Token Card",
-    type: "board",
-    x: 0,
-    y: 0,
-    width: 200,
-    height: 100,
-    visible: true,
+    id: "token-board", name: "Token Card", type: "board", x: 0, y: 0, width: 200, height: 100, visible: true,
     flex: { dir: "column", rowGap: 16, topPadding: 16, rightPadding: 16, bottomPadding: 16, leftPadding: 16 },
-    tokenBindings: { rowGap: "spacing-md", paddingTop: "spacing-md", paddingRight: "spacing-md", paddingBottom: "spacing-md", paddingLeft: "spacing-md" },
+    tokenBindings: { rowGap: "space.modular.lg", paddingTop: "space.modular.lg", paddingRight: "space.modular.lg", paddingBottom: "space.modular.lg", paddingLeft: "space.modular.lg" },
     children: [{
-      id: "token-card",
-      name: "Card",
-      type: "rectangle",
-      x: 0,
-      y: 0,
-      width: 168,
-      height: 68,
-      visible: true,
-      fills: [{ fillColor: "#6750a4", fillOpacity: 1 }],
-      borderRadius: 12,
-      tokenBindings: { fill: "color-button", borderRadius: "radius-md" },
-    }, {
-      id: "token-title",
-      name: "Title",
-      type: "text",
-      x: 0,
-      y: 0,
-      width: 168,
-      height: 30,
-      visible: true,
-      characters: "Tokens",
-      fontFamily: "Inter",
-      fontSize: "24",
-      fontWeight: "700",
-      lineHeight: "1.2",
-      tokenBindings: { typography: "type-heading" },
+      id: "token-card", name: "Card", type: "rectangle", x: 0, y: 0, width: 168, height: 68, visible: true,
+      fills: [{ fillColor: "#eaf4ff", fillOpacity: 1 }], borderRadius: 12,
+      tokenBindings: { fill: "color.info.background", borderRadius: "radius.modular.sm" },
     }],
   } as const;
   const result = extractSelection([tokenBoard], [], [], {
     tokens: [
-      { id: "color-raw", name: "palette.purple.500", type: "color", value: "#6750a4", setId: "global" },
-      { id: "color-button", name: "color.button.background", type: "color", value: "#6750a4", aliasTargetId: "color-raw", setId: "light" },
-      { id: "spacing-md", name: "spacing.md", type: "spacing", value: 16, setId: "global" },
-      { id: "radius-md", name: "radius.md", type: "border-radius", value: 12, setId: "global" },
-      { id: "type-heading", name: "typography.heading.large", type: "typography", value: { fontFamily: "Inter", fontSize: 24, fontWeight: 700, lineHeight: 1.2 }, setId: "global" },
+      { id: "color", name: "color.info.background", type: "color", value: "#eaf4ff", setId: "light" },
+      { id: "primary", name: "color.primary", type: "color", value: "#6750a4", setId: "light" },
+      { id: "space", name: "space.modular.lg", type: "spacing", value: 16, setId: "global" },
+      { id: "radius", name: "radius.modular.sm", type: "border-radius", value: 12, setId: "global" },
+      { id: "motion", name: "motion.duration.fast", type: "duration", value: 150, setId: "global" },
     ],
     sets: [
-      { id: "global", name: "Global", tokenIds: ["color-raw", "spacing-md", "radius-md", "type-heading"] },
-      { id: "light", name: "Light", tokenIds: ["color-button"] },
+      { id: "global", name: "Global", active: true, tokenIds: ["space", "radius", "motion"] },
+      { id: "light", name: "Light", tokenIds: ["color", "primary"] },
     ],
-    themes: [{ id: "light-theme", name: "Light", enabledSets: ["global", "light"] }],
+    themes: [{ id: "light-theme", name: "Light", group: "Mode", active: true, activeSetIds: ["global", "light"] }],
   });
 
-  assert.equal(result.tokens.length, 5);
-  assert.deepEqual(result.root.tokenReferences?.map((reference) => reference.tokenId), ["spacing-md", "spacing-md", "spacing-md", "spacing-md", "spacing-md"]);
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes);
   const screen = files.find((file) => file.path === "screens/token_card.dart")!.source;
-  const tokens = files.find((file) => file.path === "app_tokens.dart")!.source;
-  assert.match(screen, /spacing: AppSpacing\.md,/);
-  assert.match(screen, /EdgeInsetsDirectional\.only\(top: AppSpacing\.md, start: AppSpacing\.md, end: AppSpacing\.md, bottom: AppSpacing\.md\)/);
-  assert.match(screen, /color: AppColors\.buttonBackground/);
-  assert.match(screen, /BorderRadius\.circular\(AppRadius\.md\)/);
-  assert.match(tokens, /static const palettePurple500 = Color\(0xff6750a4\);/);
-  assert.match(tokens, /static const buttonBackground = AppColors\.palettePurple500;/);
-  assert.match(tokens, /static const headingLarge = TextStyle\(/);
-  assert.match(tokens, /abstract final class AppTokenThemes/);
-  const tokenDartPath = new URL("../app_tokens.dart", import.meta.url);
-  writeFileSync(tokenDartPath, tokens);
-  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", tokenDartPath.pathname]));
+  const namespaces = files.find((file) => file.path === "theme/penpot_token_namespaces.dart")!.source;
+  const extension = files.find((file) => file.path === "theme/penpot_tokens.dart")!.source;
+  const themes = files.find((file) => file.path === "theme/penpot_themes.dart")!.source;
+  assert.match(screen, /context\.penpot\.space\.modular\.lg/);
+  assert.match(screen, /context\.penpot\.color\.info\.background/);
+  assert.match(screen, /context\.penpot\.radius\.modular\.sm/);
+  assert.doesNotMatch(screen, /Color\(0xffeaf4ff\)/);
+  assert.match(namespaces, /class PenpotColorInfoTokens/);
+  assert.match(namespaces, /final Color background;/);
+  assert.match(namespaces, /final Duration fast;/);
+  assert.match(extension, /extends ThemeExtension<PenpotTokens>/);
+  assert.match(themes, /enum PenpotMode/);
+  assert.match(themes, /ThemeData buildPenpotTheme/);
+  assert.match(themes, /colorScheme: ThemeData\(\)\.colorScheme\.copyWith/);
+  assert.match(themes, /primary: values\['color\.primary'\] as Color/);
+  assert.ok(files.some((file) => file.path === "penpot_manifest.json"));
+  for (const file of files.filter((file) => file.path.endsWith(".dart"))) {
+    const path = new URL(`../${file.path.replace(/\//g, "_")}`, import.meta.url);
+    writeFileSync(path, file.source);
+    assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", path.pathname]));
+  }
 });
 
-test("keeps component token usage and emits only reachable token definitions", () => {
-  const tokenizedButton = {
+test("maps official Penpot shape token properties to semantic Flutter fields", () => {
+  const result = extractSelection([{
+    id: "bound-text", name: "Bound text", type: "text", x: 0, y: 0, width: 100, height: 24, visible: true,
+    characters: "Info", fontFamily: "Inter", fontSize: "16", fills: [{ fillColor: "#eaf4ff", fillOpacity: 1 }],
+    tokenBindings: { fill: "color.info.text", fontFamilies: "typography.family.body", fontSize: "typography.size.body" },
+  }], [], [], {
+    tokens: [
+      { id: "text-color", name: "color.info.text", type: "color", value: "#eaf4ff", setId: "global" },
+      { id: "font-family", name: "typography.family.body", type: "font-family", value: "Inter", setId: "global" },
+      { id: "font-size", name: "typography.size.body", type: "font-size", value: 16, setId: "global" },
+    ],
+    sets: [{ id: "global", name: "Global", active: true, tokenIds: ["text-color", "font-family", "font-size"] }],
+  });
+  const dart = generateFlutterWidget(result.root, result.components, result.tokens);
+  assert.match(dart, /color: context\.penpot\.color\.info\.text/);
+  assert.match(dart, /fontFamily: context\.penpot\.typography\.family\.body/);
+  assert.match(dart, /fontSize: context\.penpot\.typography\.size\.body/);
+  assert.doesNotMatch(dart, /color: Color\(0xffeaf4ff\)/);
+});
+
+test("reuses a prebuilt token registry for repeated selection extraction", () => {
+  const registry = buildTokenRegistry(
+    [{ id: "primary", name: "color.primary", type: "color", value: "#6750a4", setId: "global" }],
+    [{ id: "global", name: "Global", active: true, tokenIds: ["primary"] }],
+  );
+  const result = extractSelection([{
+    id: "cached-token-shape", name: "Cached token shape", type: "rectangle", x: 0, y: 0, width: 10, height: 10, visible: true,
+    fills: [{ fillColor: "#6750a4", fillOpacity: 1 }], tokenBindings: { fill: "color.primary" },
+  }], [], [], { tokens: [], sets: [], registry });
+  assert.equal(result.tokens, registry.tokens);
+  assert.match(generateFlutterWidget(result.root, result.components, result.tokens), /context\.penpot\.color\.primary/);
+});
+
+test("reports token and theme generation mismatches", () => {
+  const tokenDefinition = { id: "primary", sourceName: "color.primary", path: ["color", "primary"], type: "color", value: "#6750a4", references: [], dartClass: "AppColors", dartName: "primary" } as const;
+  const diagnostics = validateFlutterThemeGeneration([tokenDefinition], [{ id: "light", name: "Light", group: "Mode", active: true, activeSetIds: [] }], []);
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "TOKEN_GENERATION_MISMATCH"));
+  assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "TOKEN_THEME_GENERATION_MISMATCH"));
+});
+
+test("exports the full catalog rather than only tokens reachable from selected shapes", () => {
+  const result = extractSelection([{
     ...buttonMain,
     fills: [{ fillColor: "#6750a4", fillOpacity: 1 }],
-    tokenBindings: { fill: "primary-color" },
-  };
-  const result = extractSelection(
-    [buttonInstance("token-button-instance", "Continue")],
-    [{ id: "comp-button", name: "Primary Button", root: tokenizedButton }],
-    [],
-    { tokens: [
-      { id: "primary-color", name: "color.primary", type: "color", value: "#6750a4" },
-      { id: "unused-color", name: "color.unused", type: "color", value: "#ff0000" },
-    ] },
-  );
-  const files = generateFlutterFiles(result.root, result.components, result.tokens);
-  const component = files.find((file) => file.path === "components/primary_button.dart")!.source;
-  const tokens = files.find((file) => file.path === "app_tokens.dart")!.source;
-  assert.match(component, /import '\.\.\/app_tokens\.dart';/);
-  assert.match(component, /color: AppColors\.primary/);
-  assert.doesNotMatch(tokens, /unused/);
+    tokenBindings: { fill: "color.primary" },
+  }], [], [], {
+    tokens: [
+      { id: "primary", name: "color.primary", type: "color", value: "#6750a4", setId: "global" },
+      { id: "unused", name: "color.unused", type: "color", value: "#ff0000", setId: "global" },
+    ],
+    sets: [{ id: "global", name: "Global", active: true, tokenIds: ["primary", "unused"] }],
+  });
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets);
+  const namespaces = files.find((file) => file.path === "theme/penpot_token_namespaces.dart")!.source;
+  assert.match(generateFlutterWidget(result.root, result.components, result.tokens), /context\.penpot\.color\.primary/);
+  assert.match(namespaces, /final Color unused;/);
 });
 
-test("diagnoses unresolved tokens, name collisions, invalid values, unsupported types, and alias cycles", () => {
+test("preserves set order, multidimensional themes, 200+ tokens, and alias resolution", () => {
+  const bulk = Array.from({ length: 205 }, (_, index) => token(`bulk.token${index}`, "number", String(index), index));
+  const global = token("color.background", "color", "#ffffff", 1000);
+  const light = token("color.background", "color", "#eeeeee", 1001);
+  const alias = token("color.surface", "color", "{color.background}", 1002, "#eeeeee");
+  const dark = token("color.background", "color", "#000000", 1003);
+  const sets = [
+    tokenSet("global", "Global", true, [...bulk, global]),
+    tokenSet("light", "Light", true, [light, alias]),
+    tokenSet("dark", "Dark", false, [dark]),
+  ];
+  const catalog = {
+    sets,
+    themes: [
+      tokenTheme("mode-light", "Mode", "Light", true, [sets[1]]),
+      tokenTheme("mode-dark", "Mode", "Dark", false, [sets[2]]),
+      tokenTheme("brand-a", "Brand", "A", true, [sets[0]]),
+      tokenTheme("brand-b", "Brand", "B", false, [sets[0]]),
+    ],
+  } as unknown as TokenCatalog;
+  const extracted = extractTokenCatalog(catalog);
+  const registry = extractSelection([board], [], [], extracted.input);
+  const resolved = resolveTokenSets(registry.tokens, registry.tokenSets, new Set(["global", "light"]));
+
+  assert.equal(extracted.stats.tokens, 209);
+  assert.equal(extracted.stats.sets, 3);
+  assert.equal(extracted.stats.themes, 4);
+  assert.deepEqual(registry.tokenSets.map((set) => set.id), ["global", "light", "dark"]);
+  assert.equal(resolved.tokens.get("color.background")?.value, "#eeeeee");
+  assert.equal(resolved.tokens.get("color.surface")?.value, "#eeeeee");
+  assert.deepEqual(registry.tokenThemes.map((theme) => theme.group), ["Mode", "Mode", "Brand", "Brand"]);
+});
+
+test("diagnoses missing bindings, unsupported types, invalid values, and alias cycles", () => {
   const result = extractSelection([{
-    id: "bad-token-shape",
-    name: "Bad token shape",
-    type: "rectangle",
-    x: 0,
-    y: 0,
-    width: 10,
-    height: 10,
-    visible: true,
-    fills: [{ fillColor: "#000000", fillOpacity: 1 }],
-    tokenBindings: { fill: "missing-token" },
+    id: "bad-token-shape", name: "Bad token shape", type: "rectangle", x: 0, y: 0, width: 10, height: 10, visible: true,
+    fills: [{ fillColor: "#000000", fillOpacity: 1 }], tokenBindings: { fill: "missing.token" },
   }], [], [], { tokens: [
-    { id: "cycle-a", name: "color.same-name", type: "color", value: "#000000", aliasTargetId: "cycle-b" },
-    { id: "cycle-b", name: "color.same name", type: "color", value: "#ffffff", aliasTargetId: "cycle-a" },
-    { id: "bad-number", name: "spacing.bad", type: "spacing", value: "large" },
-    { id: "unsupported", name: "asset.logo", type: "asset", value: "logo.svg" },
-  ] });
-  const codes = new Set(result.diagnostics.map((diagnostic) => diagnostic.code));
-  assert.ok(codes.has("TOKEN_UNRESOLVED"));
-  assert.ok(codes.has("TOKEN_NAME_COLLISION"));
+    { id: "cycle-a", name: "color.a", type: "color", value: "#000000", rawValue: "{color.b}", references: ["color.b"], setId: "set" },
+    { id: "cycle-b", name: "color.b", type: "color", value: "#ffffff", rawValue: "{color.a}", references: ["color.a"], setId: "set" },
+    { id: "bad-number", name: "spacing.bad", type: "spacing", value: "large", setId: "set" },
+    { id: "unsupported", name: "asset.logo", type: "asset", value: "logo.svg", setId: "set" },
+  ], sets: [{ id: "set", name: "Set", active: true, tokenIds: ["cycle-a", "cycle-b", "bad-number", "unsupported"] }] });
+  const resolved = resolveTokenSets(result.tokens, result.tokenSets, new Set(["set"]));
+  const codes = new Set([...result.diagnostics, ...resolved.diagnostics].map((diagnostic) => diagnostic.code));
+  assert.ok(codes.has("TOKEN_BINDING_NOT_FOUND"));
   assert.ok(codes.has("TOKEN_ALIAS_CYCLE"));
   assert.ok(codes.has("TOKEN_VALUE_INVALID"));
   assert.ok(codes.has("TOKEN_TYPE_UNSUPPORTED"));
-  assert.match(generateFlutterWidget(result.root, result.components, result.tokens), /Color\(0xff000000\)/);
 });
+
+function token(name: string, type: string, value: unknown, index: number, resolvedValue: unknown = value) {
+  return { id: `token-${index}`, name, description: "", type, value, resolvedValue, resolvedValueString: String(resolvedValue), duplicate() {}, remove() {}, applyToShapes() {}, applyToSelected() {} };
+}
+
+function tokenSet(id: string, name: string, active: boolean, tokens: readonly unknown[]) {
+  return { id, name, active, tokens, tokensByType: [], toggleActive() {}, getTokenById() {}, addToken() {}, duplicate() {}, remove() {} };
+}
+
+function tokenTheme(id: string, group: string, name: string, active: boolean, activeSets: readonly unknown[]) {
+  return { id, externalId: undefined, group, name, active, activeSets, toggleActive() {}, addSet() {}, removeSet() {}, duplicate() {}, remove() {} };
+}
 
 function responsiveBoard(
   name: string,

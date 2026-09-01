@@ -32,8 +32,8 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Explicit Penpot component definitions and component instances: one Flutter widget per canonical component, with callers generated as widget invocations
 - Local and connected shared-library component resolution, including nested and cross-library component dependencies, composite library/component identity, deterministic name collision handling, and conservative text-override (`String`) parameters
 - Penpot variant families as one reusable Flutter widget with deterministic typed enum axes, default values, explicit member matrices, instance arguments, and runtime rejection of undefined combinations
-- First-class token IR for colors, dimensions, spacing, sizing, border widths/radii, opacity, typography values, shadows, gradients, durations, numbers, aliases, sets, and themes
-- Deterministic `app_tokens.dart` generation, semantic token aliases, reachable-token filtering, token references in generated widgets/components, and literal fallbacks with token diagnostics
+- Direct design-system extraction from the official Penpot 1.5 `penpot.library.local.tokens` `TokenCatalog`, preserving ordered sets, all definitions, source types, raw values, aliases, active state, theme groups, and theme-to-set membership
+- Typed nested token namespaces, `PenpotTokens extends ThemeExtension`, multidimensional theme-axis enums, `ThemeData` composition, `BuildContext.penpot`, full-catalog metadata, and semantic token references in generated widgets/components
 - Responsive screen IR and conservative Mobile/Tablet/Desktop board-family detection, with explicit metadata support for unambiguous custom groups
 - Dependency-free `LayoutBuilder` breakpoint generation, responsive Row/Column and grid variants, hidden breakpoint content, component/variant preservation, and Stack fallback for overlays
 - Penpot child min/max dimensions as `ConstrainedBox`, fill sizing as `Expanded`, auto sizing without forced expansion, and optional aspect-ratio constraints when source metadata provides one
@@ -68,9 +68,11 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Responsive board inference only accepts exact semantic families ending in `Mobile`, `Tablet`, or `Desktop` and requires structural similarity. Low-confidence or unrelated boards remain separate and produce `RESPONSIVE_GROUP_UNRESOLVED`; explicit metadata may confirm intentionally divergent layouts.
 - Inferred Mobile/Tablet/Desktop thresholds use available width (`600` and `1024`) with no device-type or orientation checks. Breakpoint branches stay inside one generated screen class; structurally divergent branches retain safe independent subtrees rather than forcing a brittle merge.
 - The official Penpot API exposes min/max child constraints but no aspect-ratio or flex grow/shrink fields. The IR supports an explicit aspect ratio for future/configured adapters; unavailable semantics are never inferred from canvas geometry alone.
-- The current official Penpot Plugin API and latest `@penpot/plugin-types` release (`1.4.2`) do not expose Design Token collections or shape token bindings. Penpot's Design Tokens documentation describes the plugins Tokens API as “coming soon.” The compiler, serializable token IR, diagnostics, and Flutter token generation are implemented and fixture-tested, but `src/plugin.ts` cannot discover live Penpot token usage until that public API ships. The plugin does not inspect private application state or infer bindings from equal literal values.
-- Token sets and themes are preserved as deterministic generated metadata. Theme-aware runtime value switching cannot be wired to live Penpot themes until the official API exposes active theme resolution and bound-token identities.
-- Component output is generated as deterministic source files (`screens/`, `components/`, `app_tokens.dart` when used, and `penpot_ui.dart`). The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
+- Live token extraction requires Penpot Plugin API types compatible with `@penpot/plugin-types` `1.5.0`. The source of truth is `penpot.library.local.tokens`; applied bindings come from `Shape.tokens`, whose values are semantic token names. The plugin never identifies tokens by matching equal resolved values.
+- The file-wide token catalog, normalized registry, generated theme files, and font metadata are cached once per open plugin/file and reused for selection changes. The cache is invalidated on Penpot `filechange`; because the current API exposes no token-change event, reopen the plugin after editing token definitions or theme membership.
+- Whole-token aliases are resolved with cycle detection. Composite aliases preserve references and use Penpot's resolved fallback with `TOKEN_ALIAS_UNRESOLVED`; inset shadows are diagnosed because Flutter `BoxShadow` cannot represent them.
+- Material `ColorScheme`/`TextTheme` roles are not guessed from palette names. The complete catalog remains available through `ThemeExtension`; explicit role mapping is a future configuration surface.
+- Component output is generated as deterministic source files under `screens/`, `components/`, `theme/`, plus `penpot.dart` and `penpot_manifest.json`. The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
 - Asset references and the pubspec snippet are generated, but original image and SVG binary files are not downloaded. The plugin does not claim to export a binary bundle because the current browser/plugin setup provides no verified, safe ZIP download path.
 - Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
 
@@ -93,7 +95,7 @@ npm run build
 npm run dev
 ```
 
-- `npm test` validates source-like fixtures -> IR -> deterministic Dart and verifies representative generated output against `dart format` when the Dart SDK is available.
+- `npm test` validates source-like fixtures -> IR -> deterministic Dart, including ordered-set precedence, 200+ token catalogs, aliases/cycles, multidimensional themes, official shape binding names, semantic component references, and representative `dart format` checks.
 - `npm run build` runs strict TypeScript checking and produces the plugin in `dist/`.
 - `npm run dev` hosts the manifest for local Penpot installation.
 
@@ -113,6 +115,8 @@ Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while
 10. For images, add the displayed `pubspec.yaml` snippet and place the corresponding image files at the generated asset paths before running the Flutter app.
 11. For vectors, add `flutter_svg` to your Flutter project (`flutter pub add flutter_svg`) and export the SVG assets to the generated `assets/images/*.svg` paths.
 12. Select matching boards named `Screen / Mobile`, `Screen / Tablet`, and `Screen / Desktop`. Confirm one generated screen uses `LayoutBuilder`, omits fixed top-level board dimensions, preserves component calls, and reports inferred breakpoints.
+13. In a file with tokens, compare the Tokens tab with the plugin's Design System counts and console set/theme lists. Confirm `theme/penpot_tokens.dart`, `theme/penpot_themes.dart`, and `penpot_manifest.json` are non-empty.
+14. Inspect at least three token-bound layers and verify generated properties use `context.penpot.<semantic.path>` rather than resolved literals. Export the generated tree, then run `dart format lib/generated/penpot` and `flutter analyze` in the target Flutter project.
 
 ## Adding the SVG dependency
 
@@ -132,9 +136,11 @@ src/
   main.ts                    Iframe UI and code preview
   core/extractor.ts          Penpot-like data -> normalized IR
   core/flutter-generator.ts  IR -> Dart source
-  core/token-registry.ts      Token sources -> deterministic token IR
-  core/responsive-analyzer.ts Responsive board analysis and breakpoint IR
-  shared/ir.ts               Serializable layout, typography, token, and component IR               Serializable compiler IR
+  penpot/token-catalog.ts      Official TokenCatalog -> serializable compiler input
+  core/token-registry.ts       Token sources -> deterministic token IR/resolution
+  core/flutter-theme-generator.ts Token IR -> typed ThemeExtension/ThemeData files
+  core/responsive-analyzer.ts  Responsive board analysis and breakpoint IR
+  shared/ir.ts                 Serializable layout, typography, token, and component IR
   shared/messages.ts         Typed UI/plugin protocol
   shared/version.ts          UI version indicator
 ```
@@ -147,12 +153,16 @@ For a selected screen containing component instances, the compiler emits determi
 screens/checkout_screen.dart
 components/primary_button.dart
 components/product_card.dart
-app_tokens.dart
-penpot_ui.dart
+theme/penpot_token_namespaces.dart
+theme/penpot_tokens.dart
+theme/penpot_themes.dart
+theme/penpot_theme_extensions.dart
+penpot_manifest.json
+penpot.dart
 ```
 
 Each main component becomes one `StatelessWidget`; each linked instance becomes a call to that widget. A composite `libraryId:componentId` key, rather than a display name or raw component ID, defines identity. Display names only determine deterministic Dart class/file names, with a suffix added for collisions. A detached instance remains an ordinary shape tree.
 
 ## Next milestone
 
-The remaining post-MVP work is factoring structurally identical responsive breakpoint trees into shared conditional values, wiring live Design Token extraction when Penpot publishes its promised Plugin Tokens API, a verified archive/download workflow for images and SVG assets, broader component override parameters, finer-grained factoring of variant-member differences, and project-wide export.
+The remaining post-MVP work is explicit Material `ColorScheme`/`TextTheme` role configuration, complete composite-alias conversion, a verified archive/download workflow for images and SVG assets, broader component override parameters, finer-grained factoring of variant-member differences, and project-wide export.
