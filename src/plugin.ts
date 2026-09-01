@@ -5,7 +5,7 @@ import { generateFlutterThemeFiles, validateFlutterThemeGeneration } from "./cor
 import { buildTokenRegistry } from "./core/token-registry.js";
 import { LibraryResolver, type ComponentResolution, type LibraryComponentLike, type ReadOnlyLibraryContext } from "./penpot/library-resolver.js";
 import { withTokenBindings } from "./penpot/shape-token-bindings.js";
-import { extractTokenCatalogIncrementally, readTokenCatalogMetadata, type ExtractedTokenCatalog } from "./penpot/token-catalog.js";
+import { extractTokenCatalog, extractTokenCatalogIncrementally, readTokenCatalogMetadata, type ExtractedTokenCatalog } from "./penpot/token-catalog.js";
 import { DesignSystemIndexManager, type DesignSystemIndexSnapshot, type DesignSystemIndexState } from "./core/design-system-index-manager.js";
 import { componentKey } from "./shared/component-key.js";
 import type { Diagnostic, GeneratedFile, IrAsset, IrNode } from "./shared/ir.js";
@@ -107,10 +107,11 @@ async function sendConversion(): Promise<void> {
   }
   const effectiveDesignSystem = designSystem ?? emptyDesignSystem();
   const { catalog, diagnostics: catalogDiagnostics } = effectiveDesignSystem;
+  const tokenInput = libraryTokenInput(effectiveDesignSystem.tokenInput);
   const resolution = await resolveComponentSources(selection);
   if (request !== conversionRequest) return;
   const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues, resolution.identities));
-  const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, effectiveDesignSystem.tokenInput, effectiveDesignSystem.typography);
+  const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, tokenInput, effectiveDesignSystem.typography);
   const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, effectiveDesignSystem.themeFiles, extracted.assetRegistry);
   const files = generatedFiles?.filter((file) => !isStableDesignSystemFile(file));
   const exportedAssets = extracted === undefined
@@ -282,6 +283,33 @@ function emptyDesignSystem(): CachedDesignSystem {
   };
 }
 
+/** Serializes connected-library token catalogs before the compiler boundary. */
+function libraryTokenInput(localInput: PenpotTokenInput): PenpotTokenInput {
+  const libraries = [
+    { id: penpot.library.local.id, name: penpot.library.local.name, scope: "local" as const },
+    ...penpot.library.connected.map((library) => ({ id: library.id, name: library.name, scope: "shared" as const })),
+  ];
+  const shared = penpot.library.connected.flatMap((library) => {
+    try {
+      const input = extractTokenCatalog(library.tokens).input;
+      return [{
+        tokens: (input.tokens ?? []).map((token) => ({ ...token, sourceLibraryId: library.id, sourceLibraryScope: "shared" as const })),
+        sets: (input.sets ?? []).map((set) => ({ ...set, sourceLibraryId: library.id, sourceLibraryScope: "shared" as const })),
+        themes: (input.themes ?? []).map((theme) => ({ ...theme, sourceLibraryId: library.id, sourceLibraryScope: "shared" as const })),
+      }];
+    } catch {
+      return [];
+    }
+  });
+  if (shared.length === 0) return { ...localInput, libraries };
+  return {
+    libraries,
+    tokens: [...(localInput.tokens ?? []), ...shared.flatMap((catalog) => catalog.tokens)],
+    sets: [...(localInput.sets ?? []), ...shared.flatMap((catalog) => catalog.sets)],
+    themes: [...(localInput.themes ?? []), ...shared.flatMap((catalog) => catalog.themes)],
+  };
+}
+
 function enrichShape(shape: PenpotSourceShape): PenpotSourceShape {
   const bindings = (shape as unknown as LiveTokenShape).tokens;
   // Detect component metadata on the live Penpot proxy before cloning it: its
@@ -432,7 +460,13 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
         return;
       }
       const root = await enrichAssetTree(enrichShape(main), main);
-      sources.set(key, { id: result.component.id, libraryId: result.component.libraryId, name: result.component.name, root });
+      sources.set(key, {
+        id: result.component.id,
+        libraryId: result.component.libraryId,
+        libraryScope: result.library.id === penpot.library.local.id ? "local" : "shared",
+        name: result.component.name,
+        root,
+      });
       for (const child of root.children ?? []) queue.push(child);
     } catch {
       issues.set(shape.id, {
@@ -456,7 +490,13 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
         const main = member.mainInstance() as PenpotSourceShape | null;
         if (main == null) continue;
         const root = await enrichAssetTree(enrichShape(main), main);
-        const source = { id: member.id, libraryId: member.libraryId, name: member.name, root };
+        const source = {
+          id: member.id,
+          libraryId: member.libraryId,
+          libraryScope: variants.libraryId === penpot.library.local.id ? "local" as const : "shared" as const,
+          name: member.name,
+          root,
+        };
         sources.set(componentKey(member.libraryId, member.id), source);
         members.push({ ...source, values: member.variantProps ?? {} });
         for (const child of root.children ?? []) queue.push(child);
@@ -496,13 +536,13 @@ function issueFor(result: Exclude<ComponentResolution, { status: "resolved" }>, 
     case "missing-identity":
       return { code: "SHARED_COMPONENT_RESOLUTION_FAILED", message: `Component identity is unavailable for instance "${shape.name}" (${nodeId}). Recreate or relink the Penpot component instance.` };
     case "library-not-connected":
-      return { code: "SHARED_LIBRARY_NOT_CONNECTED", message: `Unable to resolve component "${shape.name}" (${result.componentId}) from shared library "${result.library.name}" (${result.library.id}). Connect this library to the current Penpot file, then regenerate.` };
+      return { code: "LIBRARY_UNAVAILABLE", message: `Unable to resolve component "${shape.name}" (${result.componentId}) from shared library "${result.library.name}" (${result.library.id}). Connect this library to the current Penpot file, then regenerate.` };
     case "library-unavailable":
-      return { code: "SHARED_LIBRARY_UNAVAILABLE", message: `Shared library ${result.libraryId} containing component "${shape.name}" (${result.componentId}) is unavailable to this Penpot file. Verify access and library publication.` };
+      return { code: "LIBRARY_UNAVAILABLE", message: `Shared library ${result.libraryId} containing component "${shape.name}" (${result.componentId}) is unavailable to this Penpot file. Verify access and library publication.` };
     case "library-connection-failed":
       return { code: "SHARED_LIBRARY_CONNECTION_FAILED", message: `Unable to connect shared library ${result.libraryId} to resolve component "${shape.name}" (${result.componentId}). Check library permissions and connection status.` };
     case "component-not-found":
-      return { code: "SHARED_COMPONENT_NOT_FOUND", message: `Shared library "${result.library.name}" (${result.library.id}) does not contain component "${shape.name}" (${result.componentId}). Update or relink the instance.` };
+      return { code: "LIBRARY_COMPONENT_UNRESOLVED", message: `Shared library "${result.library.name}" (${result.library.id}) does not contain component "${shape.name}" (${result.componentId}). Update or relink the instance.` };
     case "resolution-failed":
       return { code: "SHARED_COMPONENT_RESOLUTION_FAILED", message: `Unable to resolve component "${shape.name}" (${result.componentId ?? "unknown"})${result.libraryId === undefined ? "" : ` from library ${result.libraryId}`}.` };
   }

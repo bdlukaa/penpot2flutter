@@ -71,11 +71,11 @@ test("generates a shared library module once and imports it deterministically", 
 
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries);
   const paths = files.map((file) => file.path);
-  assert.ok(paths.includes("libraries/company_design_system/components/button.dart"));
+  assert.ok(paths.includes("libraries/company_design_system/components/penpot_button.dart"));
   assert.ok(paths.includes("libraries/company_design_system/company_design_system.dart"));
   assert.ok(paths.includes("libraries/company_design_system/theme/penpot_tokens.dart"));
-  assert.match(files.find((file) => file.path === "screens/screen_one.dart")!.source, /import '\.\.\/libraries\/company_design_system\/components\/button\.dart';/);
-  assert.match(files.find((file) => file.path === "libraries/company_design_system/company_design_system.dart")!.source, /export 'components\/button\.dart';/);
+  assert.match(files.find((file) => file.path === "screens/selection.dart")!.source, /import '\.\.\/libraries\/company_design_system\/components\/penpot_button\.dart';/);
+  assert.match(files.find((file) => file.path === "libraries/company_design_system/company_design_system.dart")!.source, /export 'components\/penpot_button\.dart';/);
   assert.deepEqual(
     generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries),
     files,
@@ -151,4 +151,7 @@ test("keeps library assets and unresolved shared tokens attributable to their li
 
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "LIBRARY_TOKEN_UNRESOLVED"));
   assert.deepEqual(result.libraries[0]?.assets, ["avatar"]);
+  assert.equal(result.assetRegistry[0]?.filename, "libraries/assets/assets/images/avatar.png");
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries);
+  assert.ok(files.some((file) => file.path === "libraries/assets/assets.dart"));
 });

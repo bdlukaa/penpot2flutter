@@ -2,6 +2,8 @@ import { componentKey } from "../shared/component-key.js";
 import { assetForId, assetTypeForMimeType, contentHashOf, createAssetRegistry, type AssetCandidate, type AssetRegistry } from "./asset-pipeline.js";
 import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsive-analyzer.js";
 import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource, type TokenRegistryResult } from "./token-registry.js";
+import { buildIrLibraries, libraryModuleName } from "./library-registry.js";
+
 import type {
   AssetManifestEntry,
   BoardNode,
@@ -33,6 +35,8 @@ import type {
   IrTokenReference,
   IrTokenSet,
   IrTokenTheme,
+  IrLibraryScope,
+  IrLibrarySource,
   IrTypographyStyle,
   IrVariantAxis,
   IrVariantFamily,
@@ -170,6 +174,7 @@ export interface PenpotSourceTextRun {
 export interface PenpotComponentSource {
   readonly id: string;
   readonly libraryId?: string | null;
+  readonly libraryScope?: IrLibraryScope;
   readonly name: string;
   readonly root: PenpotSourceShape;
 }
@@ -181,6 +186,7 @@ export interface PenpotVariantMemberSource extends PenpotComponentSource {
 export interface PenpotVariantFamilySource {
   readonly id: string;
   readonly libraryId?: string | null;
+  readonly libraryScope?: IrLibraryScope;
   readonly name: string;
   readonly properties: readonly string[];
   readonly members: readonly PenpotVariantMemberSource[];
@@ -190,6 +196,9 @@ export interface PenpotVariantFamilySource {
 export interface PenpotSourceShape {
   readonly id: string;
   readonly name: string;
+  /** Ownership is supplied by the Penpot boundary for canonical library roots. */
+  readonly sourceLibraryId?: string | null;
+  readonly sourceLibraryScope?: IrLibraryScope;
   readonly type: string;
   readonly x: number;
   readonly y: number;
@@ -273,6 +282,7 @@ export interface PenpotTypographyInput {
 }
 
 export interface PenpotTokenInput {
+  readonly libraries?: readonly IrLibrarySource[];
   readonly tokens?: readonly PenpotTokenSource[];
   readonly sets?: readonly PenpotTokenSetSource[];
   readonly themes?: readonly PenpotTokenThemeSource[];
@@ -292,6 +302,7 @@ interface ComponentBuilder {
   readonly sourceName: string;
   readonly dartName: string;
   readonly libraryId?: string;
+  readonly libraryScope?: IrLibraryScope;
   root?: IrNode;
   readonly slots: Map<string, ComponentSlot>;
   readonly usedParameterNames: Set<string>;
@@ -365,7 +376,7 @@ export function extractSelection(
 
   registerVariants(variants, context);
   registerComponents(components, context);
-  const assetRegistry = createAssetRegistry(assetCandidates(selection, components, variants, typographyInput));
+  const assetRegistry = createAssetRegistry(assetCandidates(selection, components, variants, typographyInput, tokenInput.libraries));
   context.assetRegistry = assetRegistry;
   context.diagnostics.push(...assetRegistry.diagnostics);
   for (const componentId of context.componentOrder) {
@@ -401,18 +412,28 @@ export function extractSelection(
     : { diagnostics: [] };
   context.diagnostics.push(...responsive.diagnostics);
   const root = responsive.screen?.variants[0]?.root ?? (extractedSelection.length === 1 ? extractedSelection[0] : extractSyntheticSelection(extractedSelection));
+  const finalizedComponents = finalizeComponents(context);
+  const libraryRegistry = buildIrLibraries({
+    sources: tokenInput.libraries ?? [],
+    components: finalizedComponents,
+    tokens: tokenRegistry.tokens,
+    tokenSets: tokenRegistry.sets,
+    assets: context.assetRegistry.assets,
+  });
+  context.diagnostics.push(...libraryRegistry.diagnostics);
   return {
     root,
     ...(responsive.screen === undefined ? {} : { responsiveScreen: responsive.screen }),
     assets: [...context.assets.values()],
     assetRegistry: context.assetRegistry.assets,
     diagnostics: context.diagnostics,
-    components: finalizeComponents(context),
+    components: finalizedComponents,
     tokens: tokenRegistry.tokens,
     tokenSets: tokenRegistry.sets,
     tokenThemes: tokenRegistry.themes,
     typographyStyles: finalizeTypographyStyles(context),
     fonts: finalizeFontManifest(context),
+    libraries: libraryRegistry.libraries,
   };
 }
 
@@ -447,6 +468,8 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
   const base = {
     sourceId: sourceIdOf(shape.id),
     sourceName: sourceNameOf(shape.name, sourceIdOf(shape.id)),
+    ...(shape.sourceLibraryId == null || shape.sourceLibraryId === "" ? {} : { sourceLibraryId: shape.sourceLibraryId }),
+    ...(shape.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: shape.sourceLibraryScope }),
     name: normalizeName(shape.name, sourceIdOf(shape.id)),
     geometry: geometryOf(shape, diagnostics),
     visible: shape.visible !== false,
@@ -560,19 +583,30 @@ function tokenReferencesOf(
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([property, tokenName]): IrTokenReference => {
       const normalizedProperty = canonicalTokenProperty(property);
-      const token = context.tokenRegistry.get(tokenName);
+      const libraryId = shape.sourceLibraryId == null || shape.sourceLibraryId === "" ? undefined : shape.sourceLibraryId;
+      const token = context.tokenRegistry.get(tokenRegistryKey(libraryId, tokenName)) ?? (libraryId === undefined ? context.tokenRegistry.get(tokenName) : undefined);
       if (token === undefined) {
         diagnostics.push({
           severity: "warning",
           sourceId: sourceIdOf(shape.id),
-          code: "TOKEN_BINDING_NOT_FOUND",
-          message: `Property "${property}" references unavailable design token "${tokenName}"; its literal value will be used.`,
+          code: libraryId === undefined ? "TOKEN_BINDING_NOT_FOUND" : "LIBRARY_TOKEN_UNRESOLVED",
+          message: libraryId === undefined
+            ? `Property "${property}" references unavailable design token "${tokenName}"; its literal value will be used.`
+            : `Property "${property}" references unavailable token "${tokenName}" from shared library ${libraryId}; its literal value will be used.`,
         });
-        return { property: normalizedProperty, tokenName, tokenPath: tokenPathOf(tokenName) };
+        return {
+          property: normalizedProperty,
+          tokenName,
+          ...(libraryId === undefined ? {} : { sourceLibraryId: libraryId }),
+          ...(shape.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: shape.sourceLibraryScope }),
+          tokenPath: tokenPathOf(tokenName),
+        };
       }
       return {
         property: normalizedProperty,
         tokenName,
+        ...(token.sourceLibraryId === undefined ? {} : { sourceLibraryId: token.sourceLibraryId }),
+        ...(token.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: token.sourceLibraryScope }),
         tokenId: token.id,
         ...(token.setId === undefined ? {} : { tokenSetId: token.setId }),
         tokenPath: token.path,
@@ -584,7 +618,7 @@ function tokenReferencesOf(
 }
 
 function effectiveTokensByName(tokens: readonly IrToken[], sets: readonly IrTokenSet[], themes: readonly IrTokenTheme[] = []): ReadonlyMap<string, IrToken> {
-  const byIdentity = new Map(tokens.map((token) => [`${token.setId ?? ""}:${token.id}`, token]));
+  const byIdentity = new Map(tokens.map((token) => [`${token.sourceLibraryId ?? "local"}:${token.setId ?? ""}:${token.id}`, token]));
   const result = new Map<string, IrToken>();
   const selectedSetIds = new Set(sets.filter((set) => set.active).map((set) => set.id));
   for (const theme of themes) {
@@ -593,16 +627,27 @@ function effectiveTokensByName(tokens: readonly IrToken[], sets: readonly IrToke
   const selectedSets = sets.filter((set) => selectedSetIds.has(set.id));
   for (const set of selectedSets) {
     for (const tokenId of set.tokenIds) {
-      const token = byIdentity.get(`${set.id}:${tokenId}`);
-      if (token !== undefined) result.set(token.sourceName, token);
+      const token = byIdentity.get(`${set.sourceLibraryId ?? "local"}:${set.id}:${tokenId}`);
+      if (token !== undefined) {
+        result.set(tokenRegistryKey(token.sourceLibraryId, token.sourceName), token);
+        if (token.sourceLibraryId === undefined) result.set(token.sourceName, token);
+      }
     }
   }
   // Direct token-only fixtures remain usable when no catalog sets were supplied.
   // With catalog sets present, an inactive definition must not win by accident.
   if (sets.length === 0) {
-    for (const token of tokens) if (!result.has(token.sourceName)) result.set(token.sourceName, token);
+    for (const token of tokens) {
+      const key = tokenRegistryKey(token.sourceLibraryId, token.sourceName);
+      if (!result.has(key)) result.set(key, token);
+      if (token.sourceLibraryId === undefined && !result.has(token.sourceName)) result.set(token.sourceName, token);
+    }
   }
   return result;
+}
+
+function tokenRegistryKey(libraryId: string | undefined, name: string): string {
+  return `${libraryId ?? "local"}:${name}`;
 }
 
 function tokenPathOf(name: string): readonly string[] {
@@ -635,6 +680,7 @@ function registerVariants(variants: readonly PenpotVariantFamilySource[], contex
       sourceName,
       dartName,
       ...(libraryId === undefined ? {} : { libraryId }),
+      ...(variant.libraryScope === undefined ? {} : { libraryScope: variant.libraryScope }),
       slots: new Map(),
       usedParameterNames: new Set(variantAxes.map((axis) => axis.name)),
       overridden: new Set(),
@@ -669,7 +715,7 @@ function registerComponents(components: readonly PenpotComponentSource[], contex
     if (context.componentAliases.has(id) || context.componentSources.has(id)) continue;
     // Penpot's main-instance root can also report itself as a component instance.
     // It is the canonical definition here, so only its root must not become a self-call.
-    context.componentSources.set(id, canonicalComponentRoot(component.root));
+    context.componentSources.set(id, canonicalComponentRoot(withLibraryOwnership(component.root, libraryId, component.libraryScope)));
     const sourceName = typeof component.name === "string" && component.name.trim() !== "" ? component.name : `Component ${component.id}`;
     const dartName = dartNameFor(sourceName, id, context);
     context.components.set(id, {
@@ -678,6 +724,7 @@ function registerComponents(components: readonly PenpotComponentSource[], contex
       sourceName,
       dartName,
       ...(libraryId === undefined ? {} : { libraryId }),
+      ...(component.libraryScope === undefined ? {} : { libraryScope: component.libraryScope }),
       slots: new Map(),
       usedParameterNames: new Set(),
       overridden: new Set(),
@@ -685,6 +732,15 @@ function registerComponents(components: readonly PenpotComponentSource[], contex
     });
     context.componentOrder.push(id);
   }
+}
+
+function withLibraryOwnership(root: PenpotSourceShape, libraryId: string | undefined, libraryScope: IrLibraryScope | undefined): PenpotSourceShape {
+  return {
+    ...root,
+    ...(libraryId === undefined ? {} : { sourceLibraryId: libraryId }),
+    ...(libraryScope === undefined ? {} : { sourceLibraryScope: libraryScope }),
+    ...(root.children == null ? {} : { children: root.children.map((child) => withLibraryOwnership(child, libraryId, libraryScope)) }),
+  };
 }
 
 function collectSlots(shape: PenpotSourceShape, componentId: string, context: ExtractionContext, path: string): void {
@@ -735,13 +791,20 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
   const main = context.componentSources.get(sourceComponentIdentity) ?? context.componentSources.get(componentIdentity);
   if (main === undefined) {
     const sharedLibraryId = typeof shape.componentLibraryId === "string" && shape.componentLibraryId !== "" ? shape.componentLibraryId : undefined;
+    const message = shape.componentResolutionIssue?.message ?? (sharedLibraryId === undefined
+      ? `Component instance references an unresolved component (${componentId}).`
+      : `Unable to resolve component "${sourceNameOf(shape.name, sourceIdOf(shape.id))}" (${componentId}) from shared library ${sharedLibraryId}.`);
     diagnostics.push({
       severity: "warning",
       sourceId: sourceIdOf(shape.id),
       code: shape.componentResolutionIssue?.code ?? (sharedLibraryId === undefined ? "COMPONENT_UNRESOLVED" : "SHARED_LIBRARY_UNAVAILABLE"),
-      message: shape.componentResolutionIssue?.message ?? (sharedLibraryId === undefined
-        ? `Component instance references an unresolved component (${componentId}).`
-        : `Unable to resolve component "${sourceNameOf(shape.name, sourceIdOf(shape.id))}" (${componentId}) from shared library ${sharedLibraryId}.`),
+      message,
+    });
+    diagnostics.push({
+      severity: "warning",
+      sourceId: sourceIdOf(shape.id),
+      code: sharedLibraryId === undefined ? "LIBRARY_COMPONENT_UNRESOLVED" : "LIBRARY_UNAVAILABLE",
+      message,
     });
     const node: UnsupportedNode = {
       kind: "unsupported",
@@ -1003,6 +1066,7 @@ function finalizeComponents(context: ExtractionContext): IrComponentDefinition[]
       sourceName: builder.sourceName,
       name: builder.dartName,
       ...(builder.libraryId === undefined ? {} : { sourceLibraryId: builder.libraryId }),
+      ...(builder.libraryScope === undefined ? {} : { sourceLibraryScope: builder.libraryScope }),
       root: builder.root!,
       ...(builder.variant === undefined || builder.variantAxes === undefined || builder.variantMembers === undefined ? {} : {
         variant: {
@@ -1331,8 +1395,15 @@ function assetCandidates(
   components: readonly PenpotComponentSource[],
   variants: readonly PenpotVariantFamilySource[],
   typographyInput: PenpotTypographyInput = {},
+  libraries: readonly IrLibrarySource[] = [],
 ): readonly AssetCandidate[] {
   const candidates: AssetCandidate[] = [];
+  const libraryModules = new Map(libraries.map((library) => [library.id, libraryModuleName(library)]));
+  const ownership = (shape: PenpotSourceShape) => ({
+    ...(shape.sourceLibraryId == null || shape.sourceLibraryId === "" ? {} : { sourceLibraryId: shape.sourceLibraryId }),
+    ...(shape.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: shape.sourceLibraryScope }),
+    ...(shape.sourceLibraryId == null || shape.sourceLibraryId === "" ? {} : { sourceLibraryModule: libraryModules.get(shape.sourceLibraryId) }),
+  });
   const visit = (shape: PenpotSourceShape): void => {
     const sourceNodeId = sourceIdOf(shape.id);
     const image = shape.fills === "mixed" || shape.fills == null ? undefined : shape.fills.find((fill) => fill.fillImage != null)?.fillImage;
@@ -1340,6 +1411,7 @@ function assetCandidates(
       candidates.push({
         id: image.id,
         sourceNodeId,
+        ...ownership(shape),
         type: assetTypeForMimeType(image.mtype ?? undefined),
         semanticName: image.name ?? shape.name,
         ...(image.contentHash === undefined && image.data === undefined ? {} : { contentHash: image.contentHash ?? contentHashOf(image.data ?? []) }),
@@ -1351,6 +1423,7 @@ function assetCandidates(
       candidates.push({
         id: sourceNodeId,
         sourceNodeId,
+        ...ownership(shape),
         type: fallback == null ? "svg" : assetTypeForMimeType(fallback.mtype ?? undefined),
         semanticName: shape.name,
         ...(fallback?.contentHash === undefined && fallback?.data === undefined && shape.svgContent === undefined ? {} : { contentHash: fallback?.contentHash ?? (fallback?.data === undefined ? contentHashOf([...shape.svgContent!].map((character) => character.charCodeAt(0) & 0xff)) : contentHashOf(fallback.data)) }),

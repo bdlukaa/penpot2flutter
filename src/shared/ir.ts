@@ -42,8 +42,29 @@ export interface IrTypographyTokenValue {
 
 export type IrTokenValue = string | number | IrTypographyTokenValue | readonly DropShadow[] | GradientFill;
 
+export type IrLibraryScope = "local" | "shared";
+
+/** Serializable identity metadata captured from Penpot's read-only library API. */
+export interface IrLibrarySource {
+  readonly id: string;
+  readonly name: string;
+  readonly scope: IrLibraryScope;
+  /** Preserved only when the Penpot API exposes an actual library revision. */
+  readonly sourceRevision?: string;
+}
+
+/** A deterministic registry entry for a local or connected Penpot library. */
+export interface IrLibrary extends IrLibrarySource {
+  readonly components: readonly string[];
+  readonly tokenSets: readonly string[];
+  readonly assets: readonly string[];
+  readonly dependencies: readonly string[];
+}
+
 export interface IrToken {
   readonly id: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: IrLibraryScope;
   readonly identity?: { readonly tokenId: string; readonly setId: string };
   readonly sourceName: string;
   readonly path: readonly string[];
@@ -65,6 +86,8 @@ export interface IrToken {
 
 export interface IrTokenReference {
   readonly property: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: IrLibraryScope;
   /** Penpot applies tokens by semantic name, not by definition id. */
   readonly tokenName: string;
   readonly tokenId?: string;
@@ -77,6 +100,8 @@ export interface IrTokenReference {
 
 export interface IrTokenSet {
   readonly id: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: IrLibraryScope;
   readonly name: string;
   readonly index: number;
   readonly active: boolean;
@@ -85,6 +110,8 @@ export interface IrTokenSet {
 
 export interface IrTokenTheme {
   readonly id: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: IrLibraryScope;
   readonly externalId?: string;
   readonly name: string;
   readonly group: string;
@@ -117,6 +144,8 @@ export type IrAssetType = "svg" | "png" | "jpg" | "webp" | "font";
 export interface IrAsset {
   readonly id: string;
   readonly sourceNodeId: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: IrLibraryScope;
   readonly type: IrAssetType;
   /** Project-relative path, including the `assets/` directory. */
   readonly filename: string;
@@ -301,6 +330,8 @@ export interface LayoutChild {
 export interface BaseNode {
   readonly sourceId: string;
   readonly sourceName: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: IrLibraryScope;
   readonly name: string;
   readonly geometry: NodeGeometry;
   readonly visible: boolean;
@@ -431,6 +462,7 @@ export interface IrComponentDefinition {
   readonly sourceName: string;
   readonly name: string;
   readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: IrLibraryScope;
   readonly root: IrNode;
   readonly variant?: IrVariantFamily;
   readonly parameters: readonly IrComponentParameter[];
@@ -466,6 +498,8 @@ export interface ConversionResult {
   readonly tokenThemes: readonly IrTokenTheme[];
   readonly typographyStyles: readonly IrTypographyStyle[];
   readonly fonts: readonly IrFontManifestEntry[];
+  /** Local and shared library ownership remains available after extraction. */
+  readonly libraries: readonly IrLibrary[];
 }
 
 export interface GeneratedFile {

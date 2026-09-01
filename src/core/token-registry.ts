@@ -11,6 +11,8 @@ import type {
 
 export interface PenpotTokenSource {
   readonly id: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: "local" | "shared";
   readonly name: string;
   readonly type: IrTokenType | string;
   readonly value: unknown;
@@ -27,6 +29,8 @@ export interface PenpotTokenSource {
 
 export interface PenpotTokenSetSource {
   readonly id: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: "local" | "shared";
   readonly name: string;
   readonly index?: number;
   readonly active?: boolean;
@@ -35,6 +39,8 @@ export interface PenpotTokenSetSource {
 
 export interface PenpotTokenThemeSource {
   readonly id: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: "local" | "shared";
   readonly externalId?: string;
   readonly name: string;
   readonly group?: string;
@@ -70,8 +76,8 @@ export function createTokenResolverIndexes(tokens: readonly IrToken[]): TokenRes
   const definitionsByIdentity = new Map<string, IrToken>();
   const unscopedDefinitionsById = new Map<string, IrToken>();
   for (const token of tokens) {
-    definitionsByIdentity.set(`${token.setId ?? ""}:${token.id}`, token);
-    if (token.setId === undefined) unscopedDefinitionsById.set(token.id, token);
+    definitionsByIdentity.set(`${token.sourceLibraryId ?? "local"}:${token.setId ?? ""}:${token.id}`, token);
+    if (token.setId === undefined && token.sourceLibraryId === undefined) unscopedDefinitionsById.set(token.id, token);
   }
   return { definitionsByIdentity, unscopedDefinitionsById };
 }
@@ -89,7 +95,7 @@ export function resolveTokenSets(
   for (const set of sets) {
     if (!activeSetIds.has(set.id)) continue;
     for (const tokenId of set.tokenIds) {
-      const token = definitions.get(`${set.id}:${tokenId}`) ?? definitionsById.get(tokenId);
+      const token = definitions.get(`${set.sourceLibraryId ?? "local"}:${set.id}:${tokenId}`) ?? definitionsById.get(tokenId);
       if (token !== undefined) effective.set(token.sourceName, token);
     }
   }
@@ -270,7 +276,7 @@ export function buildTokenRegistry(
   const uniqueSources: PenpotTokenSource[] = [];
   const sourceByIdentity = new Map<string, PenpotTokenSource>();
   for (const source of sources) {
-    const identity = `${source.setId ?? ""}:${source.id}`;
+    const identity = `${source.sourceLibraryId ?? "local"}:${source.setId ?? ""}:${source.id}`;
     const existing = sourceByIdentity.get(identity);
     if (existing !== undefined) {
       if (JSON.stringify(existing) !== JSON.stringify(source)) diagnostics.push({ severity: "error", sourceId: source.id, code: "TOKEN_IDENTITY_AMBIGUOUS", message: `Token identity ${identity} was registered more than once with different source data.` });
@@ -308,6 +314,8 @@ export function buildTokenRegistry(
       const value = serializableValue(source.value) as IrTokenValue | undefined;
       return {
         id: source.id,
+        ...(source.sourceLibraryId === undefined ? {} : { sourceLibraryId: source.sourceLibraryId }),
+        ...(source.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: source.sourceLibraryScope }),
         sourceName: source.name,
         path,
         type,
@@ -341,11 +349,19 @@ export function buildTokenRegistry(
   const setsStart = now();
   const sets = setSources.map((set, sourceIndex): IrTokenSet => {
     for (const tokenId of set.tokenIds) {
-      const tokenExists = sourceByIdentity.has(`${set.id}:${tokenId}`) || sourceById.has(tokenId);
+      const tokenExists = sourceByIdentity.has(`${set.sourceLibraryId ?? "local"}:${set.id}:${tokenId}`) || sourceById.has(tokenId);
       if (!tokenExists) diagnostics.push({ severity: "warning", sourceId: set.id, code: "TOKEN_SET_EXTRACTION_FAILED", message: `Token set "${set.name}" references unavailable token ${tokenId}.` });
     }
     if (set.index !== undefined && set.index !== sourceIndex) diagnostics.push({ severity: "error", sourceId: set.id, code: "TOKEN_SET_ORDER_INVALID", message: `Token set "${set.name}" has index ${set.index}, expected ${sourceIndex}.` });
-    return { id: set.id, name: set.name, index: sourceIndex, active: set.active === true, tokenIds: [...set.tokenIds] };
+    return {
+      id: set.id,
+      ...(set.sourceLibraryId === undefined ? {} : { sourceLibraryId: set.sourceLibraryId }),
+      ...(set.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: set.sourceLibraryScope }),
+      name: set.name,
+      index: sourceIndex,
+      active: set.active === true,
+      tokenIds: [...set.tokenIds],
+    };
   });
   diagnoseTokenPathCollisions(tokens, diagnostics);
   options.reportTiming?.("token-set-normalization", now() - setsStart);
@@ -356,7 +372,16 @@ export function buildTokenRegistry(
     for (const setId of activeSetIds) {
       if (!setIds.has(setId)) diagnostics.push({ severity: "error", sourceId: theme.id, code: "TOKEN_THEME_SET_UNRESOLVED", message: `Token theme "${theme.name}" references unavailable set ${setId}.` });
     }
-    return { id: theme.id, ...(theme.externalId === undefined ? {} : { externalId: theme.externalId }), name: theme.name, group: theme.group ?? "", active: theme.active === true, activeSetIds: [...activeSetIds] };
+    return {
+      id: theme.id,
+      ...(theme.sourceLibraryId === undefined ? {} : { sourceLibraryId: theme.sourceLibraryId }),
+      ...(theme.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: theme.sourceLibraryScope }),
+      ...(theme.externalId === undefined ? {} : { externalId: theme.externalId }),
+      name: theme.name,
+      group: theme.group ?? "",
+      active: theme.active === true,
+      activeSetIds: [...activeSetIds],
+    };
   });
   diagnoseThemeGroupCollisions(themes, diagnostics);
   options.reportTiming?.("theme-normalization", now() - themesStart);
@@ -412,7 +437,7 @@ export function validateTokenThemes(
     for (const set of sets) {
       if (!selectedSetIds.has(set.id)) continue;
       for (const tokenId of set.tokenIds) {
-        const token = tokenByIdentity.get(`${set.id}:${tokenId}`) ?? unscopedTokenById.get(tokenId);
+        const token = tokenByIdentity.get(`${set.sourceLibraryId ?? "local"}:${set.id}:${tokenId}`) ?? unscopedTokenById.get(tokenId);
         if (token === undefined) continue;
         const types = definitionsByName.get(token.sourceName) ?? new Set<IrToken["type"]>();
         types.add(token.type);

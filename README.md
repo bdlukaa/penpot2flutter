@@ -31,8 +31,10 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Preview syntax highlighting, Copy Dart, Download Dart, and per-file preview/copy/download for multi-file component output
 - Explicit Penpot component definitions and component instances: one Flutter widget per canonical component, with callers generated as widget invocations
 - Local and connected shared-library component resolution, including nested and cross-library component dependencies, composite library/component identity, deterministic name collision handling, and conservative text-override (`String`) parameters
+- Explicit `IrLibrary` registry entries keyed by stable Penpot library IDs, preserving local/shared component, token, and asset ownership plus library dependency diagnostics
+- One reusable Flutter module per reachable shared library (`libraries/<library>/components`, `theme`, `assets.dart`, and a barrel), so screens import components instead of duplicating their implementations
 - Penpot variant families as one reusable Flutter widget with deterministic typed enum axes, default values, explicit member matrices, instance arguments, and runtime rejection of undefined combinations
-- Incremental design-system extraction from the official Penpot 1.5 `penpot.library.local.tokens` `TokenCatalog`: cheap metadata is available first, live token proxies are serialized in time-budgeted slices, then the serializable snapshot is normalized into a session-cached registry
+- Incremental local token extraction plus connected-library token catalog serialization before the compiler boundary; shared token sets remain library-scoped
 - Typed nested token namespaces, `PenpotTokens extends ThemeExtension`, multidimensional theme-axis enums, `ThemeData` composition, `BuildContext.penpot`, full-catalog metadata, and semantic token references in generated widgets/components
 - Responsive screen IR and conservative Mobile/Tablet/Desktop board-family detection, with explicit metadata support for unambiguous custom groups
 - Dependency-free `LayoutBuilder` breakpoint generation, responsive Row/Column and grid variants, hidden breakpoint content, component/variant preservation, and Stack fallback for overlays
@@ -59,8 +61,8 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - `FONT_EXTERNAL_REQUIRED`, `FONT_WEIGHT_APPROXIMATED`, `TEXT_LINE_HEIGHT_INVALID`, `TEXT_STYLE_UNSUPPORTED`, `TEXT_OVERFLOW_INFERRED`, and `TEXT_MIXED_STYLE_UNSUPPORTED` identify typography requirements or data that cannot be represented exactly. External font requirements are aggregated once per conversion. Penpot exposes font metadata but no downloadable font files through the current Plugin API; an adapter must provide `assetPath` values before font assets are added to `pubspec.yaml`.
 - Simple and complex vector/path shapes become SVG asset references; `penpot.generateMarkup` exports SVG payloads when available. Vectors marked with unsupported effects use an adapter-provided raster fallback; without one, `ASSET_EXPORT_FAILED` is shown rather than silently dropping the effect.
 - Shared components resolve first from `Shape.component()`, then from the local/connected library index. Only components reachable from the selected roots are exported.
-- The plugin is read-only. A shared library that is available but not connected produces `SHARED_LIBRARY_NOT_CONNECTED` with remediation guidance; the plugin intentionally does not call `connectLibrary()` because it persistently modifies the Penpot file and requires `library:write`.
-- Missing libraries, missing components, unavailable canonical instances, and failed resolution produce source-node diagnostics rather than being silently flattened.
+- The plugin is read-only. A shared library that is available but not connected produces `LIBRARY_UNAVAILABLE` with remediation guidance; the plugin intentionally does not call `connectLibrary()` because it persistently modifies the Penpot file and requires `library:write`.
+- Missing libraries, components, and tokens produce `LIBRARY_UNAVAILABLE`, `LIBRARY_COMPONENT_UNRESOLVED`, or `LIBRARY_TOKEN_UNRESOLVED` diagnostics rather than being silently flattened. Cyclic library dependencies and module-name collisions report `LIBRARY_DEPENDENCY_CYCLE` and `LIBRARY_NAME_COLLISION`.
 - Component override inference currently supports meaningful text overrides as defaulted `String` parameters. Color, visibility, dimensions, and component swaps remain diagnostics/future work.
 - Variant metadata comes from `LibraryComponent.isVariant()`, `Variants.properties`, `Variants.variantComponents()`, and `variantProps`; family membership is never inferred from display names.
 - Structurally different variant members use a readable internal switch between complete member subtrees. Shared-value factoring into smaller conditional style expressions is a future optimization; public variant APIs already remain unified.
@@ -68,12 +70,12 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Responsive board inference only accepts exact semantic families ending in `Mobile`, `Tablet`, or `Desktop` and requires structural similarity. Low-confidence or unrelated boards remain separate and produce `RESPONSIVE_GROUP_UNRESOLVED`; explicit metadata may confirm intentionally divergent layouts.
 - Inferred Mobile/Tablet/Desktop thresholds use available width (`600` and `1024`) with no device-type or orientation checks. Breakpoint branches stay inside one generated screen class; structurally divergent branches retain safe independent subtrees rather than forcing a brittle merge.
 - The official Penpot API exposes min/max child constraints but no aspect-ratio or flex grow/shrink fields. The IR supports an explicit aspect ratio for future/configured adapters; unavailable semantics are never inferred from canvas geometry alone.
-- Live token extraction requires Penpot Plugin API types compatible with `@penpot/plugin-types` `1.5.0`. The source of truth is `penpot.library.local.tokens`; applied bindings come from `Shape.tokens`, whose values are semantic token names. Token identity is `(setId, tokenId)`, while semantic paths and generated Dart names are separate concepts. The plugin never identifies tokens by matching equal resolved values.
+- Live token extraction requires Penpot Plugin API types compatible with `@penpot/plugin-types` `1.5.0`. Local and already-connected library `TokenCatalog`s are serialized in the plugin context; applied bindings come from `Shape.tokens`, whose values are semantic token names. Token identity is `(libraryId, setId, tokenId)`, while semantic paths and generated Dart names are separate concepts. The plugin never identifies tokens by matching equal resolved values.
 - Token sets remain ordered namespaces and themes select set combinations. Active theme sets are used for current shape bindings; same semantic paths across Light/Dark or brand sets become one theme-aware Flutter property rather than numbered fields.
 - The file-wide token catalog, normalized registry, generated theme files, and font metadata are session-cached and reused for selection changes. A single coordinator deduplicates in-flight work, rejects stale runs after invalidation, and keeps selection handling available while the catalog warms. `filechange` and **Refresh Design System** create replacement jobs; selection changes and ordinary document saves never invalidate the cache. Penpot Plugin API 1.5 has no token-specific mutation event, so refresh manually after editing tokens or themes.
 - Whole-token aliases and supported composite arithmetic expressions are resolved at generation time through a dependency graph with cycle detection; original references and dependencies remain in the IR. Unresolvable references use the source resolved fallback and a grouped diagnostic. Inset shadows are diagnosed because Flutter `BoxShadow` cannot represent them.
 - Material `ColorScheme`/`TextTheme` roles are mapped only for explicit semantic names such as `color.primary` and `typography.bodyMedium`; the complete catalog remains available through `ThemeExtension`. Theme-specific domain values are exposed through generated nested namespaces and `BuildContext.penpot`.
-- Component output is generated as deterministic source files under `screens/`, `components/`, `theme/`, plus `penpot.dart` and `penpot_manifest.json`. The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
+- Local component output remains under `screens/`, `components/`, and `theme/`. Connected shared libraries generate once under `libraries/<library_module>/` with component/theme/asset module boundaries and a library barrel. `penpot_manifest.json` records the stable library identities and generated file list; Penpot Plugin API 1.5 exposes no source revision, so no revision is invented. The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
 - Asset binaries are exported as individual downloadable files in the plugin UI (raster bytes are transferred as base64; SVG is transferred as text). The plugin intentionally does not claim to create a ZIP bundle because the current browser/plugin setup provides no verified archive workflow.
 - Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
 
@@ -143,6 +145,7 @@ src/
   core/extractor.ts          Penpot-like data -> normalized IR
   core/flutter-generator.ts  IR -> Dart source
   core/asset-pipeline.ts      deterministic asset registry and naming
+  core/library-registry.ts    stable library graph and module naming
   penpot/token-catalog.ts      Official TokenCatalog -> incremental serializable snapshot
   core/design-system-index-manager.ts Session cache, progress, cancellation, invalidation
   core/token-registry.ts       Token sources -> deterministic token IR/resolution
@@ -159,18 +162,20 @@ For a selected screen containing component instances, the compiler emits determi
 
 ```text
 screens/checkout_screen.dart
-components/primary_button.dart
+components/local_filter.dart
+libraries/company_design_system/components/primary_button.dart
+libraries/company_design_system/theme/penpot_token_namespaces.dart
+libraries/company_design_system/theme/penpot_tokens.dart
+libraries/company_design_system/theme/penpot_themes.dart
+libraries/company_design_system/theme/penpot_theme_extensions.dart
+libraries/company_design_system/assets.dart
+libraries/company_design_system/company_design_system.dart
 assets.dart
-components/product_card.dart
-theme/penpot_token_namespaces.dart
-theme/penpot_tokens.dart
-theme/penpot_themes.dart
-theme/penpot_theme_extensions.dart
 penpot_manifest.json
 penpot.dart
 ```
 
-Each main component becomes one `StatelessWidget`; each linked instance becomes a call to that widget. A composite `libraryId:componentId` key, rather than a display name or raw component ID, defines identity. Display names only determine deterministic Dart class/file names, with a suffix added for collisions. A detached instance remains an ordinary shape tree.
+Each main component becomes one `StatelessWidget`; each linked instance becomes a call to that widget. A composite `libraryId:componentId` key, rather than a display name or raw component ID, defines identity. A shared library's stable Penpot ID owns its registry entry; its display name only determines a deterministic module segment, and collisions are diagnosed. A detached instance remains an ordinary shape tree.
 
 ## Next milestone
 

@@ -938,24 +938,22 @@ test("relinks a uniquely renamed component by same-library path and name", async
   }
 });
 
-test("connects an available shared library once", async () => {
+test("does not connect an available shared library because conversion is read-only", async () => {
   let connectionCalls = 0;
-  const component = { id: "button", libraryId: "design-system", name: "Button", mainInstance: () => ({}) };
-  const library = { id: "design-system", name: "Design System", components: [component] };
   const resolver = new LibraryResolver({
     local: { id: "local", name: "Local", components: [] },
     connected: [],
     availableLibraries: async () => [{ id: "design-system", name: "Design System" }],
-    connectLibrary: async () => { connectionCalls++; return library; },
+    connectLibrary: async () => { connectionCalls++; throw new Error("must not connect"); },
   });
 
   const results = await Promise.all([
     resolver.resolve({ componentId: "button", libraryId: "design-system" }),
     resolver.resolve({ componentId: "button", libraryId: "design-system" }),
   ]);
-  assert.equal(results[0].status, "resolved");
-  assert.equal(results[1].status, "resolved");
-  assert.equal(connectionCalls, 1);
+  assert.equal(results[0].status, "library-not-connected");
+  assert.equal(results[1].status, "library-not-connected");
+  assert.equal(connectionCalls, 0);
 });
 
 test("reports a missing component in a connected shared library", async () => {

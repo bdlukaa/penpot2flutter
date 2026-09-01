@@ -3,6 +3,9 @@ import type { Diagnostic, IrAsset, IrAssetType } from "../shared/ir.js";
 export interface AssetCandidate {
   readonly id: string;
   readonly sourceNodeId: string;
+  readonly sourceLibraryId?: string;
+  readonly sourceLibraryScope?: "local" | "shared";
+  readonly sourceLibraryModule?: string;
   readonly type: IrAssetType;
   readonly semanticName: string;
   readonly contentHash?: string;
@@ -63,6 +66,8 @@ export function createAssetRegistry(candidates: readonly AssetCandidate[]): Asse
     assets.push({
       id: candidate.id,
       sourceNodeId: candidate.sourceNodeId,
+      ...(candidate.sourceLibraryId === undefined ? {} : { sourceLibraryId: candidate.sourceLibraryId }),
+      ...(candidate.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: candidate.sourceLibraryScope }),
       type: candidate.type,
       filename,
       ...(candidate.contentHash === undefined ? {} : { contentHash: candidate.contentHash }),
@@ -119,7 +124,8 @@ export function contentHashOf(data: readonly number[] | Uint8Array): string {
 }
 
 function compareCandidates(left: AssetCandidate, right: AssetCandidate): number {
-  return left.sourceNodeId.localeCompare(right.sourceNodeId)
+  return (left.sourceLibraryId ?? "").localeCompare(right.sourceLibraryId ?? "")
+    || left.sourceNodeId.localeCompare(right.sourceNodeId)
     || left.id.localeCompare(right.id)
     || left.type.localeCompare(right.type)
     || left.semanticName.localeCompare(right.semanticName);
@@ -138,7 +144,10 @@ function baseFilename(candidate: AssetCandidate): string {
   const slug = slugify(leaf.replace(/\.[A-Za-z0-9]+$/, "")) || slugify(candidate.id) || "asset";
   const cleaned = category === "images" ? slug.replace(/(?:-)?(?:image|photo|picture)$/i, "") || slug : slug;
   const extension = candidate.type === "svg" ? "svg" : candidate.type === "jpg" ? "jpg" : candidate.type === "font" ? sourceExtension ?? "font" : candidate.type;
-  return `assets/${category}/${cleaned}.${extension}`;
+  const libraryPrefix = candidate.sourceLibraryScope === "shared" && candidate.sourceLibraryId !== undefined
+    ? `libraries/${candidate.sourceLibraryModule ?? (slugify(candidate.sourceLibraryId) || "library")}/`
+    : "";
+  return `${libraryPrefix}assets/${category}/${cleaned}.${extension}`;
 }
 
 function slugify(value: string): string {

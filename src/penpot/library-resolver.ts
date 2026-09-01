@@ -90,20 +90,15 @@ export class LibraryResolver {
   private async resolveByIdentity(componentId: string, reference: ComponentReference): Promise<ComponentResolution> {
     const libraryId = reference.libraryId;
     if (libraryId !== undefined && libraryId !== "") {
-      let library = this.libraries.get(libraryId);
+      const library = this.libraries.get(libraryId);
       if (library === undefined) {
         try {
           const available = await this.available();
           const summary = available.find((candidate) => candidate.id === libraryId);
           if (summary === undefined) return { status: "library-unavailable", componentId, libraryId };
-          if (this.context.connectLibrary === undefined) return { status: "library-not-connected", componentId, library: summary };
-          try {
-            library = await this.context.connectLibrary(libraryId);
-            this.libraries.set(library.id, library);
-          } catch {
-            return { status: "library-connection-failed", componentId, libraryId };
-          }
-          return componentInLibrary(componentId, library, "connected-on-demand", reference);
+          // Connecting is a persistent document mutation. The plugin is read-only,
+          // so an available library must be connected by the document owner first.
+          return { status: "library-not-connected", componentId, library: summary };
         } catch {
           return { status: "resolution-failed", componentId, libraryId };
         }

@@ -1,5 +1,6 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrLibrary, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 import { generateFlutterThemeFiles, tokenAccessPath } from "./flutter-theme-generator.js";
+import { libraryModuleName } from "./library-registry.js";
 export { dartMemberName } from "./token-naming.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
@@ -100,6 +101,8 @@ export function generateFlutterWidget(
   typographyStyles: readonly IrTypographyStyle[] = [],
   assets: readonly IrAsset[] = [],
   assetImport?: string,
+  componentPaths?: ReadonlyMap<string, string>,
+  sourcePath?: string,
 ): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((component) => component.variant?.representation === "members").map((component) => [component.id, component.variant?.enumName ?? `${component.name}Variant`]));
@@ -117,7 +120,7 @@ export function generateFlutterWidget(
     ...(assetImport !== undefined && roots.some(containsAssetReference) ? [`import '${assetImport}';`] : []),
     ...(roots.some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
     ...(roots.some(containsTypography) ? ["import '../app_typography.dart';"] : []),
-    ...componentImports(roots.flatMap((variantRoot) => [...collectInstanceComponentIds(variantRoot)]), components, "../components/"),
+    ...componentImports(roots.flatMap((variantRoot) => [...collectInstanceComponentIds(variantRoot)]), components, "../components/", componentPaths, sourcePath),
     "",
     `class ${className} extends StatelessWidget {`,
     `  const ${className}({super.key});`,
@@ -172,7 +175,7 @@ function renderResponsiveRoot(root: IrNode, depth: number): string {
   ].join("\n");
 }
 
-export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = [], assets: readonly IrAsset[] = [], assetImport?: string): string {
+export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = [], assets: readonly IrAsset[] = [], assetImport?: string, componentPaths?: ReadonlyMap<string, string>, sourcePath?: string): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((candidate) => candidate.variant?.representation === "members").map((candidate) => [candidate.id, candidate.variant?.enumName ?? `${candidate.name}Variant`]));
   tokenDefinitions = tokenDefinitionMap(tokens);
@@ -188,7 +191,7 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
     ...(assetImport !== undefined && componentRoots(component).some(containsAssetReference) ? [`import '${assetImport}';`] : []),
     ...(componentRoots(component).some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
     ...(componentRoots(component).some(containsTypography) ? ["import '../app_typography.dart';"] : []),
-    ...componentImports(component.dependencies, components, ""),
+    ...componentImports(component.dependencies, components, "", componentPaths, sourcePath),
     "",
     ...(component.variant?.representation === "members"
       ? [`enum ${component.variant.enumName ?? `${component.name}Variant`} {`, ...component.variant.members.map((member) => `  ${member.dartName ?? "member"},`), "}", ""]
@@ -261,19 +264,61 @@ export function generateFlutterFiles(
   typographyStyles: readonly IrTypographyStyle[] = [],
   cachedThemeFiles?: readonly GeneratedFile[],
   assets: readonly IrAsset[] = [],
+  libraries: readonly IrLibrary[] = [],
 ): GeneratedFile[] {
   const screenName = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedScreen";
-  const files: GeneratedFile[] = [{ path: `screens/${snakeCase(screenName)}.dart`, source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles, assets, "../assets.dart") }];
+  const sharedLibraries = libraries.filter((library) => library.scope === "shared");
+  const libraryById = new Map(sharedLibraries.map((library) => [library.id, library]));
+  const componentPaths = new Map(components.map((component) => [
+    component.id,
+    component.sourceLibraryScope === "shared" && component.sourceLibraryId !== undefined
+      ? `libraries/${libraryModuleName(libraryById.get(component.sourceLibraryId) ?? { id: component.sourceLibraryId, name: component.sourceLibraryId })}/components/${snakeCase(component.name)}.dart`
+      : `components/${snakeCase(component.name)}.dart`,
+  ]));
+  const screenPath = `screens/${snakeCase(screenName)}.dart`;
+  const files: GeneratedFile[] = [{
+    path: screenPath,
+    source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles, assets, "../assets.dart", componentPaths, screenPath),
+  }];
   for (const component of components) {
-    files.push({ path: `components/${snakeCase(component.name)}.dart`, source: generateComponentWidget(component, components, tokens, typographyStyles, assets, "../assets.dart") });
+    const path = componentPaths.get(component.id)!;
+    files.push({ path, source: generateComponentWidget(component, components, tokens, typographyStyles, assets, assetImportFor(path), componentPaths, path) });
   }
   if (assets.length > 0) files.push({ path: "assets.dart", source: generateFlutterAssets(assets) });
-  files.push(...(cachedThemeFiles ?? generateFlutterThemeFiles(tokens, tokenSets, tokenThemes)));
+
+  const localTokens = tokens.filter((token) => token.sourceLibraryScope !== "shared");
+  const localSets = tokenSets.filter((set) => set.sourceLibraryScope !== "shared");
+  const localThemes = tokenThemes.filter((theme) => theme.sourceLibraryScope !== "shared");
+  files.push(...(cachedThemeFiles ?? generateFlutterThemeFiles(localTokens, localSets, localThemes)));
+  for (const library of sharedLibraries) {
+    const module = libraryModuleName(library);
+    const prefix = `libraries/${module}`;
+    const libraryTokens = tokens.filter((token) => token.sourceLibraryId === library.id);
+    const librarySets = tokenSets.filter((set) => set.sourceLibraryId === library.id);
+    const libraryThemes = tokenThemes.filter((theme) => theme.sourceLibraryId === library.id);
+    for (const themeFile of generateFlutterThemeFiles(libraryTokens, librarySets, libraryThemes)) {
+      if (themeFile.path.startsWith("theme/")) files.push({ ...themeFile, path: `${prefix}/${themeFile.path}` });
+    }
+    if (library.assets.length > 0) files.push({ path: `${prefix}/assets.dart`, source: "export '../../assets.dart';\n" });
+    const exports = [
+      ...components.filter((component) => component.sourceLibraryId === library.id).map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
+      ...(library.assets.length === 0 ? [] : ["export 'assets.dart';"]),
+      ...(libraryTokens.length === 0 ? [] : ["export 'theme/penpot_theme_extensions.dart';", "export 'theme/penpot_token_namespaces.dart';", "export 'theme/penpot_tokens.dart';", "export 'theme/penpot_themes.dart';"]),
+      "",
+    ];
+    files.push({ path: `${prefix}/${module}.dart`, source: exports.join("\n") });
+  }
   if (typographyStyles.length > 0) files.push({ path: "app_typography.dart", source: generateFlutterTypography(typographyStyles) });
   const barrel = files.find((file) => file.path === "penpot.dart");
-  const exports = generateBarrelExport(components, snakeCase(screenName), tokens.length > 0, typographyStyles.length > 0, assets.length > 0);
+  const exports = generateBarrelExport(components.filter((component) => component.sourceLibraryScope !== "shared"), snakeCase(screenName), localTokens.length > 0, typographyStyles.length > 0, assets.length > 0)
+    + sharedLibraries.map((library) => `export 'libraries/${libraryModuleName(library)}/${libraryModuleName(library)}.dart';`).join("\n")
+    + (sharedLibraries.length === 0 ? "" : "\n");
   if (barrel === undefined) files.push({ path: "penpot.dart", source: exports });
   else files[files.indexOf(barrel)] = { ...barrel, source: barrel.source + exports };
+  const manifest = JSON.stringify({ libraries: libraries.map((library) => ({ libraryId: library.id, name: library.name, scope: library.scope, ...(library.sourceRevision === undefined ? {} : { sourceRevision: library.sourceRevision }) })), files: files.map((file) => file.path).sort() }, null, 2) + "\n";
+  const existingManifest = files.findIndex((file) => file.path === "penpot_manifest.json");
+  if (existingManifest >= 0) files[existingManifest] = { path: "penpot_manifest.json", source: manifest };
+  else if (libraries.length > 0) files.push({ path: "penpot_manifest.json", source: manifest });
   return files;
 }
 
@@ -292,12 +337,29 @@ function buildNameMap(components: readonly IrComponentDefinition[]): ReadonlyMap
   return new Map(components.map((component) => [component.id, component.name]));
 }
 
-function componentImports(componentIds: Iterable<string>, components: readonly IrComponentDefinition[], prefix: string): string[] {
+function componentImports(componentIds: Iterable<string>, components: readonly IrComponentDefinition[], prefix: string, componentPaths?: ReadonlyMap<string, string>, sourcePath?: string): string[] {
   return [...new Set(componentIds)]
     .map((id) => components.find((component) => component.id === id))
     .filter((component): component is IrComponentDefinition => component !== undefined)
-    .map((component) => `import '${prefix}${snakeCase(component.name)}.dart';`)
+    .map((component) => {
+      const target = componentPaths?.get(component.id);
+      return `import '${target === undefined || sourcePath === undefined ? `${prefix}${snakeCase(component.name)}.dart` : relativeDartImport(sourcePath, target)}';`;
+    })
     .sort();
+}
+
+function assetImportFor(path: string): string {
+  return relativeDartImport(path, "assets.dart");
+}
+
+function relativeDartImport(fromPath: string, toPath: string): string {
+  const from = fromPath.split("/").slice(0, -1);
+  const to = toPath.split("/");
+  while (from[0] !== undefined && from[0] === to[0]) {
+    from.shift();
+    to.shift();
+  }
+  return `${from.map(() => "..").concat(to).join("/")}`;
 }
 
 function collectInstanceComponentIds(node: IrNode): Set<string> {
