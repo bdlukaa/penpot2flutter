@@ -26,6 +26,7 @@ interface LiveComponentShape {
   readonly isComponentCopyInstance?: () => boolean;
   readonly isComponentMainInstance?: () => boolean;
   readonly isComponentRoot?: () => boolean;
+  readonly isComponentHead?: () => boolean;
   readonly component?: () => LibraryComponentLike | null;
 }
 
@@ -77,9 +78,11 @@ function enrichShape(shape: PenpotSourceShape): PenpotSourceShape {
 function enrichComponent(shape: PenpotSourceShape): PenpotSourceShape {
   const live = shape as unknown as LiveComponentShape;
   try {
-    const isRoot = live.isComponentRoot?.() === true;
-    const isInstance = isRoot && (live.isComponentInstance?.() === true || live.isComponentCopyInstance?.() === true);
-    const isMain = isRoot && live.isComponentMainInstance?.() === true;
+    // Nested component trees report their head independently from the outer
+    // component root. Both identify a reusable component boundary.
+    const isBoundary = live.isComponentRoot?.() === true || live.isComponentHead?.() === true;
+    const isInstance = isBoundary && (live.isComponentInstance?.() === true || live.isComponentCopyInstance?.() === true);
+    const isMain = isBoundary && live.isComponentMainInstance?.() === true;
     if (!isInstance && !isMain) return shape;
     const component = live.component?.();
     return {
