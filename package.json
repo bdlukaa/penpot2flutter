@@ -11,7 +11,8 @@
     "test": "rm -rf .test-build && tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js"
   },
   "dependencies": {
-    "@penpot/plugin-types": "1.5.0"
+    "@penpot/plugin-types": "1.5.0",
+    "highlight.js": "^11.12.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

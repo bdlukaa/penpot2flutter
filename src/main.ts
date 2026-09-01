@@ -1,7 +1,11 @@
 import { isPluginToUiMessage, type ConversionMessage, type PluginToUiMessage } from "./shared/messages.js";
 import type { GeneratedFile } from "./shared/ir.js";
 import { APP_VERSION } from "./shared/version.js";
+import hljs from "highlight.js/lib/core";
+import dartLanguage from "highlight.js/lib/languages/dart";
 import "./style.css";
+
+hljs.registerLanguage("dart", dartLanguage);
 
 const app = document.querySelector<HTMLElement>("#app");
 if (app === null) {
@@ -312,22 +316,7 @@ function selectedFileName(): string {
 }
 
 function highlightDart(source: string): string {
-  const tokenPattern = /('(?:\\\\.|[^'\\\\])*'|"(?:\\\\.|[^"\\\\])*"|\\b\\d+(?:\\.\\d+)?\\b|\\b(?:class|extends|const|override|return|import|final|void|Widget|StatelessWidget)\\b|.)/gs;
-  return [...source.matchAll(tokenPattern)]
-    .map(([token]) => {
-      const escaped = escapeHtml(token);
-      if (/^['"]/.test(token)) return `<span class="token-string">${escaped}</span>`;
-      if (/^\\d/.test(token)) return `<span class="token-number">${escaped}</span>`;
-      if (/^(class|extends|const|override|return|import|final|void|Widget|StatelessWidget)$/.test(token)) {
-        return `<span class="token-keyword">${escaped}</span>`;
-      }
-      return escaped;
-    })
-    .join("");
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return hljs.highlight(source, { language: "dart", ignoreIllegals: true }).value;
 }
 
 function now(): number {

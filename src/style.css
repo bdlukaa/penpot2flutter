@@ -33,9 +33,15 @@ button:disabled { background: #cac4d0; cursor: default; }
 
 .code-preview { background: #1d1b20; border-radius: 8px; color: #f4eff7; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; min-height: 320px; overflow: auto; padding: 14px; tab-size: 2; white-space: pre; }
 .code-preview code { font: inherit; }
-.token-keyword { color: #d0bcff; }
-.token-string { color: #b8e6b0; }
-.token-number { color: #ffb4ab; }
+.hljs-comment, .hljs-quote { color: #938f99; font-style: italic; }
+.hljs-keyword, .hljs-literal, .hljs-selector-tag { color: #d0bcff; }
+.hljs-type, .hljs-built_in, .hljs-title.class_, .hljs-title.class_.inherited__ { color: #b8e6b0; }
+.hljs-title.function_, .hljs-title.function_.invoke__ { color: #a8c7fa; }
+.hljs-string, .hljs-regexp { color: #b8e6b0; }
+.hljs-number { color: #ffb4ab; }
+.hljs-meta, .hljs-meta .hljs-keyword { color: #f6bd7b; }
+.hljs-variable, .hljs-attr { color: #f4eff7; }
+.hljs-operator, .hljs-punctuation { color: #c9c4d0; }
 textarea { background: #1d1b20; border: 0; border-radius: 8px; color: #e9ddff; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 320px; padding: 14px; resize: vertical; tab-size: 2; width: 100%; }
 
 #generated-files h2 { margin-bottom: 8px; }
