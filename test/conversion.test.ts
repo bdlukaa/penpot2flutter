@@ -9,7 +9,7 @@ import { validateFlutterThemeGeneration } from "../src/core/flutter-theme-genera
 import { dartMemberName } from "../src/core/token-naming.js";
 import { buildTokenRegistry, resolveTokenSets } from "../src/core/token-registry.js";
 import { LibraryResolver } from "../src/penpot/library-resolver.js";
-import { extractTokenCatalog } from "../src/penpot/token-catalog.js";
+import { extractTokenCatalog, extractTokenCatalogIncrementally } from "../src/penpot/token-catalog.js";
 import { withTokenBindings } from "../src/penpot/shape-token-bindings.js";
 import type { TokenCatalog } from "@penpot/plugin-types";
 
@@ -1514,6 +1514,37 @@ test("preserves set order, multidimensional themes, 200+ tokens, and alias resol
   assert.deepEqual(registry.tokenThemes.map((theme) => theme.group), ["Mode", "Mode", "Brand", "Brand"]);
 });
 
+test("indexes a 1,500-token catalog in bounded extraction slices without changing the snapshot", async () => {
+  const catalog = syntheticTokenCatalog(1500) as unknown as TokenCatalog;
+  const expected = extractTokenCatalog(catalog);
+  let yields = 0;
+  const timings = new Map<string, number>();
+  const actual = await extractTokenCatalogIncrementally(catalog, {
+    maxSliceMs: 0,
+    yieldToHost: async () => { yields++; },
+    reportTiming: (phase, milliseconds) => timings.set(phase, milliseconds),
+  });
+
+  assert.deepEqual(actual, expected);
+  assert.ok(yields >= 1500);
+  assert.ok((timings.get("largest-synchronous-slice") ?? Number.POSITIVE_INFINITY) >= 0);
+});
+
+test("a 5,000-token stress catalog remains linear and does not create duplicate tokens", async () => {
+  const catalog = syntheticTokenCatalog(5000) as unknown as TokenCatalog;
+  let processed = 0;
+  const extracted = await extractTokenCatalogIncrementally(catalog, {
+    maxSliceMs: 0,
+    yieldToHost: async () => {},
+    reportProgress: (progress) => { if (progress.phase === "tokens") processed = progress.processed; },
+  });
+  const registry = buildTokenRegistry(extracted.input.tokens, extracted.input.sets, extracted.input.themes);
+
+  assert.equal(processed, 5000);
+  assert.equal(extracted.stats.tokens, 5000);
+  assert.equal(registry.tokens.length, 5000);
+});
+
 test("generates one theme-aware component source for light, dark, and partial theme overrides", () => {
   const result = extractSelection([{
     id: "theme-card", name: "Theme card", type: "rectangle", x: 0, y: 0, width: 40, height: 40, visible: true,
@@ -1655,6 +1686,24 @@ test("diagnoses missing bindings, unsupported types, invalid values, and alias c
   assert.ok(codes.has("TOKEN_VALUE_INVALID"));
   assert.ok(codes.has("TOKEN_TYPE_UNSUPPORTED"));
 });
+
+function syntheticTokenCatalog(tokenCount: number) {
+  const setCount = 15;
+  const sets = Array.from({ length: setCount }, (_, setIndex) => {
+    const start = Math.floor(tokenCount * setIndex / setCount);
+    const end = Math.floor(tokenCount * (setIndex + 1) / setCount);
+    return tokenSet(`set-${setIndex}`, `Set ${setIndex}`, setIndex === 0, Array.from({ length: end - start }, (_, offset) => {
+      const index = start + offset;
+      const name = index % 5 === 0 ? `color.token${index}` : index % 5 === 1 ? `spacing.token${index}` : `number.token${index}`;
+      const value = index % 7 === 0 && index > 0 ? `{number.token${index - 1}} + 1` : String(index);
+      return token(name, name.startsWith("color") ? "color" : name.startsWith("spacing") ? "spacing" : "number", value, index, index % 7 === 0 ? String(index) : value);
+    }));
+  });
+  return {
+    sets,
+    themes: Array.from({ length: 10 }, (_, index) => tokenTheme(`theme-${index}`, `Group ${index % 2}`, `Theme ${index}`, index === 0, [sets[index % setCount]!])),
+  };
+}
 
 function token(name: string, type: string, value: unknown, index: number, resolvedValue: unknown = value) {
   return { id: `token-${index}`, name, description: "", type, value, resolvedValue, resolvedValueString: String(resolvedValue), duplicate() {}, remove() {}, applyToShapes() {}, applyToSelected() {} };

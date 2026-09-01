@@ -1,7 +1,7 @@
 import type { Diagnostic, GeneratedFile, IrToken, IrTokenSet, IrTokenTheme } from "../shared/ir.js";
 import { tokenDartLiteral, tokenRuntimeType } from "./flutter-generator.js";
 import { dartClassSegment, dartMemberName } from "./token-naming.js";
-import { resolveTokenSets } from "./token-registry.js";
+import { createTokenResolverIndexes, resolveTokenSets } from "./token-registry.js";
 
 interface TokenTree {
   readonly path: readonly string[];
@@ -146,9 +146,11 @@ function generateThemes(
   themes: readonly IrTokenTheme[],
   groups: ReadonlyMap<string, readonly IrTokenTheme[]>,
 ): string {
-  const tokenByIdentity = new Map(tokens.map((token) => [`${token.setId ?? ""}:${token.id}`, token]));
+  const resolverIndexes = createTokenResolverIndexes(tokens);
+  const tokenByIdentity = resolverIndexes.definitionsByIdentity;
+  const unscopedTokenById = resolverIndexes.unscopedDefinitionsById;
   const baseSetIds = sets.filter((set) => set.active).map((set) => set.id);
-  const resolvedBySet = new Map(sets.map((set) => [set.id, resolveTokenSets(tokens, sets, new Set([...baseSetIds, set.id])).tokens]));
+  const resolvedBySet = new Map(sets.map((set) => [set.id, resolveTokenSets(tokens, sets, new Set([...baseSetIds, set.id]), resolverIndexes).tokens]));
   const semanticTokens = uniqueSemanticTokens(tokens);
   const groupEntries = [...groups.entries()];
   const enumNames = uniqueNames(groupEntries.map(([group]) => `Penpot${dartClassSegment(group || "Theme")}`));
@@ -175,7 +177,7 @@ function generateThemes(
     ...sets.flatMap((set) => [
       `  ${dartString(set.id)}: {`,
       ...set.tokenIds.flatMap((id) => {
-        const token = tokenByIdentity.get(`${set.id}:${id}`) ?? tokens.find((candidate) => candidate.id === id);
+        const token = tokenByIdentity.get(`${set.id}:${id}`) ?? unscopedTokenById.get(id);
         if (token === undefined) return [];
         const resolved = resolvedBySet.get(set.id)?.get(token.sourceName);
         const resolvedToken = resolved?.id === token.id && resolved?.setId === token.setId && resolved.value !== token.value ? { ...token, value: resolved.value } : token;

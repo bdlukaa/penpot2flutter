@@ -5,7 +5,8 @@ import { generateFlutterThemeFiles, validateFlutterThemeGeneration } from "./cor
 import { buildTokenRegistry } from "./core/token-registry.js";
 import { LibraryResolver, type ComponentResolution, type LibraryComponentLike, type ReadOnlyLibraryContext } from "./penpot/library-resolver.js";
 import { withTokenBindings } from "./penpot/shape-token-bindings.js";
-import { extractTokenCatalog, type ExtractedTokenCatalog } from "./penpot/token-catalog.js";
+import { extractTokenCatalogIncrementally, readTokenCatalogMetadata, type ExtractedTokenCatalog } from "./penpot/token-catalog.js";
+import { DesignSystemIndexManager, type DesignSystemIndexSnapshot, type DesignSystemIndexState } from "./core/design-system-index-manager.js";
 import { componentKey } from "./shared/component-key.js";
 import type { Diagnostic, GeneratedFile, IrAsset, IrNode } from "./shared/ir.js";
 import type { ExportedAsset, PluginToUiMessage, TokenBindingStats } from "./shared/messages.js";
@@ -59,29 +60,58 @@ interface CachedDesignSystem {
   readonly typography: ReturnType<typeof typographyInput>;
 }
 
-let cachedDesignSystem: CachedDesignSystem | undefined;
 let designSystemFilesSent = false;
 let conversionRequest = 0;
+let indexStatusTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingIndexState: DesignSystemIndexState | undefined;
+
+const designSystemIndex = new DesignSystemIndexManager<CachedDesignSystem>(
+  {
+    readMetadata: () => readTokenCatalogMetadata(penpot.library.local.tokens),
+    load: async (context) => {
+      try {
+        const catalog = await extractTokenCatalogIncrementally(penpot.library.local.tokens, {
+          isCurrent: context.isCurrent,
+          reportProgress: (progress) => context.reportProgress({ ...progress, phase: progress.phase }),
+          reportTiming: context.reportTiming,
+        });
+        return { metadata: catalog.stats, input: catalog.input, diagnostics: catalog.diagnostics };
+      } catch {
+        return unavailableDesignSystemSnapshot();
+      }
+    },
+  },
+  (snapshot, context) => buildCachedDesignSystem(snapshot, context.reportTiming),
+);
 
 penpot.ui.open("Penpot to Flutter", `?theme=${penpot.theme}`, { width: 720, height: 640 });
 
-function isUiToPluginMessage(value: unknown): boolean {
+function isUiToPluginMessage(value: unknown): value is { readonly source: "penpot-to-flutter"; readonly type: "request-conversion" | "refresh-design-system" } {
   if (typeof value !== "object" || value === null) return false;
   const message = value as { source?: unknown; type?: unknown };
-  return message.source === "penpot-to-flutter" && message.type === "request-conversion";
+  return message.source === "penpot-to-flutter" && (message.type === "request-conversion" || message.type === "refresh-design-system");
 }
 
 async function sendConversion(): Promise<void> {
   const request = ++conversionRequest;
   const rawSelection = penpot.selection as unknown as readonly PenpotSourceShape[];
+  sendPendingSelection(rawSelection.length);
   const selection = await Promise.all(rawSelection.map((shape) => enrichAssetTree(enrichShape(shape), shape)));
-  const designSystem = getDesignSystem();
-  const { catalog, diagnostics: catalogDiagnostics } = designSystem;
+  const requiredTokens = tokenReferenceNames(selection);
+  const designSystem = designSystemIndex.index;
+  if (designSystem === undefined && requiredTokens.length > 0 && designSystemIndex.state.status !== "error") {
+    void designSystemIndex.ensureSelectionDependencies(requiredTokens).then(() => {
+      if (request === conversionRequest) void sendConversion();
+    });
+    return;
+  }
+  const effectiveDesignSystem = designSystem ?? emptyDesignSystem();
+  const { catalog, diagnostics: catalogDiagnostics } = effectiveDesignSystem;
   const resolution = await resolveComponentSources(selection);
   if (request !== conversionRequest) return;
   const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues, resolution.identities));
-  const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, designSystem.tokenInput, designSystem.typography);
-  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, designSystem.themeFiles, extracted.assetRegistry);
+  const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, effectiveDesignSystem.tokenInput, effectiveDesignSystem.typography);
+  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, effectiveDesignSystem.themeFiles, extracted.assetRegistry);
   const files = generatedFiles?.filter((file) => !isStableDesignSystemFile(file));
   const exportedAssets = extracted === undefined
     ? { assets: [] as readonly ExportedAsset[], diagnostics: [] as readonly Diagnostic[] }
@@ -90,16 +120,19 @@ async function sendConversion(): Promise<void> {
     ...extracted,
     diagnostics: [...catalogDiagnostics, ...extracted.diagnostics, ...exportedAssets.diagnostics, ...validateFlutterThemeGeneration(extracted.tokens, extracted.tokenThemes, generatedFiles!)],
   };
-  const sendDesignSystemFiles = !designSystemFilesSent;
-  designSystemFilesSent = true;
+  const bindingStart = now();
+  const tokenBindings = tokenBindingStats(result);
+  measurePerformance("penpot-index:binding-classification", bindingStart);
+  const sendDesignSystemFiles = designSystem !== undefined && !designSystemFilesSent;
+  if (sendDesignSystemFiles) designSystemFilesSent = true;
   const message: PluginToUiMessage = {
     source: "penpot-to-flutter",
     type: "conversion",
     selectionCount: selection.length,
     tokenCatalog: catalog.stats,
     tokenCatalogDiagnostics: catalogDiagnostics,
-    tokenBindings: tokenBindingStats(result),
-    ...(sendDesignSystemFiles ? { designSystemFiles: designSystem.themeFiles.filter(isStableDesignSystemFile) } : {}),
+    tokenBindings,
+    ...(sendDesignSystemFiles && designSystem !== undefined ? { designSystemFiles: effectiveDesignSystem.themeFiles.filter(isStableDesignSystemFile) } : {}),
     ...(result === undefined
       ? {}
       : {
@@ -110,7 +143,35 @@ async function sendConversion(): Promise<void> {
           files,
         }),
   };
+  const transferStart = now();
   penpot.ui.sendMessage(message);
+  measurePerformance("penpot-index:message-transfer", transferStart);
+}
+
+function sendPendingSelection(selectionCount: number): void {
+  const state = designSystemIndex.state;
+  const metadata = state.metadata ?? unavailableDesignSystemSnapshot().metadata;
+  penpot.ui.sendMessage({
+    source: "penpot-to-flutter",
+    type: "conversion",
+    selectionCount,
+    pending: true,
+    tokenCatalog: metadata,
+    tokenCatalogDiagnostics: state.diagnostics,
+    tokenBindings: { colors: 0, spacing: 0, typography: 0, radius: 0, other: 0 },
+  } satisfies PluginToUiMessage);
+}
+
+function tokenReferenceNames(selection: readonly PenpotSourceShape[]): readonly string[] {
+  const names = new Set<string>();
+  const visit = (shape: PenpotSourceShape): void => {
+    for (const value of Object.values(shape.tokenBindings ?? {})) {
+      if (typeof value === "string" && value !== "") names.add(value);
+    }
+    for (const child of shape.children ?? []) visit(child);
+  };
+  selection.forEach(visit);
+  return [...names];
 }
 
 function isStableDesignSystemFile(file: GeneratedFile): boolean {
@@ -171,37 +232,54 @@ function tokenBindingStats(result: ReturnType<typeof extractSelection> | undefin
   return stats;
 }
 
-function getDesignSystem(): CachedDesignSystem {
-  if (cachedDesignSystem !== undefined) return cachedDesignSystem;
-  const loaded = loadTokenCatalog();
-  const registry = buildTokenRegistry(loaded.catalog.input.tokens, loaded.catalog.input.sets, loaded.catalog.input.themes);
-  cachedDesignSystem = {
-    ...loaded,
-    tokenInput: { ...loaded.catalog.input, registry },
-    themeFiles: generateFlutterThemeFiles(registry.tokens, registry.sets, registry.themes),
+function buildCachedDesignSystem(snapshot: DesignSystemIndexSnapshot, reportTiming: (phase: string, milliseconds: number) => void): CachedDesignSystem {
+  const normalizationStart = now();
+  const registry = buildTokenRegistry(snapshot.input.tokens, snapshot.input.sets, snapshot.input.themes, { reportTiming });
+  reportTiming("registry-total", now() - normalizationStart);
+  const themeStart = now();
+  const themeFiles = generateFlutterThemeFiles(registry.tokens, registry.sets, registry.themes);
+  reportTiming("theme-file-generation", now() - themeStart);
+  const catalog: ExtractedTokenCatalog = { input: snapshot.input, diagnostics: snapshot.diagnostics, stats: snapshot.metadata };
+  return {
+    catalog,
+    diagnostics: snapshot.diagnostics,
+    tokenInput: { ...snapshot.input, registry },
+    themeFiles,
     typography: typographyInput(),
   };
-  console.info("Token catalog loaded", loaded.catalog.stats);
-  console.info("Token sets", loaded.catalog.stats.setNames);
-  console.info("Token themes", loaded.catalog.stats.themeNames);
-  return cachedDesignSystem;
 }
 
-function loadTokenCatalog(): { readonly catalog: ExtractedTokenCatalog; readonly diagnostics: readonly Diagnostic[] } {
+function now(): number {
+  return typeof performance === "undefined" || typeof performance.now !== "function" ? Date.now() : performance.now();
+}
+
+function measurePerformance(name: string, started: number): void {
+  if (typeof performance === "undefined" || typeof performance.mark !== "function" || typeof performance.measure !== "function") return;
   try {
-    const catalog = extractTokenCatalog(penpot.library.local.tokens);
-    if (catalog.stats.sets > 0 || catalog.stats.themes > 0 || catalog.stats.tokens > 0) return { catalog, diagnostics: catalog.diagnostics };
-    return {
-      catalog,
-      diagnostics: [...catalog.diagnostics, { severity: "warning", sourceId: "token-catalog", code: "TOKEN_CATALOG_EMPTY_UNEXPECTEDLY", message: "Penpot returned an empty TokenCatalog. If the Tokens tab contains definitions, verify that this plugin is running against a Penpot version exposing the 1.5 TokenCatalog API." }],
-    };
-  } catch (error) {
-    console.error("Token catalog unavailable", error);
-    return {
-      catalog: { input: {}, diagnostics: [], stats: { sets: 0, themes: 0, tokens: 0, groups: [], setNames: [], themeNames: [] } },
-      diagnostics: [{ severity: "error", sourceId: "token-catalog", code: "TOKEN_CATALOG_UNAVAILABLE", message: "Unable to read penpot.library.local.tokens; token/theme generation was stopped rather than inferred from shape literals." }],
-    };
+    performance.mark(`${name}:end`);
+    performance.measure(name, { start: started, end: now() });
+  } catch {
+    // Performance telemetry must never affect conversion in constrained plugin runtimes.
   }
+}
+
+function unavailableDesignSystemSnapshot(): DesignSystemIndexSnapshot {
+  return {
+    metadata: { sets: 0, themes: 0, tokens: 0, groups: [], setNames: [], themeNames: [] },
+    input: {},
+    diagnostics: [{ severity: "error", sourceId: "token-catalog", code: "TOKEN_CATALOG_UNAVAILABLE", message: "Unable to read penpot.library.local.tokens; token/theme generation was stopped rather than inferred from shape literals." }],
+  };
+}
+
+function emptyDesignSystem(): CachedDesignSystem {
+  const snapshot = unavailableDesignSystemSnapshot();
+  return {
+    catalog: { input: snapshot.input, diagnostics: snapshot.diagnostics, stats: designSystemIndex.state.metadata ?? snapshot.metadata },
+    diagnostics: snapshot.diagnostics,
+    tokenInput: {},
+    themeFiles: [],
+    typography: typographyInput(),
+  };
 }
 
 function enrichShape(shape: PenpotSourceShape): PenpotSourceShape {
@@ -503,19 +581,63 @@ function typographyInput() {
   } as const;
 }
 
-penpot.ui.onMessage<unknown>((message) => {
-  if (isUiToPluginMessage(message)) {
-    designSystemFilesSent = false;
-    void sendConversion();
+designSystemIndex.subscribe((state) => {
+  pendingIndexState = state;
+  if (state.status === "ready" || state.status === "error") {
+    flushIndexState();
+    if (state.status === "ready") {
+      console.info("Penpot to Flutter design-system index", state.timings);
+      void sendConversion();
+    }
+    return;
   }
+  if (indexStatusTimer === undefined) indexStatusTimer = setTimeout(flushIndexState, 100);
 });
 
+function flushIndexState(): void {
+  if (indexStatusTimer !== undefined) {
+    clearTimeout(indexStatusTimer);
+    indexStatusTimer = undefined;
+  }
+  const state = pendingIndexState;
+  if (state === undefined) return;
+  penpot.ui.sendMessage({
+    source: "penpot-to-flutter",
+    type: "design-system-index",
+    index: {
+      status: state.status,
+      readiness: state.readiness,
+      ...(state.metadata === undefined ? {} : { metadata: state.metadata }),
+      ...(state.progress === undefined ? {} : { progress: state.progress }),
+      diagnostics: state.diagnostics,
+      timings: state.timings,
+      ...(state.error === undefined ? {} : { error: state.error }),
+    },
+  } satisfies PluginToUiMessage);
+}
+
+
+penpot.ui.onMessage<unknown>((message) => {
+  if (!isUiToPluginMessage(message)) return;
+  if (message.type === "refresh-design-system") {
+    designSystemFilesSent = false;
+    void designSystemIndex.refresh("manual-refresh");
+    return;
+  }
+  void sendConversion();
+});
+
+// Register selection handling before any background work begins.
 penpot.on("selectionchange", () => {
   void sendConversion();
 });
 
 penpot.on("filechange", () => {
-  cachedDesignSystem = undefined;
   designSystemFilesSent = false;
+  void designSystemIndex.refresh("library-changed");
   void sendConversion();
 });
+
+
+// Startup is intentionally last: UI/message/selection listeners are already live.
+void designSystemIndex.ensureStarted();

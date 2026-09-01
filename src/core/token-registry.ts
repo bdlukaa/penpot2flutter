@@ -51,9 +51,29 @@ export interface TokenRegistryResult {
   readonly diagnostics: readonly Diagnostic[];
 }
 
+export interface TokenRegistryBuildOptions {
+  /** Development-only phase telemetry supplied by the index coordinator. */
+  readonly reportTiming?: (phase: string, milliseconds: number) => void;
+}
+
 export interface ResolvedTokenMap {
   readonly tokens: ReadonlyMap<string, IrToken>;
   readonly diagnostics: readonly Diagnostic[];
+}
+
+export interface TokenResolverIndexes {
+  readonly definitionsByIdentity: ReadonlyMap<string, IrToken>;
+  readonly unscopedDefinitionsById: ReadonlyMap<string, IrToken>;
+}
+
+export function createTokenResolverIndexes(tokens: readonly IrToken[]): TokenResolverIndexes {
+  const definitionsByIdentity = new Map<string, IrToken>();
+  const unscopedDefinitionsById = new Map<string, IrToken>();
+  for (const token of tokens) {
+    definitionsByIdentity.set(`${token.setId ?? ""}:${token.id}`, token);
+    if (token.setId === undefined) unscopedDefinitionsById.set(token.id, token);
+  }
+  return { definitionsByIdentity, unscopedDefinitionsById };
 }
 
 /** Resolves ordered sets by semantic name. Later sets override earlier sets. */
@@ -61,9 +81,10 @@ export function resolveTokenSets(
   tokens: readonly IrToken[],
   sets: readonly IrTokenSet[],
   activeSetIds: ReadonlySet<string>,
+  indexes: TokenResolverIndexes = createTokenResolverIndexes(tokens),
 ): ResolvedTokenMap {
-  const definitions = new Map(tokens.map((token) => [`${token.setId ?? ""}:${token.id}`, token]));
-  const definitionsById = new Map(tokens.filter((token) => token.setId === undefined).map((token) => [token.id, token]));
+  const definitions = indexes.definitionsByIdentity;
+  const definitionsById = indexes.unscopedDefinitionsById;
   const effective = new Map<string, IrToken>();
   for (const set of sets) {
     if (!activeSetIds.has(set.id)) continue;
@@ -242,8 +263,10 @@ export function buildTokenRegistry(
   sources: readonly PenpotTokenSource[] = [],
   setSources: readonly PenpotTokenSetSource[] = [],
   themeSources: readonly PenpotTokenThemeSource[] = [],
+  options: TokenRegistryBuildOptions = {},
 ): TokenRegistryResult {
   const diagnostics: Diagnostic[] = [];
+  const indexStart = now();
   const uniqueSources: PenpotTokenSource[] = [];
   const sourceByIdentity = new Map<string, PenpotTokenSource>();
   for (const source of sources) {
@@ -256,6 +279,8 @@ export function buildTokenRegistry(
     sourceByIdentity.set(identity, source);
     uniqueSources.push(source);
   }
+  options.reportTiming?.("index-map-construction", now() - indexStart);
+  const normalizationStart = now();
   const sourceById = new Map(uniqueSources.filter((source) => source.setId === undefined).map((source) => [source.id, source]));
   const usedNames = new Map<string, Set<string>>();
   const namesBySourceName = new Map<string, { readonly dartClass: string; readonly dartName: string }>();
@@ -302,14 +327,18 @@ export function buildTokenRegistry(
         dartName,
       };
     });
+  options.reportTiming?.("token-normalization", now() - normalizationStart);
 
+  const aliasCycleStart = now();
   for (const token of tokens) {
     if (token.aliasTargetId !== undefined && !sourceById.has(token.aliasTargetId)) {
       diagnostics.push({ severity: "warning", sourceId: token.id, code: "TOKEN_UNRESOLVED", message: `Design token "${token.sourceName}" references unavailable token ${token.aliasTargetId}; its resolved fallback value will be used.` });
     }
   }
   detectAliasCycles(tokens, diagnostics);
+  options.reportTiming?.("alias-cycle-detection", now() - aliasCycleStart);
 
+  const setsStart = now();
   const sets = setSources.map((set, sourceIndex): IrTokenSet => {
     for (const tokenId of set.tokenIds) {
       const tokenExists = sourceByIdentity.has(`${set.id}:${tokenId}`) || sourceById.has(tokenId);
@@ -319,6 +348,8 @@ export function buildTokenRegistry(
     return { id: set.id, name: set.name, index: sourceIndex, active: set.active === true, tokenIds: [...set.tokenIds] };
   });
   diagnoseTokenPathCollisions(tokens, diagnostics);
+  options.reportTiming?.("token-set-normalization", now() - setsStart);
+  const themesStart = now();
   const setIds = new Set(sets.map((set) => set.id));
   const themes = themeSources.map((theme): IrTokenTheme => {
     const activeSetIds = theme.activeSetIds ?? theme.enabledSets ?? [];
@@ -328,7 +359,10 @@ export function buildTokenRegistry(
     return { id: theme.id, ...(theme.externalId === undefined ? {} : { externalId: theme.externalId }), name: theme.name, group: theme.group ?? "", active: theme.active === true, activeSetIds: [...activeSetIds] };
   });
   diagnoseThemeGroupCollisions(themes, diagnostics);
+  options.reportTiming?.("theme-normalization", now() - themesStart);
+  const themeResolutionStart = now();
   diagnostics.push(...validateTokenThemes(tokens, sets, themes));
+  options.reportTiming?.("alias-reference-resolution", now() - themeResolutionStart);
   return { tokens, sets, themes, diagnostics };
 }
 
@@ -342,6 +376,7 @@ export function validateTokenThemes(
   const activeBaseSetIds = sets.filter((set) => set.active).map((set) => set.id);
   const namesByGroup = new Map<string, Map<string, string>>();
   const semanticNames = new Map<string, string>();
+  const resolverIndexes = createTokenResolverIndexes(tokens);
   for (const token of tokens) {
     const normalized = token.sourceName.toLowerCase();
     const previous = semanticNames.get(normalized);
@@ -367,13 +402,13 @@ export function validateTokenThemes(
       diagnostics.push({ severity: "error", sourceId: theme.id, code: "THEME_INHERITANCE_UNRESOLVED", message: `Theme "${theme.name}" has no active base or theme token sets to inherit from.` });
       continue;
     }
-    const resolved = resolveTokenSets(tokens, sets, selectedSetIds);
+    const resolved = resolveTokenSets(tokens, sets, selectedSetIds, resolverIndexes);
     for (const diagnostic of resolved.diagnostics) {
       diagnostics.push({ severity: "error", sourceId: theme.id, code: "THEME_INHERITANCE_UNRESOLVED", message: `Theme "${theme.name}" cannot resolve inherited token values: ${diagnostic.message}` });
     }
     const definitionsByName = new Map<string, Set<IrToken["type"]>>();
-    const tokenByIdentity = new Map(tokens.map((token) => [`${token.setId ?? ""}:${token.id}`, token]));
-    const unscopedTokenById = new Map(tokens.filter((token) => token.setId === undefined).map((token) => [token.id, token]));
+    const tokenByIdentity = resolverIndexes.definitionsByIdentity;
+    const unscopedTokenById = resolverIndexes.unscopedDefinitionsById;
     for (const set of sets) {
       if (!selectedSetIds.has(set.id)) continue;
       for (const tokenId of set.tokenIds) {
@@ -419,6 +454,10 @@ function detectAliasCycles(tokens: readonly IrToken[], diagnostics: Diagnostic[]
     visited.add(id);
   };
   for (const token of tokens) visit(token.id);
+}
+
+function now(): number {
+  return typeof performance === "undefined" || typeof performance.now !== "function" ? Date.now() : performance.now();
 }
 
 function serializableValue(value: unknown): unknown {

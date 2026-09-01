@@ -8,5 +8,5 @@
     "declaration": false,
     "types": ["node"]
   },
-  "include": ["src/core", "src/shared", "test"]
+  "include": ["src/core", "src/penpot", "src/shared", "test"]
 }

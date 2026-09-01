@@ -39,6 +39,141 @@ export interface ExtractedTokenCatalog {
   readonly diagnostics: readonly Diagnostic[];
 }
 
+export interface IncrementalTokenCatalogOptions {
+  readonly isCurrent?: () => boolean;
+  readonly maxSliceMs?: number;
+  readonly yieldToHost?: () => Promise<void>;
+  readonly reportProgress?: (progress: { readonly processed: number; readonly total: number; readonly phase: "tokens" | "themes" }) => void;
+  readonly reportTiming?: (phase: string, milliseconds: number) => void;
+}
+
+/** Reads catalog metadata only; token values and aliases remain untouched. */
+export function readTokenCatalogMetadata(catalog: TokenCatalog): TokenCatalogStats {
+  const started = now();
+  const sets = catalog.sets.map((set) => set);
+  const themes = catalog.themes.map((theme) => theme);
+  const groups = [...new Set(themes.map((theme) => theme.group ?? ""))];
+  const metadata = {
+    sets: sets.length,
+    themes: themes.length,
+    tokens: sets.reduce((count, set) => count + set.tokens.length, 0),
+    groups,
+    setNames: sets.map((set) => set.name),
+    themeNames: themes.map((theme) => `${theme.group ?? ""} / ${theme.name}`),
+  };
+  performanceMeasure("penpot-index:metadata", started);
+  return metadata;
+}
+
+/**
+ * Serializes live Penpot tokens in small time-budgeted slices. This intentionally
+ * keeps all Penpot proxy access in the plugin context before pure normalization.
+ */
+export async function extractTokenCatalogIncrementally(
+  catalog: TokenCatalog,
+  options: IncrementalTokenCatalogOptions = {},
+): Promise<ExtractedTokenCatalog> {
+  const maxSliceMs = options.maxSliceMs ?? 4;
+  const yieldToHost = options.yieldToHost ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+  const metadataStart = now();
+  const metadata = readTokenCatalogMetadata(catalog);
+  options.reportTiming?.("metadata", now() - metadataStart);
+
+  const diagnostics: Diagnostic[] = [];
+  const tokens: PenpotTokenSource[] = [];
+  const setSources: NonNullable<PenpotTokenInput["sets"]>[number][] = [];
+  const setStart = now();
+  const sets = catalog.sets.map((set, index) => ({ set, index, tokenIds: [] as string[], tokens: set.tokens }));
+  options.reportTiming?.("token-set-enumeration", now() - setStart);
+  const total = metadata.tokens;
+  let processed = 0;
+  let sliceStarted = now();
+  let largestSlice = 0;
+  const tokenExtractionStart = now();
+  let serializationMs = 0;
+
+  for (const entry of sets) {
+    for (const token of entry.tokens) {
+      if (options.isCurrent?.() === false) return emptyCatalog(metadata);
+      try {
+        const serializationStart = now();
+        tokens.push(tokenSource(token, entry.set.id, entry.set.name, entry.index));
+        serializationMs += now() - serializationStart;
+        entry.tokenIds.push(token.id);
+      } catch {
+        diagnostics.push({ severity: "error", sourceId: entry.set.id, code: "TOKEN_EXTRACTION_FAILED", message: `A token in set "${entry.set.name}" could not be read and was not silently replaced with a shape literal.` });
+      }
+      processed++;
+      options.reportProgress?.({ processed, total, phase: "tokens" });
+      const elapsed = now() - sliceStarted;
+      if (elapsed >= maxSliceMs) {
+        largestSlice = Math.max(largestSlice, elapsed);
+        await yieldToHost();
+        sliceStarted = now();
+      }
+    }
+    setSources.push({ id: entry.set.id, name: entry.set.name, index: entry.index, active: entry.set.active, tokenIds: entry.tokenIds });
+  }
+  largestSlice = Math.max(largestSlice, now() - sliceStarted);
+  options.reportTiming?.("token-extraction", now() - tokenExtractionStart);
+  options.reportTiming?.("serialization", serializationMs);
+  options.reportTiming?.("largest-synchronous-slice", largestSlice);
+
+  const themesStart = now();
+  const themes: NonNullable<PenpotTokenInput["themes"]>[number][] = [];
+  for (let index = 0; index < catalog.themes.length; index++) {
+    if (options.isCurrent?.() === false) return emptyCatalog(metadata);
+    const theme = catalog.themes[index]!;
+    try {
+      themes.push({
+        id: theme.id,
+        ...(theme.externalId === undefined ? {} : { externalId: theme.externalId }),
+        name: theme.name,
+        group: theme.group,
+        active: theme.active,
+        activeSetIds: theme.activeSets.map((set) => set.id),
+      });
+    } catch {
+      diagnostics.push({ severity: "error", sourceId: `token-theme-${index}`, code: "TOKEN_THEME_EXTRACTION_FAILED", message: `Token theme at catalog index ${index} could not be extracted.` });
+    }
+    options.reportProgress?.({ processed: index + 1, total: catalog.themes.length, phase: "themes" });
+    if (now() - sliceStarted >= maxSliceMs) {
+      await yieldToHost();
+      sliceStarted = now();
+    }
+  }
+  options.reportTiming?.("theme-extraction", now() - themesStart);
+  const groupStart = now();
+  const groups = [...new Set(themes.map((theme) => theme.group ?? ""))];
+  options.reportTiming?.("theme-group-extraction", now() - groupStart);
+  performanceMeasure("penpot-index:token-extraction", tokenExtractionStart);
+
+  return {
+    input: { tokens, sets: setSources, themes },
+    diagnostics,
+    stats: { ...metadata, tokens: tokens.length, groups },
+  };
+}
+
+function emptyCatalog(stats: TokenCatalogStats): ExtractedTokenCatalog {
+  return { input: {}, diagnostics: [], stats };
+}
+
+function now(): number {
+  return typeof performance === "undefined" || typeof performance.now !== "function" ? Date.now() : performance.now();
+}
+
+function performanceMeasure(name: string, started: number): void {
+  if (typeof performance === "undefined" || typeof performance.mark !== "function" || typeof performance.measure !== "function") return;
+  try {
+    performance.mark(`${name}:start`, { startTime: started });
+    performance.mark(`${name}:end`);
+    performance.measure(name, `${name}:start`, `${name}:end`);
+  } catch {
+    // Optional telemetry is not required by every Penpot plugin sandbox.
+  }
+}
+
 /** Converts Penpot's live catalog into the serializable compiler boundary. */
 export function extractTokenCatalog(catalog: TokenCatalog): ExtractedTokenCatalog {
   const diagnostics: Diagnostic[] = [];
@@ -90,7 +225,7 @@ export function extractTokenCatalog(catalog: TokenCatalog): ExtractedTokenCatalo
   };
 }
 
-function tokenSource(token: Token, setId: string, setName: string, setIndex: number): PenpotTokenSource {
+export function tokenSource(token: Token, setId: string, setName: string, setIndex: number): PenpotTokenSource {
   const rawValue = serializable(token.value);
   const resolvedValue = normalizedResolvedValue(token);
   const hasInsetShadow = token.type === "shadow" && token.resolvedValue?.some((shadow) => shadow.inset) === true;

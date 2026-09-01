@@ -2,7 +2,9 @@ import { defineConfig } from "vite";
 import livePreview from "vite-live-preview";
 
 export default defineConfig({
-  plugins: [livePreview({ reload: true, config: { build: { sourcemap: true } } })],
+  // A preview reload recreates Penpot's plugin execution context and drops its
+  // session index. Refresh the plugin deliberately after source changes instead.
+  plugins: [livePreview({ reload: false, config: { build: { sourcemap: true } } })],
   build: {
     rollupOptions: {
       input: {

@@ -1,4 +1,4 @@
-import { isPluginToUiMessage, type PluginToUiMessage } from "./shared/messages.js";
+import { isPluginToUiMessage, type ConversionMessage, type PluginToUiMessage } from "./shared/messages.js";
 import type { GeneratedFile } from "./shared/ir.js";
 import { APP_VERSION } from "./shared/version.js";
 import "./style.css";
@@ -16,9 +16,11 @@ app.innerHTML = `
     <p class="eyebrow">PENPOT TO FLUTTER <span class="version">v${APP_VERSION}</span></p>
     <h1>Selection export</h1>
     <p id="status" class="muted">Reading the current selection…</p>
+    <p id="selection-progress" class="muted" aria-live="polite"></p>
   </header>
   <section id="design-system" aria-label="Design system statistics">
-    <h2>Design System</h2>
+    <div class="design-system-heading"><h2>Design System</h2><button id="refresh-design-system" class="generated-file" type="button">Refresh Design System</button></div>
+    <p id="index-status" class="muted" aria-live="polite">Waiting to index…</p>
     <dl>
       <div><dt>Token sets</dt><dd id="token-set-count">0</dd></div>
       <div><dt>Tokens</dt><dd id="token-count">0</dd></div>
@@ -66,6 +68,7 @@ const emptyState = requiredElement<HTMLElement>("empty-state");
 const result = requiredElement<HTMLElement>("result");
 const status = requiredElement<HTMLElement>("status");
 const summary = requiredElement<HTMLElement>("selection-summary");
+const selectionProgress = requiredElement<HTMLElement>("selection-progress");
 const dart = requiredElement<HTMLTextAreaElement>("dart");
 const dartPreview = requiredElement<HTMLElement>("dart-preview");
 const copy = requiredElement<HTMLButtonElement>("copy");
@@ -82,6 +85,8 @@ const tokenCount = requiredElement<HTMLElement>("token-count");
 const tokenThemeCount = requiredElement<HTMLElement>("token-theme-count");
 const tokenGroupCount = requiredElement<HTMLElement>("token-group-count");
 const tokenCatalogStatus = requiredElement<HTMLElement>("token-catalog-status");
+const indexStatus = requiredElement<HTMLElement>("index-status");
+const refreshDesignSystem = requiredElement<HTMLButtonElement>("refresh-design-system");
 const tokenColorBindingCount = requiredElement<HTMLElement>("token-color-binding-count");
 const tokenSpacingBindingCount = requiredElement<HTMLElement>("token-spacing-binding-count");
 const tokenTypographyBindingCount = requiredElement<HTMLElement>("token-typography-binding-count");
@@ -97,6 +102,11 @@ copy.addEventListener("click", async () => {
     dart.select();
     copy.textContent = "Select code to copy";
   }
+});
+
+refreshDesignSystem.addEventListener("click", () => {
+  refreshDesignSystem.disabled = true;
+  parent.postMessage({ source: "penpot-to-flutter", type: "refresh-design-system" }, "*");
 });
 
 download.addEventListener("click", () => {
@@ -117,6 +127,17 @@ window.addEventListener("message", (event) => {
 parent.postMessage({ source: "penpot-to-flutter", type: "request-conversion" }, "*");
 
 function render(message: PluginToUiMessage): void {
+  const renderStart = now();
+  if (message.type === "design-system-index") {
+    renderIndexState(message);
+    measureUiRender(renderStart);
+    return;
+  }
+  renderConversion(message);
+  measureUiRender(renderStart);
+}
+
+function renderConversion(message: ConversionMessage): void {
   if (message.designSystemFiles !== undefined) cachedDesignSystemFiles = message.designSystemFiles;
   tokenSetCount.textContent = String(message.tokenCatalog.sets);
   tokenCount.textContent = String(message.tokenCatalog.tokens);
@@ -129,6 +150,13 @@ function render(message: PluginToUiMessage): void {
   tokenRadiusBindingCount.textContent = String(message.tokenBindings.radius);
   tokenOtherBindingCount.textContent = String(message.tokenBindings.other);
   const hasSelection = message.result !== undefined && message.dart !== undefined;
+  if (message.pending) {
+    emptyState.hidden = message.selectionCount > 0;
+    result.hidden = true;
+    selectionProgress.textContent = selectionCountLabel(message.selectionCount);
+    status.textContent = message.selectionCount === 0 ? "No layers selected" : "Selection updated; resolving design-system dependencies…";
+    return;
+  }
   emptyState.hidden = hasSelection;
   result.hidden = !hasSelection;
 
@@ -138,7 +166,8 @@ function render(message: PluginToUiMessage): void {
   }
 
   status.textContent = "Generated from the current selection";
-  summary.textContent = `${message.selectionCount} selected ${message.selectionCount === 1 ? "layer" : "layers"}`;
+  selectionProgress.textContent = selectionCountLabel(message.selectionCount);
+  summary.textContent = selectionCountLabel(message.selectionCount);
   renderGeneratedFiles(message.files, message.dart);
   assets.hidden = (message.pubspecAssets === undefined || message.pubspecAssets === "") && (message.exportedAssets?.length ?? 0) === 0;
   pubspecAssets.hidden = message.pubspecAssets === undefined || message.pubspecAssets === "";
@@ -183,7 +212,34 @@ function render(message: PluginToUiMessage): void {
   );
 }
 
-function renderExportedAssets(exported: PluginToUiMessage["exportedAssets"]): void {
+function renderIndexState(message: Extract<PluginToUiMessage, { readonly type: "design-system-index" }>): void {
+  const { index } = message;
+  if (index.metadata !== undefined) {
+    tokenSetCount.textContent = String(index.metadata.sets);
+    tokenCount.textContent = String(index.metadata.tokens);
+    tokenThemeCount.textContent = String(index.metadata.themes);
+    tokenGroupCount.textContent = String(index.metadata.groups.length);
+  }
+  const percent = index.progress === undefined || index.progress.total === 0
+    ? ""
+    : ` ${Math.round(index.progress.processed / index.progress.total * 100)}%`;
+  indexStatus.textContent = index.status === "indexing"
+    ? `Indexing in background…${percent}`
+    : index.status === "loading-metadata"
+      ? "Reading design-system metadata…"
+      : index.status === "ready"
+        ? "Design system ready"
+        : index.status === "error"
+          ? "Design-system index unavailable; literal export remains available."
+          : "Design-system index is stale";
+  tokenCatalogStatus.textContent = [
+    ...index.diagnostics.map((diagnostic) => `${diagnostic.severity.toUpperCase()}: ${diagnostic.message}`),
+    ...(index.error === undefined ? [] : [index.error]),
+  ].join(" ");
+  refreshDesignSystem.disabled = index.status === "indexing" || index.status === "loading-metadata";
+}
+
+function renderExportedAssets(exported: ConversionMessage["exportedAssets"]): void {
   assetDownloadList.replaceChildren(
     ...(exported ?? []).map((asset) => {
       const button = document.createElement("button");
@@ -246,6 +302,10 @@ function renderDart(source: string): void {
   dartPreview.querySelector("code")!.innerHTML = highlightDart(source);
 }
 
+function selectionCountLabel(count: number): string {
+  return `${count} selected ${count === 1 ? "layer" : "layers"}`;
+}
+
 function selectedFileName(): string {
   const selected = generatedFileList.querySelector<HTMLButtonElement>(".selected")?.textContent;
   return selected?.split("/").pop() || "generated_widget.dart";
@@ -268,6 +328,19 @@ function highlightDart(source: string): string {
 
 function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function now(): number {
+  return typeof performance === "undefined" || typeof performance.now !== "function" ? Date.now() : performance.now();
+}
+
+function measureUiRender(started: number): void {
+  if (typeof performance === "undefined" || typeof performance.measure !== "function") return;
+  try {
+    performance.measure("penpot-index:ui-render", { start: started, end: now() });
+  } catch {
+    // Iframe telemetry is optional and must not interrupt rendering.
+  }
 }
 
 function requiredElement<T extends HTMLElement>(id: string): T {

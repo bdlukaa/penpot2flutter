@@ -18,6 +18,8 @@ header { border-bottom: 1px solid #e7e0ec; padding-bottom: 12px; }
 h1, h2, p { margin-top: 0; }
 h1 { font-size: 22px; margin-bottom: 6px; }
 h2 { font-size: 16px; }
+.design-system-heading { align-items: center; display: flex; justify-content: space-between; gap: 12px; }
+.design-system-heading h2 { margin-bottom: 8px; }
 .muted, .empty-state p { color: #625b71; margin-bottom: 0; }
 
 .empty-state { align-self: center; border: 1px dashed #c9c1d0; border-radius: 12px; padding: 24px; text-align: center; }
