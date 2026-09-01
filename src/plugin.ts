@@ -1,4 +1,5 @@
 import { extractSelection, type PenpotComponentSource, type PenpotSourceShape, type PenpotSourceTextRun, type PenpotTokenInput, type PenpotVariantFamilySource, type PenpotVariantMemberSource } from "./core/extractor.js";
+import { type PenpotPrototypeSource, type PenpotSourceInteraction } from "./core/screen-navigation-analyzer.js";
 import { contentHashOf } from "./core/asset-pipeline.js";
 import { generateFlutterFiles, generatePubspecSnippet } from "./core/flutter-generator.js";
 import { generateFlutterThemeFiles, validateFlutterThemeGeneration } from "./core/flutter-theme-generator.js";
@@ -95,8 +96,10 @@ function isUiToPluginMessage(value: unknown): value is { readonly source: "penpo
 async function sendConversion(): Promise<void> {
   const request = ++conversionRequest;
   const rawSelection = penpot.selection as unknown as readonly PenpotSourceShape[];
+  const prototype = prototypeSource();
+  const rawConversionShapes = prototype === undefined ? rawSelection : prototypeBoards(rawSelection, prototype);
   sendPendingSelection(rawSelection.length);
-  const selection = await Promise.all(rawSelection.map((shape) => enrichAssetTree(enrichShape(shape), shape)));
+  const selection = await Promise.all(rawConversionShapes.map((shape) => enrichAssetTree(enrichShape(shape), shape)));
   const requiredTokens = tokenReferenceNames(selection);
   const designSystem = designSystemIndex.index;
   if (designSystem === undefined && requiredTokens.length > 0 && designSystemIndex.state.status !== "error") {
@@ -111,8 +114,8 @@ async function sendConversion(): Promise<void> {
   const resolution = await resolveComponentSources(selection);
   if (request !== conversionRequest) return;
   const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues, resolution.identities));
-  const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, tokenInput, effectiveDesignSystem.typography);
-  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, effectiveDesignSystem.themeFiles, extracted.assetRegistry);
+  const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, tokenInput, effectiveDesignSystem.typography, prototype);
+  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, effectiveDesignSystem.themeFiles, extracted.assetRegistry, extracted.libraries, extracted.navigationGraph);
   const files = generatedFiles?.filter((file) => !isStableDesignSystemFile(file));
   const exportedAssets = extracted === undefined
     ? { assets: [] as readonly ExportedAsset[], diagnostics: [] as readonly Diagnostic[] }
@@ -147,6 +150,106 @@ async function sendConversion(): Promise<void> {
   const transferStart = now();
   penpot.ui.sendMessage(message);
   measurePerformance("penpot-index:message-transfer", transferStart);
+}
+
+function prototypeSource(): PenpotPrototypeSource | undefined {
+  const page = penpot.currentPage;
+  if (page === null) return undefined;
+  const boards = page.findShapes({ type: "board" }) as unknown as readonly PenpotSourceShape[];
+  const interactions = boards.flatMap((board) => prototypeInteractions(board));
+  const flows = (page.flows as unknown as readonly { readonly name: string; readonly startingBoard: { readonly id: string } }[]).map((flow, index) => ({
+    id: `${page.id}:${flow.startingBoard.id}:${index}`,
+    name: flow.name,
+    startingBoardId: flow.startingBoard.id,
+  }));
+  if (flows.length === 0 && interactions.length === 0) return undefined;
+  return { flows, interactions };
+}
+
+function prototypeBoards(selection: readonly PenpotSourceShape[], prototype: PenpotPrototypeSource): readonly PenpotSourceShape[] {
+  const page = penpot.currentPage;
+  if (page === null) return selection;
+  const required = new Set(selection.map((shape) => shape.id));
+  prototype.flows.forEach((flow) => required.add(flow.startingBoardId));
+  prototype.interactions.forEach((interaction) => {
+    if (interaction.action.destinationBoardId !== undefined) required.add(interaction.action.destinationBoardId);
+  });
+  return (page.findShapes({ type: "board" }) as unknown as readonly PenpotSourceShape[]).filter((board) => required.has(board.id));
+}
+
+function prototypeInteractions(root: PenpotSourceShape): readonly PenpotSourceInteraction[] {
+  const result: PenpotSourceInteraction[] = [];
+  const visit = (shape: PenpotSourceShape): void => {
+    const interactions = (shape as unknown as { readonly interactions?: readonly unknown[] }).interactions ?? [];
+    interactions.forEach((value, index) => {
+      const interaction = value as { readonly trigger?: string; readonly delay?: number; readonly action?: unknown };
+      const action = prototypeAction(interaction.action);
+      if (action === undefined || !isPrototypeTrigger(interaction.trigger)) return;
+      result.push({
+        id: `${shape.id}:${index}`,
+        ownerShapeId: shape.id,
+        trigger: interaction.trigger,
+        ...(typeof interaction.delay === "number" ? { delayMs: interaction.delay } : {}),
+        action,
+      });
+    });
+    shape.children?.forEach(visit);
+  };
+  visit(root);
+  return result;
+}
+
+function prototypeAction(value: unknown): PenpotSourceInteraction["action"] | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const action = value as {
+    readonly type?: string;
+    readonly destination?: { readonly id?: string };
+    readonly relativeTo?: { readonly id?: string };
+    readonly manualPositionLocation?: { readonly x?: number; readonly y?: number };
+    readonly url?: string;
+    readonly preserveScrollPosition?: boolean;
+    readonly animation?: unknown;
+    readonly position?: "manual" | "center" | "top-left" | "top-right" | "top-center" | "bottom-left" | "bottom-right" | "bottom-center";
+    readonly closeWhenClickOutside?: boolean;
+    readonly addBackgroundOverlay?: boolean;
+  };
+  const destinationBoardId = action.destination?.id;
+  const animation = prototypeAnimation(action.animation);
+  const overlay = action.type === "open-overlay" || action.type === "toggle-overlay"
+    ? {
+        ...(action.position === undefined ? {} : { position: action.position }),
+        ...(action.relativeTo?.id === undefined ? {} : { relativeToSourceId: action.relativeTo.id }),
+        ...(typeof action.manualPositionLocation?.x === "number" && Number.isFinite(action.manualPositionLocation.x) && typeof action.manualPositionLocation.y === "number" && Number.isFinite(action.manualPositionLocation.y) ? { manualPosition: { x: action.manualPositionLocation.x, y: action.manualPositionLocation.y } } : {}),
+        ...(action.closeWhenClickOutside === undefined ? {} : { closeWhenClickOutside: action.closeWhenClickOutside }),
+        ...(action.addBackgroundOverlay === undefined ? {} : { addBackgroundOverlay: action.addBackgroundOverlay }),
+      }
+    : undefined;
+  switch (action.type) {
+    case "navigate-to": return { type: "navigate", ...(destinationBoardId === undefined ? {} : { destinationBoardId }), ...(action.preserveScrollPosition === undefined ? {} : { preserveScrollPosition: action.preserveScrollPosition }), ...(animation === undefined ? {} : { animation }) };
+    case "open-overlay": return { type: "open-overlay", ...(destinationBoardId === undefined ? {} : { destinationBoardId }), ...(animation === undefined ? {} : { animation }), ...(overlay === undefined ? {} : { overlay }) };
+    case "toggle-overlay": return { type: "toggle-overlay", ...(destinationBoardId === undefined ? {} : { destinationBoardId }), ...(animation === undefined ? {} : { animation }), ...(overlay === undefined ? {} : { overlay }) };
+    case "close-overlay": return { type: "close-overlay", ...(destinationBoardId === undefined ? {} : { destinationBoardId }), ...(animation === undefined ? {} : { animation }) };
+    case "previous-screen": return { type: "back" };
+    case "open-url": return typeof action.url === "string" ? { type: "open-url", url: action.url } : { type: "open-url" };
+    default: return undefined;
+  }
+}
+
+function prototypeAnimation(value: unknown): PenpotSourceInteraction["action"]["animation"] | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const animation = value as { readonly type?: string; readonly duration?: unknown; readonly easing?: unknown; readonly direction?: unknown; readonly way?: unknown };
+  if ((animation.type !== "dissolve" && animation.type !== "slide" && animation.type !== "push") || typeof animation.duration !== "number" || !Number.isFinite(animation.duration) || animation.duration < 0) return undefined;
+  return {
+    type: animation.type,
+    durationMs: animation.duration,
+    ...(animation.easing === "linear" || animation.easing === "ease" || animation.easing === "ease-in" || animation.easing === "ease-out" || animation.easing === "ease-in-out" ? { easing: animation.easing } : {}),
+    ...(animation.direction === "right" || animation.direction === "left" || animation.direction === "up" || animation.direction === "down" ? { direction: animation.direction } : {}),
+    ...(animation.way === "in" || animation.way === "out" ? { way: animation.way } : {}),
+  };
+}
+
+function isPrototypeTrigger(value: unknown): value is PenpotSourceInteraction["trigger"] {
+  return value === "click" || value === "mouse-enter" || value === "mouse-leave" || value === "after-delay";
 }
 
 function sendPendingSelection(selectionCount: number): void {
@@ -250,6 +353,10 @@ function buildCachedDesignSystem(snapshot: DesignSystemIndexSnapshot, reportTimi
   };
 }
 
+function reportPluginLog(message: string, detail?: unknown): void {
+  if (typeof console !== "undefined" && typeof console.log === "function") console.log(message, detail);
+}
+
 function now(): number {
   return typeof performance === "undefined" || typeof performance.now !== "function" ? Date.now() : performance.now();
 }
@@ -346,7 +453,7 @@ async function enrichAssetData(enriched: PenpotSourceShape, liveShape: PenpotSou
         const data = await liveImage.data();
         return { ...fill, fillImage: { ...image, data: [...data], contentHash: contentHashOf(data) } };
       } catch (error) {
-        console.warn("Unable to read Penpot image bytes", error);
+        reportPluginLog("Unable to read Penpot image bytes", error);
         return fill;
       }
     }));
@@ -357,7 +464,7 @@ async function enrichAssetData(enriched: PenpotSourceShape, liveShape: PenpotSou
       const svg = penpot.generateMarkup([liveShape as unknown as Shape], { type: "svg" });
       if (typeof svg === "string" && svg.trim() !== "") enriched = { ...enriched, svgContent: svg };
     } catch (error) {
-      console.warn("Unable to export Penpot vector as SVG", error);
+      reportPluginLog("Unable to export Penpot vector as SVG", error);
     }
   }
   return enriched;
@@ -626,7 +733,7 @@ designSystemIndex.subscribe((state) => {
   if (state.status === "ready" || state.status === "error") {
     flushIndexState();
     if (state.status === "ready") {
-      console.info("Penpot to Flutter design-system index", state.timings);
+      reportPluginLog("Penpot to Flutter design-system index", state.timings);
       void sendConversion();
     }
     return;

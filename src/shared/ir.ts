@@ -485,9 +485,82 @@ export interface IrResponsiveScreen {
   readonly variants: readonly IrResponsiveVariant[];
 }
 
+export type IrRouterStrategy = "navigator" | "go-router" | "auto-route" | "none";
+export type IrInteractionKind = "navigate" | "back" | "open-overlay" | "toggle-overlay" | "close-overlay" | "open-url";
+export type IrInteractionTrigger = "click" | "mouse-enter" | "mouse-leave" | "after-delay";
+
+export interface IrPrototypeAnimation {
+  readonly type: "dissolve" | "slide" | "push";
+  readonly durationMs: number;
+  readonly easing?: "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out";
+  readonly direction?: "right" | "left" | "up" | "down";
+  readonly way?: "in" | "out";
+}
+
+export interface IrOverlayOptions {
+  readonly position?: "manual" | "center" | "top-left" | "top-right" | "top-center" | "bottom-left" | "bottom-right" | "bottom-center";
+  /** Stable Penpot source node ID used as the overlay placement anchor. */
+  readonly relativeToSourceId?: string;
+  /** Penpot's explicit page-space overlay location for manual placement. */
+  readonly manualPosition?: { readonly x: number; readonly y: number };
+  readonly closeWhenClickOutside?: boolean;
+  readonly addBackgroundOverlay?: boolean;
+}
+
+export interface IrInteraction {
+  readonly id: string;
+  readonly sourceNodeId: string;
+  readonly trigger: IrInteractionTrigger;
+  readonly kind: IrInteractionKind;
+  readonly targetId?: string;
+  readonly delayMs?: number;
+  readonly url?: string;
+  readonly preserveScrollPosition?: boolean;
+  readonly animation?: IrPrototypeAnimation;
+  readonly overlay?: IrOverlayOptions;
+}
+
+export interface IrScreen {
+  readonly id: string;
+  readonly name: string;
+  readonly root: IrNode;
+  readonly routeName?: string;
+  readonly interactions: readonly IrInteraction[];
+}
+
+export interface IrNavigationEdge {
+  readonly id: string;
+  readonly fromScreenId: string;
+  readonly toScreenId?: string;
+  readonly interactionId: string;
+  readonly kind: IrInteractionKind;
+}
+
+export interface IrFlowEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly screenId: string;
+}
+
+export interface IrOverlay {
+  readonly id: string;
+  readonly name: string;
+  readonly root: IrNode;
+  readonly interactions: readonly IrInteraction[];
+}
+
+export interface IrNavigationGraph {
+  readonly screens: readonly IrScreen[];
+  readonly edges: readonly IrNavigationEdge[];
+  readonly flowEntries: readonly IrFlowEntry[];
+  readonly overlays: readonly IrOverlay[];
+  readonly routerStrategy: IrRouterStrategy;
+}
+
 export interface ConversionResult {
   readonly root: IrNode;
   readonly responsiveScreen?: IrResponsiveScreen;
+  readonly navigationGraph?: IrNavigationGraph;
   /** Legacy metadata projection. Prefer `assetRegistry` for generated projects. */
   readonly assets: readonly AssetManifestEntry[];
   readonly assetRegistry: readonly IrAsset[];

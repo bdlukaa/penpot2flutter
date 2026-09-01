@@ -1,4 +1,4 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrLibrary, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrInteraction, IrLibrary, IrNavigationGraph, IrNode, IrPrototypeAnimation, IrResponsiveScreen, IrScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 import { generateFlutterThemeFiles, tokenAccessPath } from "./flutter-theme-generator.js";
 import { libraryModuleName } from "./library-registry.js";
 export { dartMemberName } from "./token-naming.js";
@@ -10,6 +10,15 @@ let typographyDefinitions: ReadonlyMap<string, IrTypographyStyle> = new Map();
 let componentVariantEnums: ReadonlyMap<string, string> = new Map();
 let assetDefinitions: ReadonlyMap<string, IrAsset> = new Map();
 let assetConstants: ReadonlyMap<string, string> = new Map();
+let nodeInteractions: ReadonlyMap<string, readonly IrInteraction[]> = new Map();
+let prototypeTargets: ReadonlyMap<string, PrototypeTarget> = new Map();
+let prototypeAnchorIds: ReadonlySet<string> = new Set();
+let prototypeOverlayActions: ReadonlyMap<string, IrInteraction> = new Map();
+
+interface PrototypeTarget {
+  readonly className: string;
+  readonly path: string;
+}
 
 type PubspecAsset = AssetManifestEntry | IrAsset;
 
@@ -103,6 +112,10 @@ export function generateFlutterWidget(
   assetImport?: string,
   componentPaths?: ReadonlyMap<string, string>,
   sourcePath?: string,
+  classNameOverride?: string,
+  interactions: readonly IrInteraction[] = [],
+  targets: ReadonlyMap<string, PrototypeTarget> = new Map(),
+  prototypeImports: readonly string[] = [],
 ): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((component) => component.variant?.representation === "members").map((component) => [component.id, component.variant?.enumName ?? `${component.name}Variant`]));
@@ -111,8 +124,12 @@ export function generateFlutterWidget(
   assetDefinitions = new Map(assets.map((asset) => [asset.id, asset]));
   assetConstants = buildAssetConstants(assets);
   declaredParameters = new Set();
+  nodeInteractions = interactionsByNode(interactions);
+  prototypeTargets = targets;
+  prototypeAnchorIds = new Set(interactions.flatMap((interaction) => interaction.overlay?.relativeToSourceId === undefined ? [] : [interaction.overlay.relativeToSourceId]));
+  prototypeOverlayActions = new Map(interactions.filter((interaction) => (interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay") && interaction.targetId !== undefined).map((interaction) => [interaction.targetId!, interaction]));
   const roots = responsiveScreen?.variants.map((variant) => variant.root) ?? [root];
-  const className = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedWidget";
+  const className = classNameOverride ?? (toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedWidget");
   return [
     ...(roots.some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
@@ -120,6 +137,8 @@ export function generateFlutterWidget(
     ...(assetImport !== undefined && roots.some(containsAssetReference) ? [`import '${assetImport}';`] : []),
     ...(roots.some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
     ...(roots.some(containsTypography) ? ["import '../app_typography.dart';"] : []),
+    ...(interactions.length === 0 ? [] : ["import '../prototype_interactions.dart';"]),
+    ...prototypeImports,
     ...componentImports(roots.flatMap((variantRoot) => [...collectInstanceComponentIds(variantRoot)]), components, "../components/", componentPaths, sourcePath),
     "",
     `class ${className} extends StatelessWidget {`,
@@ -182,6 +201,10 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   assetDefinitions = new Map(assets.map((asset) => [asset.id, asset]));
   assetConstants = buildAssetConstants(assets);
+  nodeInteractions = new Map();
+  prototypeTargets = new Map();
+  prototypeAnchorIds = new Set();
+  prototypeOverlayActions = new Map();
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
   const axes = component.variant?.representation === "members" ? [] : component.variant?.axes ?? [];
   const lines = [
@@ -265,6 +288,7 @@ export function generateFlutterFiles(
   cachedThemeFiles?: readonly GeneratedFile[],
   assets: readonly IrAsset[] = [],
   libraries: readonly IrLibrary[] = [],
+  navigationGraph?: IrNavigationGraph,
 ): GeneratedFile[] {
   const screenName = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedScreen";
   const sharedLibraries = libraries.filter((library) => library.scope === "shared");
@@ -276,10 +300,33 @@ export function generateFlutterFiles(
       : `components/${snakeCase(component.name)}.dart`,
   ]));
   const screenPath = `screens/${snakeCase(screenName)}.dart`;
-  const files: GeneratedFile[] = [{
-    path: screenPath,
-    source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles, assets, "../assets.dart", componentPaths, screenPath),
-  }];
+  const targets: ReadonlyMap<string, PrototypeTarget> = navigationGraph === undefined ? new Map() : new Map<string, PrototypeTarget>([
+    ...navigationGraph.screens.map((screen) => [screen.id, { className: screenClassName(screen), path: `screens/${snakeCase(screenClassName(screen))}.dart` }] as const),
+    ...navigationGraph.overlays.map((overlay) => [overlay.id, { className: overlayClassName(overlay.name), path: `overlays/${snakeCase(overlayClassName(overlay.name))}.dart` }] as const),
+  ]);
+  const prototypeImportsFor = (sourcePath: string, interactions: readonly IrInteraction[]): readonly string[] => [...new Set(interactions.flatMap((interaction) => {
+    const target = interaction.targetId === undefined ? undefined : targets.get(interaction.targetId);
+    return target === undefined || target.path === sourcePath ? [] : [`import '${relativeDartImport(sourcePath, target.path)}';`];
+  }))].sort();
+  const files: GeneratedFile[] = navigationGraph === undefined
+    ? [{
+        path: screenPath,
+        source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles, assets, "../assets.dart", componentPaths, screenPath),
+      }]
+    : [
+        ...navigationGraph.screens.map((screen) => {
+          const path = `screens/${snakeCase(screenClassName(screen))}.dart`;
+          return { path, source: generateFlutterWidget(screen.root, components, tokens, undefined, typographyStyles, assets, "../assets.dart", componentPaths, path, screenClassName(screen), screen.interactions, targets, prototypeImportsFor(path, screen.interactions)) };
+        }),
+        ...navigationGraph.overlays.map((overlay) => {
+          const path = `overlays/${snakeCase(overlayClassName(overlay.name))}.dart`;
+          return { path, source: generateFlutterWidget(overlay.root, components, tokens, undefined, typographyStyles, assets, "../assets.dart", componentPaths, path, overlayClassName(overlay.name), overlay.interactions, targets, prototypeImportsFor(path, overlay.interactions)) };
+        }),
+      ];
+  if (navigationGraph !== undefined) {
+    files.push({ path: "navigation.dart", source: generateNavigatorFile(navigationGraph) });
+    if (navigationGraph.screens.some((screen) => screen.interactions.length > 0) || navigationGraph.overlays.some((overlay) => overlay.interactions.length > 0)) files.push({ path: "prototype_interactions.dart", source: generatePrototypeInteractions() });
+  }
   for (const component of components) {
     const path = componentPaths.get(component.id)!;
     files.push({ path, source: generateComponentWidget(component, components, tokens, typographyStyles, assets, assetImportFor(path), componentPaths, path) });
@@ -310,7 +357,8 @@ export function generateFlutterFiles(
   }
   if (typographyStyles.length > 0) files.push({ path: "app_typography.dart", source: generateFlutterTypography(typographyStyles) });
   const barrel = files.find((file) => file.path === "penpot.dart");
-  const exports = generateBarrelExport(components.filter((component) => component.sourceLibraryScope !== "shared"), snakeCase(screenName), localTokens.length > 0, typographyStyles.length > 0, assets.length > 0)
+  const exports = generateBarrelExport(components.filter((component) => component.sourceLibraryScope !== "shared"), navigationGraph === undefined ? [snakeCase(screenName)] : navigationGraph.screens.map((screen) => snakeCase(screenClassName(screen))), localTokens.length > 0, typographyStyles.length > 0, assets.length > 0)
+    + (navigationGraph === undefined ? "" : "export 'navigation.dart';\n")
     + sharedLibraries.map((library) => `export 'libraries/${libraryModuleName(library)}/${libraryModuleName(library)}.dart';`).join("\n")
     + (sharedLibraries.length === 0 ? "" : "\n");
   if (barrel === undefined) files.push({ path: "penpot.dart", source: exports });
@@ -322,9 +370,169 @@ export function generateFlutterFiles(
   return files;
 }
 
-function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileName: string, hasTokens: boolean, hasTypography: boolean, hasAssets: boolean): string {
+function overlayClassName(name: string): string {
+  const base = toPascalCase(name) || "Generated";
+  return base.endsWith("Overlay") ? base : `${base}Overlay`;
+}
+
+function generatePrototypeInteractions(): string {
   return [
-    `export 'screens/${screenFileName}.dart';`,
+    "import 'dart:async';",
+    "",
+    "import 'package:flutter/material.dart';",
+    "",
+    "class PenpotDelayedInteraction extends StatefulWidget {",
+    "  const PenpotDelayedInteraction({super.key, required this.delay, required this.onTriggered, required this.child});",
+    "",
+    "  final Duration delay;",
+    "  final void Function(BuildContext context) onTriggered;",
+    "  final Widget child;",
+    "",
+    "  @override",
+    "  State<PenpotDelayedInteraction> createState() => _PenpotDelayedInteractionState();",
+    "}",
+    "",
+    "class _PenpotDelayedInteractionState extends State<PenpotDelayedInteraction> {",
+    "  Timer? _timer;",
+    "",
+    "  @override",
+    "  void initState() {",
+    "    super.initState();",
+    "    _timer = Timer(widget.delay, () { if (mounted) widget.onTriggered(context); });",
+    "  }",
+    "",
+    "  @override",
+    "  void dispose() { _timer?.cancel(); super.dispose(); }",
+    "",
+    "  @override",
+    "  Widget build(BuildContext context) => widget.child;",
+    "}",
+    "",
+    "class PenpotAnchor extends StatefulWidget {",
+    "  const PenpotAnchor({super.key, required this.id, required this.child});",
+    "  final String id;",
+    "  final Widget child;",
+    "  @override State<PenpotAnchor> createState() => _PenpotAnchorState();",
+    "}",
+    "",
+    "class _PenpotAnchorState extends State<PenpotAnchor> {",
+    "  @override void didChangeDependencies() { super.didChangeDependencies(); PenpotPrototype.registerAnchor(widget.id, context); }",
+    "  @override void dispose() { PenpotPrototype.unregisterAnchor(widget.id, context); super.dispose(); }",
+    "  @override Widget build(BuildContext context) => widget.child;",
+    "}",
+    "",
+    "class PenpotOverlayPortal extends StatefulWidget {",
+    "  const PenpotOverlayPortal({super.key, required this.id, required this.overlayChildBuilder, required this.child, this.position = 'center', this.relativeTo, this.manualPosition, this.duration = Duration.zero, this.curve = Curves.linear, this.transition = 'dissolve', this.direction = 'right', this.way = 'in', this.dismissible = true, this.barrier = true});",
+    "  final String id; final WidgetBuilder overlayChildBuilder; final Widget child; final String position; final String? relativeTo; final Offset? manualPosition; final Duration duration; final Curve curve; final String transition; final String direction; final String way; final bool dismissible; final bool barrier;",
+    "  @override State<PenpotOverlayPortal> createState() => _PenpotOverlayPortalState();",
+    "}",
+    "",
+    "class _PenpotOverlayPortalState extends State<PenpotOverlayPortal> {",
+    "  final _controller = OverlayPortalController();",
+    "  @override void initState() { super.initState(); PenpotPrototype.registerPortal(widget.id, _controller); }",
+    "  @override void dispose() { PenpotPrototype.unregisterPortal(widget.id, _controller); super.dispose(); }",
+    "  @override Widget build(BuildContext context) => OverlayPortal(controller: _controller, overlayChildBuilder: (context) => PenpotPrototype.buildOverlay(context, widget), child: widget.child);",
+    "}",
+    "",
+    "abstract final class PenpotPrototype {",
+    "  static final Map<String, OverlayPortalController> _overlays = {};",
+    "  static final Map<String, BuildContext> _anchors = {};",
+    "  static void registerAnchor(String id, BuildContext context) => _anchors[id] = context;",
+    "  static void unregisterAnchor(String id, BuildContext context) { if (_anchors[id] == context) _anchors.remove(id); }",
+    "  static void registerPortal(String id, OverlayPortalController controller) => _overlays[id] = controller;",
+    "  static void unregisterPortal(String id, OverlayPortalController controller) { if (_overlays[id] == controller) _overlays.remove(id); }",
+    "",
+    "  static Future<void> navigate(BuildContext context, WidgetBuilder destination, {Duration duration = Duration.zero, Curve curve = Curves.linear, String transition = 'dissolve', String direction = 'right', String way = 'in'}) {",
+    "    return Navigator.of(context).push(PageRouteBuilder<void>(pageBuilder: (_, __, ___) => destination(context), transitionDuration: duration, reverseTransitionDuration: duration, transitionsBuilder: (_, animation, __, child) {",
+    "      if (transition == 'dissolve') return FadeTransition(opacity: animation, child: child);",
+    "      final begin = _offset(direction, way);",
+    "      return SlideTransition(position: Tween<Offset>(begin: begin, end: Offset.zero).chain(CurveTween(curve: curve)).animate(animation), child: child);",
+    "    }));",
+    "  }",
+    "",
+    "  static void openOverlay(BuildContext context, String id) => _overlays[id]?.show();",
+    "",
+    "  static void toggleOverlay(String id) {",
+    "    final controller = _overlays[id];",
+    "    if (controller == null) return;",
+    "    if (controller.isShowing) controller.hide(); else controller.show();",
+    "  }",
+    "",
+    "  static void closeOverlay(String id) => _overlays[id]?.hide();",
+    "  static void closeLastOverlay() { if (_overlays.isNotEmpty) closeOverlay(_overlays.keys.last); }",
+    "  static Widget buildOverlay(BuildContext context, PenpotOverlayPortal portal) {",
+    "    final content = TweenAnimationBuilder<double>(duration: portal.duration, tween: Tween(begin: 0, end: 1), curve: portal.curve, builder: (_, value, child) => portal.transition == 'dissolve' ? Opacity(opacity: value, child: child) : FractionalTranslation(translation: _offset(portal.direction, portal.way) * (1 - value), child: child), child: portal.overlayChildBuilder(context));",
+    "    return Stack(children: [if (portal.barrier) ModalBarrier(dismissible: portal.dismissible, color: Colors.black54, onDismiss: () => closeOverlay(portal.id)), _position(portal.position, content, anchor: _anchorRect(portal.relativeTo, Overlay.of(context)), manualPosition: portal.manualPosition)]);",
+    "  }",
+    "",
+    "  static void unresolved(BuildContext context) { ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Penpot prototype target is unavailable.'))); }",
+    "",
+    "  static Offset _offset(String direction, String way) {",
+    "    final base = switch (direction) { 'left' => const Offset(-1, 0), 'up' => const Offset(0, -1), 'down' => const Offset(0, 1), _ => const Offset(1, 0) };",
+    "    return way == 'out' ? -base : base;",
+    "  }",
+    "",
+    "  static Rect? _anchorRect(String? id, OverlayState overlay) {",
+    "    final anchor = id == null ? null : _anchors[id];",
+    "    final source = anchor?.findRenderObject() as RenderBox?;",
+    "    final target = overlay.context.findRenderObject() as RenderBox?;",
+    "    if (source == null || target == null || !source.hasSize || !target.hasSize) return null;",
+    "    final origin = target.globalToLocal(source.localToGlobal(Offset.zero));",
+    "    return origin & source.size;",
+    "  }",
+    "",
+    "  static Widget _position(String position, Widget child, {Rect? anchor, Offset? manualPosition}) {",
+    "    if (position == 'manual' && manualPosition != null) return Positioned(left: manualPosition.dx, top: manualPosition.dy, child: child);",
+    "    if (anchor == null) return switch (position) {",
+    "      'top-left' => Align(alignment: Alignment.topLeft, child: child), 'top-center' => Align(alignment: Alignment.topCenter, child: child), 'top-right' => Align(alignment: Alignment.topRight, child: child),",
+    "      'bottom-left' => Align(alignment: Alignment.bottomLeft, child: child), 'bottom-center' => Align(alignment: Alignment.bottomCenter, child: child), 'bottom-right' => Align(alignment: Alignment.bottomRight, child: child),",
+    "      _ => Center(child: child),",
+    "    };",
+    "    final alignment = switch (position) {",
+    "      'top-left' => Alignment.topLeft, 'top-center' => Alignment.topCenter, 'top-right' => Alignment.topRight,",
+    "      'bottom-left' => Alignment.bottomLeft, 'bottom-center' => Alignment.bottomCenter, 'bottom-right' => Alignment.bottomRight, _ => Alignment.center,",
+    "    };",
+    "    return Positioned.fromRect(rect: anchor, child: OverflowBox(maxWidth: double.infinity, maxHeight: double.infinity, alignment: alignment, child: child));",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+}
+
+function screenClassName(screen: IrScreen): string {
+  const name = toPascalCase(screen.name) || "Generated";
+  return name.endsWith("Screen") ? name : `${name}Screen`;
+}
+
+function generateNavigatorFile(graph: IrNavigationGraph): string {
+  const screens = [...graph.screens].sort((left, right) => left.id.localeCompare(right.id));
+  const initialRoute = graph.flowEntries[0]?.screenId ?? screens[0]?.id;
+  const initialScreen = screens.find((screen) => screen.id === initialRoute) ?? screens[0];
+  if (initialScreen === undefined) return "";
+  return [
+    "import 'package:flutter/material.dart';",
+    ...screens.map((screen) => `import 'screens/${snakeCase(screenClassName(screen))}.dart';`),
+    "",
+    "abstract final class PenpotNavigation {",
+    `  static const initialRoute = '${escapeDart(initialScreen.routeName ?? "/")}';`,
+    "",
+    "  static Route<dynamic> onGenerateRoute(RouteSettings settings) {",
+    "    return MaterialPageRoute<void>(",
+    "      settings: settings,",
+    "      builder: (context) => switch (settings.name) {",
+    ...screens.map((screen) => `        '${escapeDart(screen.routeName ?? "/")}' => const ${screenClassName(screen)}(),`),
+    `        _ => const ${screenClassName(initialScreen)}(),`,
+    "      },",
+    "    );",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+}
+
+function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileNames: readonly string[], hasTokens: boolean, hasTypography: boolean, hasAssets: boolean): string {
+  return [
+    ...screenFileNames.map((screenFileName) => `export 'screens/${screenFileName}.dart';`),
     ...(hasTokens ? [] : []),
     ...(hasTypography ? ["export 'app_typography.dart';"] : []),
     ...(hasAssets ? ["export 'assets.dart';"] : []),
@@ -431,6 +639,16 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
       `${indent(contentDepth)})`,
     ].join("\n");
   }
+  content = renderPrototypeInteractions(node, content, contentDepth);
+  for (const interaction of prototypeOverlayActions.values()) {
+    if (interaction.overlay?.relativeToSourceId !== node.sourceId && interaction.sourceNodeId !== node.sourceId) continue;
+    if (interaction.targetId === undefined) continue;
+    const target = prototypeTargets.get(interaction.targetId);
+    if (target === undefined) continue;
+    const animation = interaction.animation;
+    content = ["PenpotOverlayPortal(", `${indent(contentDepth + 1)}id: '${escapeDart(interaction.targetId)}',`, `${indent(contentDepth + 1)}overlayChildBuilder: (context) => const ${target.className}(),`, `${indent(contentDepth + 1)}position: '${interaction.overlay?.position ?? "center"}',`, ...(interaction.overlay?.relativeToSourceId === undefined ? [] : [`${indent(contentDepth + 1)}relativeTo: '${escapeDart(interaction.overlay.relativeToSourceId)}',`]), ...(interaction.overlay?.manualPosition === undefined ? [] : [`${indent(contentDepth + 1)}manualPosition: Offset(${number(interaction.overlay.manualPosition.x)}, ${number(interaction.overlay.manualPosition.y)}),`]), ...(animation === undefined ? [] : [`${indent(contentDepth + 1)}duration: Duration(milliseconds: ${number(animation.durationMs)}),`, `${indent(contentDepth + 1)}curve: ${curveFor(animation.easing)},`, `${indent(contentDepth + 1)}transition: '${animation.type}',`, `${indent(contentDepth + 1)}direction: '${animation.direction ?? "right"}',`, `${indent(contentDepth + 1)}way: '${animation.way ?? "in"}',`]), ...(interaction.overlay?.closeWhenClickOutside === undefined ? [] : [`${indent(contentDepth + 1)}dismissible: ${interaction.overlay.closeWhenClickOutside},`]), ...(interaction.overlay?.addBackgroundOverlay === undefined ? [] : [`${indent(contentDepth + 1)}barrier: ${interaction.overlay.addBackgroundOverlay},`]), `${indent(contentDepth + 1)}child: ${nestedInteractionChild(content)},`, `${indent(contentDepth)})`].join("\n");
+  }
+  if (prototypeAnchorIds.has(node.sourceId)) content = ["PenpotAnchor(", `${indent(contentDepth + 1)}id: '${escapeDart(node.sourceId)}',`, `${indent(contentDepth + 1)}child: ${content},`, `${indent(contentDepth)})`].join("\n");
   if (!positioned) return content;
   return [
     "Positioned(",
@@ -439,6 +657,70 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
     `${indent(depth + 1)}child: ${content},`,
     `${indent(depth)})`,
   ].join("\n");
+}
+
+function interactionsByNode(interactions: readonly IrInteraction[]): ReadonlyMap<string, readonly IrInteraction[]> {
+  const grouped = new Map<string, IrInteraction[]>();
+  for (const interaction of interactions) grouped.set(interaction.sourceNodeId, [...(grouped.get(interaction.sourceNodeId) ?? []), interaction]);
+  return grouped;
+}
+
+function renderPrototypeInteractions(node: IrNode, child: string, depth: number): string {
+  const interactions = nodeInteractions.get(node.sourceId);
+  if (interactions === undefined || interactions.length === 0) return child;
+  const urlInteraction = interactions.find((interaction) => interaction.kind === "open-url" && interaction.url !== undefined);
+  const callback = (interaction: IrInteraction, followLink?: string): string => {
+    const animation = animationArguments(interaction.animation);
+    switch (interaction.kind) {
+      case "navigate": {
+        const target = interaction.targetId === undefined ? undefined : prototypeTargets.get(interaction.targetId);
+        return target === undefined ? "PenpotPrototype.unresolved(context)" : `PenpotPrototype.navigate(context, () => const ${target.className}()${animation === "" ? "" : `, ${animation}`})`;
+      }
+      case "open-overlay": {
+        const target = interaction.targetId === undefined ? undefined : prototypeTargets.get(interaction.targetId);
+        return target === undefined ? "PenpotPrototype.unresolved(context)" : `PenpotPrototype.openOverlay(context, '${escapeDart(interaction.targetId!)}')`;
+      }
+      case "toggle-overlay": {
+        const target = interaction.targetId === undefined ? undefined : prototypeTargets.get(interaction.targetId);
+        return target === undefined ? "PenpotPrototype.unresolved(context)" : `PenpotPrototype.toggleOverlay('${escapeDart(interaction.targetId!)}')`;
+      }
+      case "close-overlay": return interaction.targetId === undefined ? `PenpotPrototype.closeLastOverlay(${animation})` : `PenpotPrototype.closeOverlay('${escapeDart(interaction.targetId)}'${animation === "" ? "" : `, ${animation}`})`;
+      case "back": return "Navigator.of(context).maybePop()";
+      case "open-url": return followLink === undefined ? "PenpotPrototype.unresolved(context)" : followLink;
+    }
+  };
+  const callbacks = (trigger: IrInteraction["trigger"], followLink?: string): readonly string[] => interactions.filter((interaction) => interaction.trigger === trigger).map((interaction) => callback(interaction, followLink));
+  const actionBlock = (actions: readonly string[], callbackDepth: number): string => ["{", ...actions.map((action) => `${indent(callbackDepth + 1)}${action};`), `${indent(callbackDepth)}}`].join("\n");
+  let rendered = child;
+  const click = callbacks("click", urlInteraction === undefined ? undefined : "followLink()");
+  if (click.length > 0) rendered = ["GestureDetector(", `${indent(depth + 1)}behavior: HitTestBehavior.opaque,`, `${indent(depth + 1)}onTap: () ${actionBlock(click, depth + 1)},`, `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
+  const enter = callbacks("mouse-enter", urlInteraction === undefined ? undefined : "followLink()");
+  const leave = callbacks("mouse-leave", urlInteraction === undefined ? undefined : "followLink()");
+  if (enter.length > 0 || leave.length > 0) rendered = ["MouseRegion(", ...(enter.length === 0 ? [] : [`${indent(depth + 1)}onEnter: (_) ${actionBlock(enter, depth + 1)},`]), ...(leave.length === 0 ? [] : [`${indent(depth + 1)}onExit: (_) ${actionBlock(leave, depth + 1)},`]), `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
+  for (const interaction of interactions.filter((item) => item.trigger === "after-delay")) {
+    rendered = ["PenpotDelayedInteraction(", `${indent(depth + 1)}delay: Duration(milliseconds: ${number(interaction.delayMs ?? 0)}),`, `${indent(depth + 1)}onTriggered: (context) ${actionBlock([callback(interaction, urlInteraction === undefined ? undefined : "followLink()")], depth + 1)},`, `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
+  }
+  return urlInteraction === undefined ? rendered : ["Link(", `${indent(depth + 1)}uri: Uri.parse('${escapeDart(urlInteraction.url!)}'),`, `${indent(depth + 1)}builder: (context, followLink) => ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
+}
+
+function nestedInteractionChild(child: string): string {
+  return child.replace(/\n/g, "\n  ");
+}
+
+function animationArguments(animation: IrPrototypeAnimation | undefined): string {
+  if (animation === undefined) return "";
+  return `duration: Duration(milliseconds: ${number(animation.durationMs)}), curve: ${curveFor(animation.easing)}, transition: '${animation.type}', direction: '${animation.direction ?? "right"}', way: '${animation.way ?? "in"}'`;
+}
+
+
+function curveFor(easing: IrPrototypeAnimation["easing"]): string {
+  switch (easing) {
+    case "ease": return "Curves.ease";
+    case "ease-in": return "Curves.easeIn";
+    case "ease-out": return "Curves.easeOut";
+    case "ease-in-out": return "Curves.easeInOut";
+    default: return "Curves.linear";
+  }
 }
 
 function constraintWrapperCount(node: Exclude<IrNode, { kind: "unsupported" }>): number {

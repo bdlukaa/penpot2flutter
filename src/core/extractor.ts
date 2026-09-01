@@ -3,6 +3,7 @@ import { assetForId, assetTypeForMimeType, contentHashOf, createAssetRegistry, t
 import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsive-analyzer.js";
 import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource, type TokenRegistryResult } from "./token-registry.js";
 import { buildIrLibraries, libraryModuleName } from "./library-registry.js";
+import { analyzeScreenNavigation, type PenpotPrototypeSource, type PenpotSourceScreenMetadata } from "./screen-navigation-analyzer.js";
 
 import type {
   AssetManifestEntry,
@@ -262,6 +263,8 @@ export interface PenpotSourceShape {
   readonly tokenBindings?: Readonly<Record<string, string>> | null;
   /** Optional explicit grouping; name-based inference is used when absent. */
   readonly responsive?: ResponsiveMetadata | null;
+  /** Explicit plugin metadata; labels alone never classify a board as an app screen. */
+  readonly screen?: PenpotSourceScreenMetadata | null;
 }
 
 export interface PenpotFontVariantSource {
@@ -354,6 +357,7 @@ export function extractSelection(
   variants: readonly PenpotVariantFamilySource[] = [],
   tokenInput: PenpotTokenInput = {},
   typographyInput: PenpotTypographyInput = {},
+  prototype?: PenpotPrototypeSource,
 ): ConversionResult {
   const tokenRegistry = tokenInput.registry ?? buildTokenRegistry(tokenInput.tokens, tokenInput.sets, tokenInput.themes);
   const context: ExtractionContext = {
@@ -411,6 +415,18 @@ export function extractSelection(
       })))
     : { diagnostics: [] };
   context.diagnostics.push(...responsive.diagnostics);
+  const navigation = analyzeScreenNavigation(
+    selection
+      .map((shape, index) => ({
+        id: sourceIdOf(shape.id),
+        name: sourceNameOf(shape.name, sourceIdOf(shape.id)),
+        root: extractedSelection[index],
+        ...(shape.screen == null ? {} : { metadata: shape.screen }),
+      }))
+      .filter((candidate) => candidate.root.kind === "board"),
+    prototype,
+  );
+  context.diagnostics.push(...navigation.diagnostics);
   const root = responsive.screen?.variants[0]?.root ?? (extractedSelection.length === 1 ? extractedSelection[0] : extractSyntheticSelection(extractedSelection));
   const finalizedComponents = finalizeComponents(context);
   const libraryRegistry = buildIrLibraries({
@@ -424,6 +440,7 @@ export function extractSelection(
   return {
     root,
     ...(responsive.screen === undefined ? {} : { responsiveScreen: responsive.screen }),
+    ...(navigation.graph === undefined ? {} : { navigationGraph: navigation.graph }),
     assets: [...context.assets.values()],
     assetRegistry: context.assetRegistry.assets,
     diagnostics: context.diagnostics,
