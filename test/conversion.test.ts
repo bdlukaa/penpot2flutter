@@ -411,6 +411,28 @@ test("generates a column with row gaps without Stack fallback", () => {
   assert.doesNotMatch(dart, /Stack\(/);
 });
 
+test("simplifies a stack containing only a no-op layer and one positioned child", () => {
+  const result = extractSelection([{
+    id: "icon-wrapper",
+    name: "Icon wrapper",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 20,
+    height: 20,
+    visible: true,
+    children: [
+      { id: "empty-layer", name: "base background", type: "unsupported-shape", x: 0, y: 0, width: 20, height: 20, visible: true },
+      { id: "icon", name: "check", type: "path", x: 1.22, y: 1.22, width: 17.09, height: 17.09, visible: true },
+    ],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.doesNotMatch(dart, /Stack\(/);
+  assert.match(dart, /Padding\(\n\s*padding: EdgeInsets\.only\(left: 1\.22, top: 1\.22\),/);
+  assert.match(dart, /SvgPicture\.asset/);
+});
+
 test("normalizes long floating-point values in generated Dart", () => {
   const result = extractSelection([{
     id: "fractional-card",
@@ -825,6 +847,25 @@ test("emits SizedBox without clipBehavior for decoration-less boards", () => {
   assert.doesNotMatch(dart, /Container\(/);
   assert.doesNotMatch(dart, /clipBehavior:/);
   assert.match(dart, /SizedBox\(\n\s*width: 180,\n\s*height: 20,/);
+});
+
+test("preserves Penpot stacking order when live children expose zIndex", () => {
+  const result = extractSelection([{
+    id: "ordered-board",
+    name: "Ordered",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 40,
+    visible: true,
+    flex: { dir: "row", rowGap: 0, columnGap: 0, topPadding: 0, rightPadding: 0, bottomPadding: 0, leftPadding: 0 },
+    children: [
+      { id: "text", name: "Text", type: "text", x: 20, y: 0, width: 80, height: 20, visible: true, characters: "Text", zIndex: 0 },
+      { id: "icon", name: "Icon", type: "rectangle", x: 0, y: 0, width: 20, height: 20, visible: true, zIndex: 1 },
+    ],
+  }]);
+  assert.deepEqual(result.root.kind === "board" ? result.root.children.map((child) => child.sourceName) : [], ["Icon", "Text"]);
 });
 
 // --- Shared library resolution fixtures ---

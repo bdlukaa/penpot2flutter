@@ -198,6 +198,7 @@ export interface PenpotSourceShape {
   readonly componentId?: string | null;
   readonly componentLibraryId?: string | null;
   readonly componentPath?: string | null;
+  readonly zIndex?: number | null;
   readonly isComponentInstance?: boolean | null;
   readonly isComponentMainInstance?: boolean | null;
   readonly isComponentRoot?: boolean | null;
@@ -509,7 +510,10 @@ function isComponentRootInstance(shape: PenpotSourceShape): boolean {
 }
 
 function extractChildren(shape: PenpotSourceShape, context: ExtractionContext, path: string): readonly IrNode[] {
-  return (shape.children ?? []).map((child, index) => extractNode(child, context, pathKey(path, index)));
+  const children = shape.children ?? [];
+  const hasStackOrder = children.length > 1 && children.every((child) => typeof child.zIndex === "number" && Number.isFinite(child.zIndex));
+  const ordered = hasStackOrder ? [...children].sort((left, right) => right.zIndex! - left.zIndex!) : children;
+  return ordered.map((child, index) => extractNode(child, context, pathKey(path, index)));
 }
 
 function pathKey(path: string, index: number): string {
@@ -558,6 +562,7 @@ function registerVariants(variants: readonly PenpotVariantFamilySource[], contex
       context.diagnostics.push({ severity: "warning", sourceId: variant.id, code: "VARIANT_STRUCTURE_DIVERGENCE", message: `Variant family "${sourceName}" has structurally different members; generated code switches between private member subtrees.` });
     }
     const dartName = dartNameFor(sourceName, id, context, "VARIANT_FAMILY_NAME_COLLISION");
+    const variantAxes = variantAxesOf(variant, dartName, context);
     context.components.set(id, {
       id,
       sourceComponentId: variant.id,
@@ -565,11 +570,11 @@ function registerVariants(variants: readonly PenpotVariantFamilySource[], contex
       dartName,
       ...(libraryId === undefined ? {} : { libraryId }),
       slots: new Map(),
-      usedParameterNames: new Set(),
+      usedParameterNames: new Set(variantAxes.map((axis) => axis.name)),
       overridden: new Set(),
       dependencies: new Set(),
       variant,
-      variantAxes: variantAxesOf(variant, dartName, context),
+      variantAxes,
       variantRepresentation: variantRepresentationOf(variant),
       variantEnumName: `${dartName}Variant`,
     });
@@ -855,6 +860,7 @@ function dartEnumValue(value: string, axisName = "value"): string {
     .replace(/^_+|_+$/g, "");
   const candidate = normalized === "" ? prefix : /^[0-9]/.test(normalized) ? `${prefix}${negative ? "Negative" : ""}${normalized}` : `${negative ? "negative" : ""}${normalized}`;
   if (candidate === "default") return "defaultState";
+  if (candidate === "true" || candidate === "false") return `${candidate}Value`;
   return candidate.charAt(0).toLowerCase() + candidate.slice(1);
 }
 

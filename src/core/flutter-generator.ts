@@ -462,6 +462,20 @@ function renderContainer(node: BoardNode, depth: number, clipBehavior: string): 
 }
 
 function renderStack(children: readonly IrNode[], depth: number, clipBehavior: string): string {
+  const meaningful = children.filter((child) => !isNoopNode(child));
+  if (clipBehavior === "Clip.none" && meaningful.length === 1 && children.length > meaningful.length) {
+    const child = meaningful[0];
+    const rendered = renderNode(child, depth + 1, false);
+    const left = child.geometry.x;
+    const top = child.geometry.y;
+    if (left === 0 && top === 0) return commentFor(child, depth, rendered);
+    return commentFor(child, depth, [
+      "Padding(",
+      `${indent(depth + 1)}padding: EdgeInsets.only(left: ${number(left)}, top: ${number(top)}),`,
+      `${indent(depth + 1)}child: ${rendered},`,
+      `${indent(depth)})`,
+    ].join("\n"));
+  }
   return [
     "Stack(",
     ...(clipBehavior === "Clip.hardEdge" ? [] : [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`]),
@@ -470,6 +484,10 @@ function renderStack(children: readonly IrNode[], depth: number, clipBehavior: s
     `${indent(depth + 1)}],`,
     `${indent(depth)})`,
   ].join("\n");
+}
+
+function isNoopNode(node: IrNode): boolean {
+  return !node.visible || node.kind === "unsupported";
 }
 
 function renderGrid(node: BoardNode, grid: GridLayout, children: readonly IrNode[], depth: number): string {
