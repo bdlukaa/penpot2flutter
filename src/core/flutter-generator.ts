@@ -127,7 +127,7 @@ export function generateFlutterWidget(
     "",
     "  @override",
     "  Widget build(BuildContext context) {",
-    `    // ${responsiveScreen?.name ?? root.sourceName}`,
+    `    // ${commentText(responsiveScreen?.name ?? root.sourceName)}`,
     ...(responsiveScreen === undefined
       ? [`    return ${renderNode(root, 2, false)};`]
       : renderResponsiveScreen(responsiveScreen)),
@@ -148,9 +148,9 @@ function renderResponsiveScreen(screen: IrResponsiveScreen): string[] {
     const conditional = index < variants.length - 1 && upperBound !== undefined;
     const rendered = renderResponsiveRoot(variant.root, conditional ? 5 : 4);
     if (conditional) {
-      lines.push(`        if (constraints.maxWidth < ${number(upperBound)}) {`, `          // ${variant.sourceName}`, `          return ${rendered};`, "        }");
+      lines.push(`        if (constraints.maxWidth < ${number(upperBound)}) {`, `          // ${commentText(variant.sourceName)}`, `          return ${rendered};`, "        }");
     } else {
-      lines.push(`        // ${variant.sourceName}`, `        return ${rendered};`);
+      lines.push(`        // ${commentText(variant.sourceName)}`, `        return ${rendered};`);
     }
   });
   lines.push("      },", "    );");
@@ -216,7 +216,7 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
     for (const axis of axes) lines.push(`  final ${axis.enumName} ${axis.name};`);
     for (const parameter of parameters) lines.push(`  final ${parameter.type === "Color" ? "Color?" : parameter.type} ${parameter.name};`);
   }
-  lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${component.sourceName}`, ...renderVariantComponentBody(component), "  }", "}", "");
+  lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${commentText(component.sourceName)}`, ...renderVariantComponentBody(component), "  }", "}", "");
   return lines.join("\n");
 }
 
@@ -908,7 +908,11 @@ function renderShadow(shadow: NonNullable<NodeStyle["shadows"]>[number], depth: 
 }
 
 function commentFor(node: IrNode, depth: number, rendered: string): string {
-  return `${indent(depth)}// ${node.sourceName}\n${indent(depth)}${rendered}`;
+  return `${indent(depth)}// ${commentText(node.sourceName)}\n${indent(depth)}${rendered}`;
+}
+
+function commentText(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
 }
 
 function paddingIsZero(padding: EdgeInsets): boolean {

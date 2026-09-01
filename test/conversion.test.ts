@@ -457,6 +457,36 @@ test("normalizes long floating-point values in generated Dart", () => {
   assert.doesNotMatch(dart, /230\.68965517218118/);
 });
 
+test("keeps multiline Penpot titles inside single-line Dart comments", () => {
+  const result = extractSelection([{
+    id: "multiline-title",
+    name: "Group",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 168,
+    visible: true,
+    children: [{
+      id: "multiline-layer",
+      name: "#333333\n#808080\nlinear\n45deg",
+      type: "rectangle",
+      x: 0,
+      y: 92,
+      width: 200,
+      height: 76,
+      visible: true,
+    }],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.match(dart, /\/\/ #333333 #808080 linear 45deg/);
+  assert.doesNotMatch(dart, /\n#808080|\nlinear|\n45deg/);
+  const dartPath = new URL("../multiline_title.dart", import.meta.url);
+  writeFileSync(dartPath, dart);
+  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", dartPath.pathname]));
+});
+
 test("generates deterministic compilable Flutter widget source", () => {
   const result = extractSelection([board]);
   const dart = generateFlutterWidget(result.root);
