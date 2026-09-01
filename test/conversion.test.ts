@@ -1028,8 +1028,8 @@ test("maps a multi-axis variant family to one typed Flutter component", () => {
 
   assert.equal(result.components.length, 1);
   const component = result.components[0];
-  assert.equal(component.name, "Button");
-  assert.deepEqual(component.variant?.axes.map((axis) => axis.enumName), ["ButtonStyle", "ButtonSize"]);
+  assert.equal(component.name, "PenpotButton");
+  assert.deepEqual(component.variant?.axes.map((axis) => axis.enumName), ["PenpotButtonStyle", "PenpotButtonSize"]);
   assert.equal(component.variant?.members.length, 3);
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "VARIANT_SPARSE_MATRIX"));
   assert.equal(result.root.kind, "component-instance");
@@ -1037,13 +1037,14 @@ test("maps a multi-axis variant family to one typed Flutter component", () => {
   assert.deepEqual(result.root.variantValues?.map((selection) => selection.valueName), ["secondary", "large"]);
 
   const componentDart = generateComponentWidget(component, result.components);
-  assert.match(componentDart, /enum ButtonStyle \{/);
-  assert.match(componentDart, /enum ButtonSize \{/);
-  assert.match(componentDart, /this\.style = ButtonStyle\.primary,/);
-  assert.match(componentDart, /this\.size = ButtonSize\.small,/);
+  assert.match(componentDart, /enum PenpotButtonStyle \{/);
+  assert.match(componentDart, /enum PenpotButtonSize \{/);
+  assert.doesNotMatch(componentDart, /enum PenpotButtonVariant \{/);
+  assert.match(componentDart, /this\.style = PenpotButtonStyle\.primary,/);
+  assert.match(componentDart, /this\.size = PenpotButtonSize\.small,/);
   assert.match(componentDart, /return switch \(\(style, size\)\)/);
-  assert.match(componentDart, /_ => throw ArgumentError\('Unsupported Button variant combination'\)/);
-  assert.match(generateFlutterWidget(result.root, result.components), /Button\(\n\s*style: ButtonStyle\.secondary,\n\s*size: ButtonSize\.large,\n\s*label: 'Buy now',/);
+  assert.match(componentDart, /_ => throw ArgumentError\('Unsupported PenpotButton variant combination'\)/);
+  assert.match(generateFlutterWidget(result.root, result.components), /PenpotButton\(\n\s*style: PenpotButtonStyle\.secondary,\n\s*size: PenpotButtonSize\.large,\n\s*label: 'Buy now',/);
 
   const variantDartPath = new URL("../variant_button.dart", import.meta.url);
   writeFileSync(variantDartPath, componentDart);
@@ -1212,8 +1213,8 @@ test("disambiguates colliding component names deterministically", () => {
 
   const names = result.components.map((component) => component.name);
   assert.equal(new Set(names).size, 2);
-  assert.equal(names[0], "Button");
-  assert.equal(names[1], "Button2");
+  assert.equal(names[0], "PenpotButton");
+  assert.equal(names[1], "PenpotButton2");
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "COMPONENT_NAME_COLLISION"));
 });
 

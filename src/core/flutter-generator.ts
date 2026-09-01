@@ -166,7 +166,7 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
   tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
-  const axes = component.variant?.axes ?? [];
+  const axes = component.variant?.representation === "members" ? [] : component.variant?.axes ?? [];
   const lines = [
     ...(componentRoots(component).some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",

@@ -357,14 +357,14 @@ export function extractSelection(
     builder.root = extractNode(context.componentSources.get(componentId)!, context, "");
     if (builder.variant !== undefined && builder.variantAxes !== undefined) {
       const variantAxes = builder.variantAxes;
-      builder.variantMembers = [...builder.variant.members]
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .map((member) => ({
-          componentId: componentKey(builder.libraryId, member.id),
-          values: variantMemberSelections(member, variantAxes),
-          root: extractNode(canonicalComponentRoot(member.root), context, ""),
-          dartName: variantMemberDartName(member, variantAxes),
-        }));
+      const sortedVariantMembers = [...builder.variant.members].sort((a, b) => a.id.localeCompare(b.id));
+      const usedVariantMemberNames = new Set<string>();
+      builder.variantMembers = sortedVariantMembers.map((member) => ({
+        componentId: componentKey(builder.libraryId, member.id),
+        values: variantMemberSelections(member, variantAxes),
+        root: extractNode(canonicalComponentRoot(member.root), context, ""),
+        dartName: variantMemberDartName(member, variantAxes, usedVariantMemberNames),
+      }));
     }
     context.currentComponent = undefined;
   }
@@ -789,20 +789,22 @@ function variantAxesOf(variant: PenpotVariantFamilySource, dartName: string, con
   return axes;
 }
 
-function variantRepresentationOf(variant: PenpotVariantFamilySource): "axes" | "members" {
-  const values = variant.properties.map((property) => new Set(variant.members.map((member) => member.values[property]).filter((value): value is string => typeof value === "string")).size);
-  const possible = values.reduce((count, valueCount) => count * Math.max(valueCount, 1), 1);
-  return possible > 0 && variant.members.length / possible >= 0.65 ? "axes" : "members";
+function variantRepresentationOf(_variant: PenpotVariantFamilySource): "axes" {
+  // Variant members remain an internal validity matrix; public APIs always preserve independent axes.
+  return "axes";
 }
 
-function variantMemberDartName(member: PenpotVariantMemberSource, axes: readonly IrVariantAxis[]): string {
-  const parts = axes.map((axis) => axis.values.find((value) => value.sourceValue === member.values[axis.sourceName])?.name ?? dartEnumValue(member.values[axis.sourceName] ?? axis.defaultValue, axis.name));
-  return dedupeMemberName(parts.join(""), member.id);
-}
-
-function dedupeMemberName(value: string, id: string): string {
-  const normalized = value === "" ? "member" : value.charAt(0).toUpperCase() + value.slice(1);
-  return `${normalized}${id.replace(/[^A-Za-z0-9]/g, "").slice(-6)}`;
+function variantMemberDartName(member: PenpotVariantMemberSource, axes: readonly IrVariantAxis[], used: Set<string>): string {
+  const parts = axes.map((axis) => {
+    const value = axis.values.find((candidate) => candidate.sourceValue === member.values[axis.sourceName])?.name ?? dartEnumValue(member.values[axis.sourceName] ?? axis.defaultValue, axis.name);
+    return `${pascalCase(axis.name)}${pascalCase(value)}`;
+  });
+  const base = parts.join("") || "Member";
+  let candidate = base.charAt(0).toLowerCase() + base.slice(1);
+  let suffix = 2;
+  while (used.has(candidate)) candidate = `${base.charAt(0).toLowerCase() + base.slice(1)}${suffix++}`;
+  used.add(candidate);
+  return candidate;
 }
 
 function variantMemberNameFor(componentIdentity: string, sourceComponentId: string, context: ExtractionContext): string | undefined {
@@ -919,8 +921,11 @@ function detectDependencyCycles(context: ExtractionContext): void {
   for (const componentId of context.componentOrder) visit(componentId);
 }
 
+const flutterTypeNames = new Set(["IconButton", "Button", "Text", "Container", "Column", "Row", "Stack", "SizedBox", "Padding", "Align", "Image", "Theme", "Color"]);
+
 function dartNameFor(sourceName: string, componentId: string, context: ExtractionContext, collisionCode = "COMPONENT_NAME_COLLISION"): string {
-  const base = pascalCase(sourceName) || "Component";
+  const normalized = pascalCase(sourceName) || "Component";
+  const base = flutterTypeNames.has(normalized) ? `Penpot${normalized}` : normalized;
   let candidate = base;
   let suffix = 2;
   while (context.usedDartNames.has(candidate) && context.usedDartNames.get(candidate) !== componentId) {

@@ -218,9 +218,13 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
 }
 
 function variantFamilyName(component: LibraryComponentLike): string {
+  const name = component.name.trim();
   const path = component.path?.trim();
-  if (path !== undefined && path !== "") return path.split("/").filter(Boolean).pop() ?? component.name;
-  return component.name;
+  const nameParts = name.split("/").map((part) => part.trim()).filter(Boolean);
+  if (nameParts.length > 1) return nameParts[nameParts.length - 1];
+  if (path !== undefined && path !== "" && path.includes("/")) return path.split("/").filter(Boolean).pop() ?? name;
+  if (name !== "" && name !== path) return name;
+  return path === undefined || path === "" ? name : path;
 }
 
 function issueFor(result: Exclude<ComponentResolution, { status: "resolved" }>, shape: PenpotSourceShape): ResolutionIssue {
