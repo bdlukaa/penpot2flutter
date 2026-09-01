@@ -870,6 +870,47 @@ test("reports an available but disconnected shared library without connecting it
   assert.equal(availableCalls, 1);
 });
 
+test("relinks a uniquely renamed component by same-library path and name", async () => {
+  const component = { id: "new-button", libraryId: "design-system", name: "UI / text button", path: "Buttons/UI / text button", mainInstance: () => ({}) };
+  const resolver = new LibraryResolver({
+    local: { id: "local", name: "Local", components: [] },
+    connected: [{ id: "design-system", name: "Design System", components: [component] }],
+    availableLibraries: async () => [],
+  });
+
+  const result = await resolver.resolve({
+    componentId: "old-button",
+    libraryId: "design-system",
+    componentName: "UI / text button",
+    componentPath: "Buttons/UI / text button",
+  });
+  assert.equal(result.status, "resolved");
+  if (result.status === "resolved") {
+    assert.equal(result.source, "relinked");
+    assert.equal(result.component.id, "new-button");
+  }
+});
+
+test("connects an available shared library once", async () => {
+  let connectionCalls = 0;
+  const component = { id: "button", libraryId: "design-system", name: "Button", mainInstance: () => ({}) };
+  const library = { id: "design-system", name: "Design System", components: [component] };
+  const resolver = new LibraryResolver({
+    local: { id: "local", name: "Local", components: [] },
+    connected: [],
+    availableLibraries: async () => [{ id: "design-system", name: "Design System" }],
+    connectLibrary: async () => { connectionCalls++; return library; },
+  });
+
+  const results = await Promise.all([
+    resolver.resolve({ componentId: "button", libraryId: "design-system" }),
+    resolver.resolve({ componentId: "button", libraryId: "design-system" }),
+  ]);
+  assert.equal(results[0].status, "resolved");
+  assert.equal(results[1].status, "resolved");
+  assert.equal(connectionCalls, 1);
+});
+
 test("reports a missing component in a connected shared library", async () => {
   const resolver = new LibraryResolver({
     local: { id: "local", name: "Local", components: [] },
@@ -990,7 +1031,7 @@ test("maps a multi-axis variant family to one typed Flutter component", () => {
   assert.equal(component.name, "Button");
   assert.deepEqual(component.variant?.axes.map((axis) => axis.enumName), ["ButtonStyle", "ButtonSize"]);
   assert.equal(component.variant?.members.length, 3);
-  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "VARIANT_COMBINATION_UNSUPPORTED"));
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "VARIANT_SPARSE_MATRIX"));
   assert.equal(result.root.kind, "component-instance");
   assert.equal(result.root.componentId, "design-system:variant-button-family");
   assert.deepEqual(result.root.variantValues?.map((selection) => selection.valueName), ["secondary", "large"]);
@@ -1183,7 +1224,7 @@ test("treats detached instances as ordinary shape trees", () => {
   assert.equal(result.root.children[0].kind, "text");
 });
 
-test("reports unsupported component overrides with a safe fallback", () => {
+test("preserves component fill overrides as a color parameter", () => {
   const redButton = {
     ...buttonMain,
     id: "red-button-main",
@@ -1195,9 +1236,11 @@ test("reports unsupported component overrides with a safe fallback", () => {
   };
   const result = extractSelection([redInstance], [{ id: "comp-button", name: "Primary Button", root: redButton }]);
 
-  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "COMPONENT_OVERRIDE_UNSUPPORTED"));
+  assert.doesNotMatch(result.diagnostics.map((diagnostic) => diagnostic.code).join("\n"), /COMPONENT_OVERRIDE_UNSUPPORTED/);
   const dart = generateFlutterWidget(result.root, result.components);
-  assert.match(dart, /PrimaryButton\(\)/);
+  assert.match(dart, /PrimaryButton\(\n\s*backgroundColor: Color\(0xffff0000\),/);
+  assert.match(generateComponentWidget(result.components[0], result.components), /final Color\? backgroundColor;/);
+  assert.match(generateComponentWidget(result.components[0], result.components), /this\.backgroundColor \?\? Color\(0xff6750a4\)/);
 });
 
 test("reports unresolved components and falls back safely", () => {
@@ -1611,7 +1654,7 @@ test("tracks custom fonts, fallback families, and unavailable font assets", () =
   }], [], [], {}, {
     fonts: [{ id: "acme", family: "Acme Sans", variants: [{ weight: 400, style: "normal" }] }],
   });
-  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "FONT_UNAVAILABLE"));
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "FONT_EXTERNAL_REQUIRED"));
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "FONT_WEIGHT_APPROXIMATED"));
   assert.deepEqual(result.fonts[0].fallbackFamilies, ["Courier", "sans-serif"]);
   assert.equal(result.fonts[0].available, false);

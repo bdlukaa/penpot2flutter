@@ -46,7 +46,7 @@ async function sendConversion(): Promise<void> {
   const rawSelection = penpot.selection as unknown as readonly PenpotSourceShape[];
   const selection = rawSelection.map(enrichShape);
   const resolution = await resolveComponentSources(selection);
-  const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues));
+  const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues, resolution.identities));
   const result = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, {}, typographyInput());
   const message: PluginToUiMessage = {
     source: "penpot-to-flutter",
@@ -87,6 +87,7 @@ function enrichComponent(shape: PenpotSourceShape): PenpotSourceShape {
       ...(shape.children == null ? {} : { children: shape.children }),
       ...(typeof component?.id === "string" && component.id !== "" ? { componentId: component.id } : {}),
       ...(typeof component?.libraryId === "string" && component.libraryId !== "" ? { componentLibraryId: component.libraryId } : {}),
+      ...(typeof component?.path === "string" && component.path !== "" ? { componentPath: component.path } : {}),
       ...(isInstance ? { isComponentInstance: true, isComponentRoot: true } : {}),
       ...(isMain ? { isComponentMainInstance: true, isComponentRoot: true } : {}),
     };
@@ -95,11 +96,13 @@ function enrichComponent(shape: PenpotSourceShape): PenpotSourceShape {
   }
 }
 
-async function resolveComponentSources(selection: readonly PenpotSourceShape[]): Promise<{ components: readonly PenpotComponentSource[]; variants: readonly PenpotVariantFamilySource[]; issues: ReadonlyMap<string, ResolutionIssue> }> {
-  const resolver = new LibraryResolver(penpot.library as unknown as ReadOnlyLibraryContext);
+async function resolveComponentSources(selection: readonly PenpotSourceShape[]): Promise<{ components: readonly PenpotComponentSource[]; variants: readonly PenpotVariantFamilySource[]; issues: ReadonlyMap<string, ResolutionIssue>; identities: ReadonlyMap<string, { readonly componentId: string; readonly libraryId: string }> }> {
+  const libraryContext = penpot.library as unknown as ReadOnlyLibraryContext;
+  const resolver = new LibraryResolver(libraryContext);
   const sources = new Map<string, PenpotComponentSource>();
   const variantFamilies = new Map<string, PenpotVariantFamilySource>();
   const issues = new Map<string, ResolutionIssue>();
+  const identities = new Map<string, { readonly componentId: string; readonly libraryId: string }>();
   const queue: PenpotSourceShape[] = [...selection];
   const visitedInstances = new Set<string>();
 
@@ -119,6 +122,7 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
       members: variant.members.map((member) => ({ ...member, root: withResolutionIssues(member.root, issues) })),
     })),
     issues,
+    identities,
   };
 
   async function resolveOne(shape: PenpotSourceShape): Promise<void> {
@@ -132,11 +136,20 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
     const result = await resolver.resolve({
       componentId: typeof shape.componentId === "string" ? shape.componentId : undefined,
       libraryId: typeof shape.componentLibraryId === "string" ? shape.componentLibraryId : undefined,
+      componentName: typeof directComponent?.name === "string" ? directComponent.name : shape.name,
+      componentPath: typeof directComponent?.path === "string" ? directComponent.path : shape.componentPath ?? undefined,
       ...(directComponent === undefined ? {} : { directComponent }),
     });
     if (result.status !== "resolved") {
       issues.set(shape.id, issueFor(result, shape));
       return;
+    }
+    if (result.source === "relinked") {
+      identities.set(shape.id, { componentId: result.component.id, libraryId: result.library.id });
+      issues.set(shape.id, {
+        code: "COMPONENT_RELINKED_BY_PATH",
+        message: `Component "${shape.name}" (${shape.componentId ?? "unknown"}) was not found by source ID and was relinked uniquely by name${shape.componentPath == null ? "" : ` and path "${shape.componentPath}"`} in library ${result.library.id}.`,
+      });
     }
 
     if (result.component.isVariant?.() === true && result.component.variants != null) {
@@ -219,6 +232,8 @@ function issueFor(result: Exclude<ComponentResolution, { status: "resolved" }>, 
       return { code: "SHARED_LIBRARY_NOT_CONNECTED", message: `Unable to resolve component "${shape.name}" (${result.componentId}) from shared library "${result.library.name}" (${result.library.id}). Connect this library to the current Penpot file, then regenerate.` };
     case "library-unavailable":
       return { code: "SHARED_LIBRARY_UNAVAILABLE", message: `Shared library ${result.libraryId} containing component "${shape.name}" (${result.componentId}) is unavailable to this Penpot file. Verify access and library publication.` };
+    case "library-connection-failed":
+      return { code: "SHARED_LIBRARY_CONNECTION_FAILED", message: `Unable to connect shared library ${result.libraryId} to resolve component "${shape.name}" (${result.componentId}). Check library permissions and connection status.` };
     case "component-not-found":
       return { code: "SHARED_COMPONENT_NOT_FOUND", message: `Shared library "${result.library.name}" (${result.library.id}) does not contain component "${shape.name}" (${result.componentId}). Update or relink the instance.` };
     case "resolution-failed":
@@ -226,12 +241,18 @@ function issueFor(result: Exclude<ComponentResolution, { status: "resolved" }>, 
   }
 }
 
-function withResolutionIssues(shape: PenpotSourceShape, issues: ReadonlyMap<string, ResolutionIssue>): PenpotSourceShape {
-  const children = shape.children?.map((child) => withResolutionIssues(child, issues));
+function withResolutionIssues(
+  shape: PenpotSourceShape,
+  issues: ReadonlyMap<string, ResolutionIssue>,
+  identities: ReadonlyMap<string, { readonly componentId: string; readonly libraryId: string }> = new Map(),
+): PenpotSourceShape {
+  const children = shape.children?.map((child) => withResolutionIssues(child, issues, identities));
   const issue = issues.get(shape.id);
+  const identity = identities.get(shape.id);
   return {
     ...shape,
     ...(children === undefined ? {} : { children }),
+    ...(identity === undefined ? {} : { componentId: identity.componentId, componentLibraryId: identity.libraryId }),
     ...(issue === undefined ? {} : { componentResolutionIssue: issue }),
   };
 }

@@ -39,7 +39,7 @@ app.innerHTML = `
       <textarea id="pubspec-assets" readonly spellcheck="false" aria-label="Generated pubspec assets"></textarea>
     </section>
     <section id="diagnostics" hidden aria-live="polite">
-      <h2>Conversion warnings</h2>
+      <h2>Conversion diagnostics</h2>
       <ul id="diagnostic-list"></ul>
     </section>
   </section>
@@ -109,14 +109,17 @@ function render(message: PluginToUiMessage): void {
 
   const warnings = message.result.diagnostics;
   diagnostics.hidden = warnings.length === 0;
-  const warningCounts = new Map<string, number>();
-  for (const warning of warnings) {
-    warningCounts.set(warning.message, (warningCounts.get(warning.message) ?? 0) + 1);
+  const diagnosticCounts = new Map<string, { readonly severity: string; readonly message: string; count: number }>();
+  for (const diagnostic of warnings) {
+    const key = `${diagnostic.severity}:${diagnostic.message}`;
+    const current = diagnosticCounts.get(key);
+    if (current === undefined) diagnosticCounts.set(key, { severity: diagnostic.severity, message: diagnostic.message, count: 1 });
+    else current.count++;
   }
   diagnosticList.replaceChildren(
-    ...[...warningCounts].map(([message, count]) => {
+    ...[...diagnosticCounts.values()].map(({ severity, message, count }) => {
       const item = document.createElement("li");
-      item.textContent = count === 1 ? message : `${message} (${count} occurrences)`;
+      item.textContent = `${severity.toUpperCase()}: ${count === 1 ? message : `${message} (${count} occurrences)`}`;
       return item;
     }),
   );

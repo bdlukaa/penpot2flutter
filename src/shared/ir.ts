@@ -1,4 +1,4 @@
-export type DiagnosticSeverity = "warning" | "error";
+export type DiagnosticSeverity = "info" | "warning" | "error";
 
 export interface Diagnostic {
   readonly severity: DiagnosticSeverity;
@@ -258,6 +258,7 @@ export interface BaseNode {
   readonly transform?: NodeTransform;
   readonly layoutChild?: LayoutChild;
   readonly diagnostics: readonly Diagnostic[];
+  readonly fillParameterName?: string;
   readonly tokenReferences?: readonly IrTokenReference[];
 }
 
@@ -310,7 +311,7 @@ export interface UnsupportedNode extends BaseNode {
   readonly sourceType: string;
 }
 
-export type ComponentParameterType = "String";
+export type ComponentParameterType = "String" | "Color";
 
 export interface IrComponentParameter {
   readonly name: string;
@@ -321,6 +322,7 @@ export interface IrComponentParameter {
 export interface IrArgument {
   readonly name: string;
   readonly value: string;
+  readonly type?: ComponentParameterType;
 }
 
 export interface IrVariantValue {
@@ -346,6 +348,7 @@ export interface IrVariantMember {
   readonly componentId: string;
   readonly values: readonly IrVariantSelection[];
   readonly root: IrNode;
+  readonly dartName?: string;
 }
 
 export interface IrVariantFamily {
@@ -353,12 +356,15 @@ export interface IrVariantFamily {
   readonly sourceName: string;
   readonly axes: readonly IrVariantAxis[];
   readonly members: readonly IrVariantMember[];
+  readonly representation?: "axes" | "members";
+  readonly enumName?: string;
 }
 
 export interface IrComponentInstanceNode extends BaseNode {
   readonly kind: "component-instance";
   readonly componentId: string;
   readonly variantValues?: readonly IrVariantSelection[];
+  readonly variantMemberName?: string;
   readonly arguments: readonly IrArgument[];
 }
 

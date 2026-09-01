@@ -197,6 +197,7 @@ export interface PenpotSourceShape {
   readonly flipY?: boolean | null;
   readonly componentId?: string | null;
   readonly componentLibraryId?: string | null;
+  readonly componentPath?: string | null;
   readonly isComponentInstance?: boolean | null;
   readonly isComponentMainInstance?: boolean | null;
   readonly isComponentRoot?: boolean | null;
@@ -265,6 +266,7 @@ export interface PenpotTokenInput {
 interface ComponentSlot {
   readonly parameterName: string;
   readonly defaultText: string;
+  readonly type?: "String" | "Color";
 }
 
 interface ComponentBuilder {
@@ -280,6 +282,8 @@ interface ComponentBuilder {
   readonly dependencies: Set<string>;
   readonly variant?: PenpotVariantFamilySource;
   readonly variantAxes?: readonly IrVariantAxis[];
+  readonly variantRepresentation?: "axes" | "members";
+  readonly variantEnumName?: string;
   variantMembers?: readonly IrVariantMember[];
 }
 
@@ -359,6 +363,7 @@ export function extractSelection(
           componentId: componentKey(builder.libraryId, member.id),
           values: variantMemberSelections(member, variantAxes),
           root: extractNode(canonicalComponentRoot(member.root), context, ""),
+          dartName: variantMemberDartName(member, variantAxes),
         }));
     }
     context.currentComponent = undefined;
@@ -428,6 +433,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
     ...(transform === undefined ? {} : { transform }),
     ...(shape.layoutChild == null ? {} : { layoutChild: layoutChildOf(shape.layoutChild, shape, diagnostics) }),
     diagnostics,
+    ...(context.currentComponent === undefined || context.components.get(context.currentComponent)?.slots.get(path + ":fill") === undefined ? {} : { fillParameterName: context.components.get(context.currentComponent)!.slots.get(path + ":fill")!.parameterName }),
     ...tokenReferencesOf(shape, context, diagnostics),
   };
 
@@ -564,6 +570,8 @@ function registerVariants(variants: readonly PenpotVariantFamilySource[], contex
       dependencies: new Set(),
       variant,
       variantAxes: variantAxesOf(variant, dartName, context),
+      variantRepresentation: variantRepresentationOf(variant),
+      variantEnumName: `${dartName}Variant`,
     });
     context.componentOrder.push(id);
   }
@@ -610,6 +618,10 @@ function registerComponents(components: readonly PenpotComponentSource[], contex
 function collectSlots(shape: PenpotSourceShape, componentId: string, context: ExtractionContext, path: string): void {
   if (isComponentRootInstance(shape)) return;
   const builder = context.components.get(componentId)!;
+  if (fillColorKey(shape) !== undefined) {
+    const parameterName = dedupeParameterName(path === "" ? "backgroundColor" : `${parameterNameFor(shape.name)}Color`, builder);
+    builder.slots.set(path + ":fill", { parameterName, defaultText: fillColorKey(shape)! , type: "Color" });
+  }
   if (shape.type === "text") {
     const parameterName = dedupeParameterName(parameterNameFor(shape.name), builder);
     builder.slots.set(path, { parameterName, defaultText: shape.characters ?? "" });
@@ -680,6 +692,7 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
   const args: IrArgument[] = [];
   walkOverrides(main, shape, "", componentIdentity, context, args);
   const variantValues = variantSelectionsFor(componentIdentity, componentId, context);
+  const variantMemberName = variantMemberNameFor(componentIdentity, componentId, context);
 
   const transform = transformOf(shape, diagnostics);
   const node: IrComponentInstanceNode = {
@@ -695,6 +708,7 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
     ...tokenReferencesOf(shape, context, diagnostics),
     componentId: componentIdentity,
     ...(variantValues.length === 0 ? {} : { variantValues }),
+    ...(variantMemberName === undefined ? {} : { variantMemberName }),
     arguments: args,
   };
   return { node, diagnostics };
@@ -715,7 +729,13 @@ function walkOverrides(main: PenpotSourceShape, instance: PenpotSourceShape, pat
     unsupportedOverride(instance, context, "visibility");
   }
   if (fillColorKey(main) !== fillColorKey(instance)) {
-    unsupportedOverride(instance, context, "fill color");
+    const slot = builder.slots.get(path + ":fill");
+    if (slot?.type === "Color" && fillColorKey(instance) !== undefined) {
+      args.push({ name: slot.parameterName, value: fillColorKey(instance)!, type: "Color" });
+      builder.overridden.add(slot.parameterName);
+    } else {
+      unsupportedOverride(instance, context, "fill color");
+    }
   }
   if (main.type === "board" || main.type === "group") {
     const mainChildren = main.children ?? [];
@@ -751,7 +771,7 @@ function variantAxesOf(variant: PenpotVariantFamilySource, dartName: string, con
     const sourceValues = [...new Set(variant.members.map((member) => member.values[sourceName]).filter((value): value is string => typeof value === "string"))].sort();
     const usedValues = new Set<string>();
     const values = sourceValues.map((sourceValue) => {
-      const baseValue = dartEnumValue(sourceValue);
+      const baseValue = dartEnumValue(sourceValue, name);
       const valueName = dedupeName(baseValue, usedValues);
       if (valueName !== baseValue) {
         context.diagnostics.push({ severity: "warning", sourceId: variant.id, code: "VARIANT_VALUE_COLLISION", message: `Variant values for axis "${sourceName}" normalize to the same Dart enum value; generated "${valueName}".` });
@@ -764,9 +784,31 @@ function variantAxesOf(variant: PenpotVariantFamilySource, dartName: string, con
   });
   const possibleCombinations = axes.reduce((count, axis) => count * Math.max(axis.values.length, 1), 1);
   if (possibleCombinations > variant.members.length) {
-    context.diagnostics.push({ severity: "warning", sourceId: variant.id, code: "VARIANT_COMBINATION_UNSUPPORTED", message: `Variant family "${variant.name}" defines ${variant.members.length} of ${possibleCombinations} possible axis combinations; unsupported combinations throw at runtime.` });
+    context.diagnostics.push({ severity: "info", sourceId: variant.id, code: "VARIANT_SPARSE_MATRIX", message: `Variant family "${variant.name}" defines ${variant.members.length} of ${possibleCombinations} possible axis combinations; only actual Penpot members are exposed.` });
   }
   return axes;
+}
+
+function variantRepresentationOf(variant: PenpotVariantFamilySource): "axes" | "members" {
+  const values = variant.properties.map((property) => new Set(variant.members.map((member) => member.values[property]).filter((value): value is string => typeof value === "string")).size);
+  const possible = values.reduce((count, valueCount) => count * Math.max(valueCount, 1), 1);
+  return possible > 0 && variant.members.length / possible >= 0.65 ? "axes" : "members";
+}
+
+function variantMemberDartName(member: PenpotVariantMemberSource, axes: readonly IrVariantAxis[]): string {
+  const parts = axes.map((axis) => axis.values.find((value) => value.sourceValue === member.values[axis.sourceName])?.name ?? dartEnumValue(member.values[axis.sourceName] ?? axis.defaultValue, axis.name));
+  return dedupeMemberName(parts.join(""), member.id);
+}
+
+function dedupeMemberName(value: string, id: string): string {
+  const normalized = value === "" ? "member" : value.charAt(0).toUpperCase() + value.slice(1);
+  return `${normalized}${id.replace(/[^A-Za-z0-9]/g, "").slice(-6)}`;
+}
+
+function variantMemberNameFor(componentIdentity: string, sourceComponentId: string, context: ExtractionContext): string | undefined {
+  const builder = context.components.get(componentIdentity);
+  if (builder?.variantRepresentation !== "members" || builder.variantMembers === undefined) return undefined;
+  return builder.variantMembers.find((member) => member.componentId === componentKey(builder.libraryId, sourceComponentId))?.dartName;
 }
 
 function variantSelectionsFor(componentIdentity: string, sourceComponentId: string, context: ExtractionContext): readonly IrVariantSelection[] {
@@ -786,7 +828,7 @@ function variantSelectionsFor(componentIdentity: string, sourceComponentId: stri
 function variantMemberSelections(member: PenpotVariantMemberSource, axes: readonly IrVariantAxis[]): readonly IrVariantSelection[] {
   return axes.map((axis) => {
     const sourceValue = member.values[axis.sourceName] ?? axis.defaultValue;
-    const valueName = axis.values.find((value) => value.sourceValue === sourceValue)?.name ?? dartEnumValue(sourceValue);
+    const valueName = axis.values.find((value) => value.sourceValue === sourceValue)?.name ?? dartEnumValue(sourceValue, axis.name);
     return { axisName: axis.name, enumName: axis.enumName, valueName };
   });
 }
@@ -799,10 +841,19 @@ function dedupeName(base: string, used: Set<string>): string {
   return candidate;
 }
 
-function dartEnumValue(value: string): string {
-  const normalized = parameterNameFor(value);
-  if (normalized === "default") return "defaultState";
-  return normalized === "" ? "value" : normalized;
+function dartEnumValue(value: string, axisName = "value"): string {
+  const raw = value.trim();
+  const prefix = parameterNameFor(axisName).replace(/[^A-Za-z0-9]/g, "") || "value";
+  const negative = raw.startsWith("-");
+  const normalized = raw
+    .replace(/^-/, "")
+    .replace(/\./g, "_")
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const candidate = normalized === "" ? prefix : /^[0-9]/.test(normalized) ? `${prefix}${negative ? "Negative" : ""}${normalized}` : `${negative ? "negative" : ""}${normalized}`;
+  if (candidate === "default") return "defaultState";
+  return candidate.charAt(0).toLowerCase() + candidate.slice(1);
 }
 
 function fillColorKey(shape: PenpotSourceShape): string | undefined {
@@ -827,7 +878,7 @@ function finalizeComponents(context: ExtractionContext): IrComponentDefinition[]
     const parameters: IrComponentParameter[] = [...builder.slots.values()]
       .filter((slot) => builder.overridden.has(slot.parameterName))
       .filter((slot, index, all) => all.findIndex((other) => other.parameterName === slot.parameterName) === index)
-      .map((slot) => ({ name: slot.parameterName, type: "String" as const, defaultValue: slot.defaultText }));
+      .map((slot) => ({ name: slot.parameterName, type: slot.type ?? "String", defaultValue: slot.defaultText }));
     return {
       id: componentId,
       sourceComponentId: builder.sourceComponentId,
@@ -841,6 +892,8 @@ function finalizeComponents(context: ExtractionContext): IrComponentDefinition[]
           sourceName: builder.variant.name,
           axes: builder.variantAxes,
           members: builder.variantMembers,
+          ...(builder.variantRepresentation === undefined ? {} : { representation: builder.variantRepresentation }),
+          ...(builder.variantEnumName === undefined ? {} : { enumName: builder.variantEnumName }),
         } satisfies IrVariantFamily,
       }),
       parameters,
@@ -1373,7 +1426,7 @@ function registerFontUsage(style: TextStyle, context: ExtractionContext, sourceI
   const hasAssets = source?.variants.some((variant) => variant.assetPath !== undefined) === true;
   if (!hasAssets && !context.diagnosedFonts.has(family.toLowerCase())) {
     context.diagnosedFonts.add(family.toLowerCase());
-    context.diagnostics.push({ severity: "warning", sourceId, code: "FONT_UNAVAILABLE", message: `Font family "${family}" has no exportable font files in the Penpot Plugin API. Generated text includes explicit fallback families.` });
+    context.diagnostics.push({ severity: "info", sourceId, code: "FONT_EXTERNAL_REQUIRED", message: `Font family "${family}" must be supplied by the Flutter project; the Penpot Plugin API does not expose exportable font files.` });
   }
 }
 

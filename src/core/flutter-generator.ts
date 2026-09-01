@@ -4,6 +4,7 @@ let componentNames: ReadonlyMap<string, string> = new Map();
 let declaredParameters: ReadonlySet<string> = new Set();
 let tokenDefinitions: ReadonlyMap<string, IrToken> = new Map();
 let typographyDefinitions: ReadonlyMap<string, IrTypographyStyle> = new Map();
+let componentVariantEnums: ReadonlyMap<string, string> = new Map();
 
 export function generatePubspecSnippet(assets: readonly AssetManifestEntry[], fonts: readonly IrFontManifestEntry[] = []): string {
   const fontFamilies = fonts.filter((font) => font.assets.length > 0);
@@ -92,6 +93,7 @@ export function generateFlutterWidget(
   typographyStyles: readonly IrTypographyStyle[] = [],
 ): string {
   componentNames = buildNameMap(components);
+  componentVariantEnums = new Map(components.filter((component) => component.variant?.representation === "members").map((component) => [component.id, component.variant?.enumName ?? `${component.name}Variant`]));
   tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   declaredParameters = new Set();
@@ -160,6 +162,7 @@ function renderResponsiveRoot(root: IrNode, depth: number): string {
 
 export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = []): string {
   componentNames = buildNameMap(components);
+  componentVariantEnums = new Map(components.filter((candidate) => candidate.variant?.representation === "members").map((candidate) => [candidate.id, candidate.variant?.enumName ?? `${candidate.name}Variant`]));
   tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
@@ -172,23 +175,28 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
     ...(componentRoots(component).some(containsTypography) ? ["import '../app_typography.dart';"] : []),
     ...componentImports(component.dependencies, components, ""),
     "",
-    ...axes.flatMap((axis) => [`enum ${axis.enumName} {`, ...axis.values.map((value) => `  ${value.name},`), "}", ""]),
+    ...(component.variant?.representation === "members"
+      ? [`enum ${component.variant.enumName ?? `${component.name}Variant`} {`, ...component.variant.members.map((member) => `  ${member.dartName ?? "member"},`), "}", ""]
+      : axes.flatMap((axis) => [`enum ${axis.enumName} {`, ...axis.values.map((value) => `  ${value.name},`), "}", ""])),
     `class ${component.name} extends StatelessWidget {`,
   ];
   const parameters = component.parameters;
-  if (parameters.length === 0 && axes.length === 0) {
+  const memberVariant = component.variant?.representation === "members" ? component.variant.enumName ?? `${component.name}Variant` : undefined;
+  if (parameters.length === 0 && axes.length === 0 && memberVariant === undefined) {
     lines.push(`  const ${component.name}({super.key});`);
   } else {
     lines.push(`  const ${component.name}({`);
     lines.push("    super.key,");
+    if (memberVariant !== undefined) lines.push(`    this.variant = ${memberVariant}.${component.variant!.members.find((member) => member.componentId === component.id)?.dartName ?? component.variant!.members[0]?.dartName ?? "member"},`);
     for (const axis of axes) lines.push(`    this.${axis.name} = ${axis.enumName}.${variantDefaultName(axis)},`);
     for (const parameter of parameters) {
-      lines.push(`    this.${parameter.name}${parameter.defaultValue === undefined ? "" : ` = ${stringLiteral(parameter.defaultValue)}`},`);
+      lines.push(`    this.${parameter.name}${parameter.type === "Color" ? "" : parameter.defaultValue === undefined ? "" : ` = ${stringLiteral(parameter.defaultValue)}`},`);
     }
     lines.push("  });");
     lines.push("");
+    if (memberVariant !== undefined) lines.push(`  final ${memberVariant} variant;`);
     for (const axis of axes) lines.push(`  final ${axis.enumName} ${axis.name};`);
-    for (const parameter of parameters) lines.push(`  final String ${parameter.name};`);
+    for (const parameter of parameters) lines.push(`  final ${parameter.type === "Color" ? "Color?" : parameter.type} ${parameter.name};`);
   }
   lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${component.sourceName}`, ...renderVariantComponentBody(component), "  }", "}", "");
   return lines.join("\n");
@@ -204,9 +212,18 @@ function variantDefaultName(axis: IrVariantAxis): string {
 
 function renderVariantComponentBody(component: IrComponentDefinition): string[] {
   const variant = component.variant;
-  if (variant === undefined || variant.axes.length === 0 || variant.members.length === 0) {
+  if (variant === undefined || variant.members.length === 0) {
     return [`    return ${renderNode(component.root, 2, false)};`];
   }
+  if (variant.representation === "members") {
+    const selector = "variant";
+    const enumName = variant.enumName ?? `${component.name}Variant`;
+    const lines = [`    return switch (${selector}) {`];
+    for (const member of variant.members) lines.push(`      ${enumName}.${member.dartName ?? "member"} => ${renderNode(member.root, 3, false)},`);
+    lines.push("    };");
+    return lines;
+  }
+  if (variant.axes.length === 0) return [`    return ${renderNode(component.root, 2, false)};`];
   const selector = variant.axes.length === 1 ? variant.axes[0].name : `(${variant.axes.map((axis) => axis.name).join(", ")})`;
   const lines = [`    return switch (${selector}) {`];
   for (const member of variant.members) {
@@ -588,11 +605,17 @@ function renderShape(node: IrNode, depth: number, ellipse: boolean): string {
   ].join("\n");
 }
 
+function variantEnumNameFor(componentId: string): string {
+  return componentVariantEnums.get(componentId) ?? "Variant";
+}
+
 function renderComponentInstance(node: IrComponentInstanceNode, depth: number): string {
   const name = componentNames.get(node.componentId);
   if (name === undefined) return "const SizedBox.shrink()";
-  const variantArguments = (node.variantValues ?? []).map((selection) => `${selection.axisName}: ${selection.enumName}.${selection.valueName},`);
-  const overrideArguments = node.arguments.map((argument) => `${argument.name}: '${escapeDart(argument.value)}',`);
+  const variantArguments = node.variantMemberName === undefined
+    ? (node.variantValues ?? []).map((selection) => `${selection.axisName}: ${selection.enumName}.${selection.valueName},`)
+    : [`variant: ${variantEnumNameFor(node.componentId)}.${node.variantMemberName},`];
+  const overrideArguments = node.arguments.map((argument) => `${argument.name}: ${argument.type === "Color" ? dartColor(argument.value, 1) : `'${escapeDart(argument.value)}'`},`);
   const argumentsList = [...variantArguments, ...overrideArguments];
   if (argumentsList.length === 0) return `${name}()`;
   return [
@@ -717,14 +740,15 @@ function renderDecoration(node: IrNode, depth: number, circle = false): string |
   if (style.fill === undefined && style.gradient === undefined && style.image === undefined && border === undefined && radius === undefined && shadows === undefined) return undefined;
   const properties = [
     ...(circle ? ["shape: BoxShape.circle"] : []),
-    ...(style.fill === undefined ? [] : [`color: ${tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity))}`]),
+    ...(style.fill === undefined ? [] : [`color: ${node.fillParameterName === undefined || !declaredParameters.has(node.fillParameterName) ? tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity)) : `this.${node.fillParameterName} ?? ${tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity))}`}`]),
     ...(style.gradient === undefined ? [] : [`gradient: ${tokenValue(node, "gradient", renderGradient(style.gradient, depth + 1))}`]),
     ...(style.image === undefined ? [] : [`image: DecorationImage(\n${indent(depth + 2)}image: AssetImage('${escapeDart(style.image.assetPath)}'),\n${indent(depth + 2)}fit: BoxFit.${style.image.keepAspectRatio ? "cover" : "fill"},\n${indent(depth + 1)})`]),
     ...(border === undefined ? [] : [`border: Border.all(color: ${tokenValue(node, "strokeColor", dartColor(border.color, border.opacity))}, width: ${tokenValue(node, "strokeWidth", number(border.width))})`]),
     ...(radius === undefined ? [] : [`borderRadius: ${borderRadius(radius, depth + 2, node)}`]),
     ...(shadows === undefined ? [] : [`boxShadow: ${tokenValue(node, "shadow", `[\n${shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`)}`]),
   ];
-  return properties.length === 1 && !properties[0].includes("\n")
+  const hasRuntimeValue = node.fillParameterName !== undefined && declaredParameters.has(node.fillParameterName);
+  return properties.length === 1 && !properties[0].includes("\n") && !hasRuntimeValue
     ? `const BoxDecoration(${properties[0]})`
     : `BoxDecoration(\n${properties.map((property) => `${indent(depth + 1)}${property},`).join("\n")}\n${indent(depth)})`;
 }
