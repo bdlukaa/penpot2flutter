@@ -31,6 +31,7 @@ import type {
   IrToken,
   IrTokenReference,
   IrTokenSet,
+  IrTokenTheme,
   IrTypographyStyle,
   IrVariantAxis,
   IrVariantFamily,
@@ -321,7 +322,6 @@ interface ExtractionContext {
   readonly fontResolutionEnabled: boolean;
   readonly fontUsages: Map<string, FontUsage>;
   readonly defaultFallbackFamilies: readonly string[];
-  readonly diagnosedFonts: Set<string>;
   currentComponent?: string;
 }
 
@@ -341,14 +341,13 @@ export function extractSelection(
     components: new Map(),
     componentOrder: [],
     usedDartNames: new Map(),
-    tokenRegistry: effectiveTokensByName(tokenRegistry.tokens, tokenRegistry.sets),
+    tokenRegistry: effectiveTokensByName(tokenRegistry.tokens, tokenRegistry.sets, tokenRegistry.themes),
     typographyCandidates: new Map(),
     usedTypographyNames: new Set(),
     fontSources: new Map((typographyInput.fonts ?? []).map((font) => [font.family.toLowerCase(), font])),
     fontResolutionEnabled: typographyInput.fonts !== undefined,
     fontUsages: new Map(),
     defaultFallbackFamilies: typographyInput.defaultFallbackFamilies ?? ["sans-serif"],
-    diagnosedFonts: new Set(),
   };
 
   registerVariants(variants, context);
@@ -510,7 +509,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
 }
 
 function isComponentRootInstance(shape: PenpotSourceShape): boolean {
-  return shape.isComponentInstance === true && shape.isComponentRoot !== false;
+  return shape.isComponentRoot !== false && (shape.isComponentInstance === true || shape.isComponentMainInstance === true);
 }
 
 function extractChildren(shape: PenpotSourceShape, context: ExtractionContext, path: string): readonly IrNode[] {
@@ -546,22 +545,38 @@ function tokenReferencesOf(
         });
         return { property: normalizedProperty, tokenName, tokenPath: tokenPathOf(tokenName) };
       }
-      return { property: normalizedProperty, tokenName, tokenId: token.id, tokenPath: token.path, tokenType: token.type, resolvedValue: token.value };
+      return {
+        property: normalizedProperty,
+        tokenName,
+        tokenId: token.id,
+        ...(token.setId === undefined ? {} : { tokenSetId: token.setId }),
+        tokenPath: token.path,
+        tokenType: token.type,
+        resolvedValue: token.value,
+      };
     });
   return references.length === 0 ? {} : { tokenReferences: references };
 }
 
-function effectiveTokensByName(tokens: readonly IrToken[], sets: readonly IrTokenSet[]): ReadonlyMap<string, IrToken> {
-  const byId = new Map(tokens.map((token) => [token.id, token]));
+function effectiveTokensByName(tokens: readonly IrToken[], sets: readonly IrTokenSet[], themes: readonly IrTokenTheme[] = []): ReadonlyMap<string, IrToken> {
+  const byIdentity = new Map(tokens.map((token) => [`${token.setId ?? ""}:${token.id}`, token]));
   const result = new Map<string, IrToken>();
-  const activeSets = sets.filter((set) => set.active);
-  for (const set of activeSets.length === 0 ? sets : activeSets) {
+  const selectedSetIds = new Set(sets.filter((set) => set.active).map((set) => set.id));
+  for (const theme of themes) {
+    if (theme.active) theme.activeSetIds.forEach((setId) => selectedSetIds.add(setId));
+  }
+  const selectedSets = sets.filter((set) => selectedSetIds.has(set.id));
+  for (const set of selectedSets) {
     for (const tokenId of set.tokenIds) {
-      const token = byId.get(tokenId);
+      const token = byIdentity.get(`${set.id}:${tokenId}`);
       if (token !== undefined) result.set(token.sourceName, token);
     }
   }
-  for (const token of tokens) if (!result.has(token.sourceName)) result.set(token.sourceName, token);
+  // Direct token-only fixtures remain usable when no catalog sets were supplied.
+  // With catalog sets present, an inactive definition must not win by accident.
+  if (sets.length === 0) {
+    for (const token of tokens) if (!result.has(token.sourceName)) result.set(token.sourceName, token);
+  }
   return result;
 }
 
@@ -617,6 +632,7 @@ function canonicalComponentRoot(root: PenpotSourceShape): PenpotSourceShape {
     ...root,
     ...(root.children == null ? {} : { children: root.children }),
     isComponentInstance: false,
+    isComponentMainInstance: false,
   };
 }
 
@@ -767,7 +783,12 @@ function walkOverrides(main: PenpotSourceShape, instance: PenpotSourceShape, pat
         name: slot.parameterName,
         value: fillColorKey(instance)!,
         type: "Color",
-        ...(token === undefined ? {} : { tokenId: token.id, tokenPath: token.path, tokenType: token.type }),
+        ...(token === undefined ? {} : {
+          tokenId: token.id,
+          ...(token.setId === undefined ? {} : { tokenSetId: token.setId }),
+          tokenPath: token.path,
+          tokenType: token.type,
+        }),
       });
       builder.overridden.add(slot.parameterName);
     } else {
@@ -1342,7 +1363,7 @@ function textStyleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], contex
     ...(shape.textDecoration === "underline" || shape.textDecoration === "line-through" ? { decoration: shape.textDecoration } : {}),
     ...(shape.align == null || shape.align === "mixed" ? {} : { align: shape.align }),
   };
-  registerFontUsage(style, context, sourceIdOf(shape.id));
+  registerFontUsage(style, context);
   return style;
 }
 
@@ -1387,7 +1408,7 @@ function runStyleOf(run: PenpotSourceTextRun, sourceId: string, diagnostics: Dia
     ...(run.textDecoration === "underline" || run.textDecoration === "line-through" ? { decoration: run.textDecoration } : {}),
     ...(fill === undefined ? {} : { color: fill }),
   };
-  registerFontUsage(style, context, sourceId);
+  registerFontUsage(style, context);
   return style;
 }
 
@@ -1431,7 +1452,7 @@ function lineHeightMultiplier(value: string | null | undefined, fontSize: number
 
 function fontFamilies(value: string | null | undefined, explicitFallbacks: readonly string[] | null | undefined, defaults: readonly string[]): { family?: string; fallbacks: readonly string[] } {
   if (value == null || value === "mixed") return { fallbacks: [] };
-  const parsed = value.split(",").map(cleanFontFamily).filter(Boolean);
+  const parsed = splitFontFamilyStack(value).map(cleanFontFamily).filter(Boolean);
   const family = parsed[0];
   const fallbacks = [...new Set([...parsed.slice(1), ...(explicitFallbacks ?? []).map(cleanFontFamily), ...defaults.map(cleanFontFamily)])].filter((item) => item !== "" && item !== family);
   return { ...(family === undefined ? {} : { family }), fallbacks };
@@ -1439,6 +1460,23 @@ function fontFamilies(value: string | null | undefined, explicitFallbacks: reado
 
 function cleanFontFamily(value: string): string {
   return value.trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2");
+}
+
+function splitFontFamilyStack(value: string): readonly string[] {
+  const result: string[] = [];
+  let current = "";
+  let quote: string | undefined;
+  for (const character of value) {
+    if ((character === "\"" || character === "'") && (quote === undefined || quote === character)) quote = quote === undefined ? character : undefined;
+    if (character === "," && quote === undefined) {
+      result.push(current);
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  if (current.trim() !== "") result.push(current);
+  return result;
 }
 
 function runTextTransformOf(value: PenpotSourceTextRun["textTransform"], sourceId: string, diagnostics: Diagnostic[]): IrTextTransform | undefined {
@@ -1485,7 +1523,7 @@ function finalizeTypographyStyles(context: ExtractionContext): readonly IrTypogr
     .map((candidate) => ({ id: candidate.id, name: candidate.name, ...candidate.style }));
 }
 
-function registerFontUsage(style: TextStyle, context: ExtractionContext, sourceId: string): void {
+function registerFontUsage(style: TextStyle, context: ExtractionContext): void {
   const family = style.fontFamily;
   if (family === undefined) return;
   let usage = context.fontUsages.get(family.toLowerCase());
@@ -1496,16 +1534,21 @@ function registerFontUsage(style: TextStyle, context: ExtractionContext, sourceI
   for (const fallback of style.fallbackFamilies ?? []) usage.fallbackFamilies.add(fallback);
   usage.weights.add(style.fontWeight ?? 400);
   usage.styles.add(style.fontStyle ?? "normal");
-  if (!context.fontResolutionEnabled || isGenericFont(family)) return;
-  const source = context.fontSources.get(family.toLowerCase());
-  const hasAssets = source?.variants.some((variant) => variant.assetPath !== undefined) === true;
-  if (!hasAssets && !context.diagnosedFonts.has(family.toLowerCase())) {
-    context.diagnosedFonts.add(family.toLowerCase());
-    context.diagnostics.push({ severity: "info", sourceId, code: "FONT_EXTERNAL_REQUIRED", message: `Font family "${family}" must be supplied by the Flutter project; the Penpot Plugin API does not expose exportable font files.` });
-  }
 }
 
 function finalizeFontManifest(context: ExtractionContext): readonly IrFontManifestEntry[] {
+  const requiredExternalFonts = [...context.fontUsages.values()]
+    .filter((usage) => context.fontResolutionEnabled && !isGenericFont(usage.family) && (context.fontSources.get(usage.family.toLowerCase())?.variants.some((variant) => variant.assetPath !== undefined) !== true))
+    .map((usage) => usage.family)
+    .sort((left, right) => left.localeCompare(right));
+  if (requiredExternalFonts.length > 0) {
+    context.diagnostics.push({
+      severity: "info",
+      sourceId: "fonts",
+      code: "FONT_EXTERNAL_REQUIRED",
+      message: `${requiredExternalFonts.length} external font famil${requiredExternalFonts.length === 1 ? "y is" : "ies are"} required by the generated Flutter project: ${requiredExternalFonts.join(", ")}. Penpot does not provide exportable font files through the available Plugin API.`,
+    });
+  }
   return [...context.fontUsages.values()].sort((left, right) => left.family.localeCompare(right.family)).map((usage) => {
     const source = context.fontSources.get(usage.family.toLowerCase());
     const assets = (source?.variants ?? []).flatMap((variant) => variant.assetPath === undefined ? [] : [{ path: variant.assetPath, weight: normalizedManifestWeight(variant.weight), style: variant.style }]);

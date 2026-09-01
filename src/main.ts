@@ -144,20 +144,37 @@ function render(message: PluginToUiMessage): void {
   copy.textContent = "Copy Dart";
   download.disabled = false;
 
-  const warnings = message.result.diagnostics;
-  diagnostics.hidden = warnings.length === 0;
-  const diagnosticCounts = new Map<string, { readonly severity: string; readonly message: string; count: number }>();
-  for (const diagnostic of warnings) {
-    const key = `${diagnostic.severity}:${diagnostic.message}`;
-    const current = diagnosticCounts.get(key);
-    if (current === undefined) diagnosticCounts.set(key, { severity: diagnostic.severity, message: diagnostic.message, count: 1 });
+  const conversionDiagnostics = message.result.diagnostics;
+  diagnostics.hidden = conversionDiagnostics.length === 0;
+  const grouped = new Map<string, Map<string, { readonly code: string; readonly message: string; count: number }>>();
+  for (const diagnostic of conversionDiagnostics) {
+    const byCode = grouped.get(diagnostic.severity) ?? new Map<string, { readonly code: string; readonly message: string; count: number }>();
+    grouped.set(diagnostic.severity, byCode);
+    const key = `${diagnostic.code}:${diagnostic.message}`;
+    const current = byCode.get(key);
+    if (current === undefined) byCode.set(key, { code: diagnostic.code, message: diagnostic.message, count: 1 });
     else current.count++;
   }
+  const severityOrder = ["error", "warning", "info"];
   diagnosticList.replaceChildren(
-    ...[...diagnosticCounts.values()].map(({ severity, message, count }) => {
-      const item = document.createElement("li");
-      item.textContent = `${severity.toUpperCase()}: ${count === 1 ? message : `${message} (${count} occurrences)`}`;
-      return item;
+    ...severityOrder.flatMap((severity) => {
+      const entries = grouped.get(severity);
+      if (entries === undefined) return [];
+      const section = document.createElement("li");
+      section.className = `diagnostic-section diagnostic-${severity}`;
+      const heading = document.createElement("strong");
+      heading.textContent = `${severity[0]!.toUpperCase()}${severity.slice(1)} (${entries.size})`;
+      const details = document.createElement("ul");
+      details.className = "diagnostic-details";
+      details.replaceChildren(
+        ...[...entries.values()].map(({ code, message, count }) => {
+          const item = document.createElement("li");
+          item.textContent = `[${code}] ${count === 1 ? message : `${message} (${count} occurrences)`}`;
+          return item;
+        }),
+      );
+      section.append(heading, details);
+      return [section];
     }),
   );
 }

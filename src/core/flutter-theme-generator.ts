@@ -1,5 +1,7 @@
 import type { Diagnostic, GeneratedFile, IrToken, IrTokenSet, IrTokenTheme } from "../shared/ir.js";
-import { dartMemberName, tokenDartLiteral, tokenRuntimeType } from "./flutter-generator.js";
+import { tokenDartLiteral, tokenRuntimeType } from "./flutter-generator.js";
+import { dartClassSegment, dartMemberName } from "./token-naming.js";
+import { resolveTokenSets } from "./token-registry.js";
 
 interface TokenTree {
   readonly path: readonly string[];
@@ -144,10 +146,12 @@ function generateThemes(
   themes: readonly IrTokenTheme[],
   groups: ReadonlyMap<string, readonly IrTokenTheme[]>,
 ): string {
-  const tokenById = new Map(tokens.map((token) => [token.id, token]));
+  const tokenByIdentity = new Map(tokens.map((token) => [`${token.setId ?? ""}:${token.id}`, token]));
+  const baseSetIds = sets.filter((set) => set.active).map((set) => set.id);
+  const resolvedBySet = new Map(sets.map((set) => [set.id, resolveTokenSets(tokens, sets, new Set([...baseSetIds, set.id])).tokens]));
   const semanticTokens = uniqueSemanticTokens(tokens);
   const groupEntries = [...groups.entries()];
-  const enumNames = uniqueNames(groupEntries.map(([group]) => `Penpot${pascal(group || "Theme")}`));
+  const enumNames = uniqueNames(groupEntries.map(([group]) => `Penpot${dartClassSegment(group || "Theme")}`));
   const parameterNames = uniqueNames(groupEntries.map(([group]) => member(group || "theme")));
   const themeMembers = new Map(themes.map((theme) => [theme.id, member(theme.name)]));
   const colorSchemeMappings = materialMappings(semanticTokens, "color", "color", ["primary", "onPrimary", "primaryContainer", "onPrimaryContainer", "secondary", "onSecondary", "secondaryContainer", "onSecondaryContainer", "tertiary", "onTertiary", "tertiaryContainer", "onTertiaryContainer", "error", "onError", "errorContainer", "onErrorContainer", "surface", "onSurface", "outline", "outlineVariant", "shadow", "scrim", "inverseSurface", "onInverseSurface", "inversePrimary", "surfaceTint"]);
@@ -171,8 +175,11 @@ function generateThemes(
     ...sets.flatMap((set) => [
       `  ${dartString(set.id)}: {`,
       ...set.tokenIds.flatMap((id) => {
-        const token = tokenById.get(id);
-        return token === undefined ? [] : [`    ${dartString(token.sourceName)}: _TokenDefinition(${tokenDartLiteral(token) ?? fallbackLiteral(token)}, ${wholeAlias(token.rawValue) === undefined ? "null" : dartString(wholeAlias(token.rawValue)!)}),`];
+        const token = tokenByIdentity.get(`${set.id}:${id}`) ?? tokens.find((candidate) => candidate.id === id);
+        if (token === undefined) return [];
+        const resolved = resolvedBySet.get(set.id)?.get(token.sourceName);
+        const resolvedToken = resolved?.id === token.id && resolved?.setId === token.setId && resolved.value !== token.value ? { ...token, value: resolved.value } : token;
+        return [`    ${dartString(token.sourceName)}: _TokenDefinition(${tokenDartLiteral(resolvedToken) ?? fallbackLiteral(resolvedToken)}, ${wholeAlias(token.rawValue) === undefined ? "null" : dartString(wholeAlias(token.rawValue)!)}),`];
       }),
       "  },",
     ]),
@@ -293,7 +300,7 @@ function nodeType(node: TokenTree): string {
 }
 
 function namespaceClassName(path: readonly string[]): string {
-  return `Penpot${pascal(path.join(" "))}Tokens`;
+  return `Penpot${path.map(dartClassSegment).join("")}Tokens`;
 }
 
 export function tokenAccessPath(path: readonly string[]): string {
@@ -304,9 +311,6 @@ function member(value: string): string {
   return dartMemberName(value, "token");
 }
 
-function pascal(value: string): string {
-  return value.split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part[0].toUpperCase() + part.slice(1)).join("") || "Token";
-}
 
 function uniqueNames(values: readonly string[]): readonly string[] {
   const used = new Set<string>();

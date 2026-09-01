@@ -32,6 +32,7 @@ export type IrTokenType =
 
 export interface IrTypographyTokenValue {
   readonly fontFamily?: string;
+  readonly fontFamilyFallbacks?: readonly string[];
   readonly fontSize?: number;
   readonly fontWeight?: number;
   readonly lineHeight?: number;
@@ -43,13 +44,18 @@ export type IrTokenValue = string | number | IrTypographyTokenValue | readonly D
 
 export interface IrToken {
   readonly id: string;
+  readonly identity?: { readonly tokenId: string; readonly setId: string };
   readonly sourceName: string;
   readonly path: readonly string[];
   readonly type: IrTokenType;
   readonly value: IrTokenValue;
   readonly rawValue?: unknown;
+  readonly resolvedValue?: IrTokenValue;
   readonly sourceType?: string;
+  readonly setName?: string;
+  readonly fontFamilyFallbacks?: readonly string[];
   readonly references: readonly string[];
+  readonly dependencies?: readonly string[];
   readonly aliasTargetId?: string;
   readonly setId?: string;
   readonly setIndex?: number;
@@ -62,6 +68,7 @@ export interface IrTokenReference {
   /** Penpot applies tokens by semantic name, not by definition id. */
   readonly tokenName: string;
   readonly tokenId?: string;
+  readonly tokenSetId?: string;
   /** Original semantic token path, preserved independently from its fallback value. */
   readonly tokenPath: readonly string[];
   readonly tokenType?: IrTokenType;
@@ -341,6 +348,7 @@ export interface IrArgument {
   readonly value: string;
   readonly type?: ComponentParameterType;
   readonly tokenId?: string;
+  readonly tokenSetId?: string;
   readonly tokenPath?: readonly string[];
   readonly tokenType?: IrTokenType;
 }

@@ -6,6 +6,7 @@ import test from "node:test";
 import { extractSelection, type PenpotSourceShape } from "../src/core/extractor.js";
 import { generateComponentWidget, generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
 import { validateFlutterThemeGeneration } from "../src/core/flutter-theme-generator.js";
+import { dartMemberName } from "../src/core/token-naming.js";
 import { buildTokenRegistry, resolveTokenSets } from "../src/core/token-registry.js";
 import { LibraryResolver } from "../src/penpot/library-resolver.js";
 import { extractTokenCatalog } from "../src/penpot/token-catalog.js";
@@ -1179,6 +1180,23 @@ test("keeps layers inside a component tree as ordinary component content", () =>
   assert.deepEqual(component.dependencies, []);
 });
 
+test("exports a selected main component as a reusable component call", () => {
+  const mainInstanceRoot = {
+    ...buttonMain,
+    isComponentMainInstance: true,
+    isComponentRoot: true,
+    componentId: "comp-button",
+  };
+  const result = extractSelection(
+    [mainInstanceRoot],
+    [{ id: "comp-button", name: "Primary Button", root: buttonMain }],
+  );
+  assert.equal(result.root.kind, "component-instance");
+  assert.equal(result.components.length, 1);
+  assert.match(generateFlutterWidget(result.root, result.components), /PrimaryButton\(\)/);
+  assert.match(generateFlutterFiles(result.root, result.components)[1].source, /class PrimaryButton extends StatelessWidget/);
+});
+
 test("extracts a canonical main-instance root instead of calling itself", () => {
   const mainInstanceRoot = {
     ...buttonMain,
@@ -1496,6 +1514,130 @@ test("preserves set order, multidimensional themes, 200+ tokens, and alias resol
   assert.deepEqual(registry.tokenThemes.map((theme) => theme.group), ["Mode", "Mode", "Brand", "Brand"]);
 });
 
+test("generates one theme-aware component source for light, dark, and partial theme overrides", () => {
+  const result = extractSelection([{
+    id: "theme-card", name: "Theme card", type: "rectangle", x: 0, y: 0, width: 40, height: 40, visible: true,
+    fills: [{ fillColor: "#ffffff", fillOpacity: 1 }], tokenBindings: { fill: "color.primary" },
+  }], [], [], {
+    tokens: [
+      { id: "space", name: "space.md", type: "spacing", value: 16, setId: "global" },
+      { id: "light-primary", name: "color.primary", type: "color", value: "#ffffff", setId: "light" },
+      { id: "dark-primary", name: "color.primary", type: "color", value: "#000000", setId: "dark" },
+      { id: "light-body", name: "typography.bodyMedium", type: "typography", value: { fontSize: 14 }, setId: "light" },
+      { id: "dark-body", name: "typography.bodyMedium", type: "typography", value: { fontSize: 16 }, setId: "dark" },
+    ],
+    sets: [
+      { id: "global", name: "Global", active: true, tokenIds: ["space"] },
+      { id: "light", name: "Light", tokenIds: ["light-primary", "light-body"] },
+      { id: "dark", name: "Dark", tokenIds: ["dark-primary", "dark-body"] },
+    ],
+    themes: [
+      { id: "light-theme", name: "Light", group: "Mode", active: true, activeSetIds: ["light"] },
+      { id: "dark-theme", name: "Dark", group: "Mode", active: false, activeSetIds: ["dark"] },
+      { id: "contrast-theme", name: "High Contrast", group: "Contrast", active: false, activeSetIds: ["dark"] },
+    ],
+  });
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes);
+  const screen = files.find((file) => file.path === "screens/theme_card.dart")!.source;
+  const themes = files.find((file) => file.path === "theme/penpot_themes.dart")!.source;
+  assert.match(screen, /context\.penpot\.color\.primary/);
+  assert.match(themes, /enum PenpotMode[\s\S]*light,[\s\S]*dark,/);
+  assert.match(themes, /enum PenpotContrast/);
+  assert.match(themes, /ThemeData\(\)\.colorScheme\.copyWith/);
+  assert.match(themes, /ThemeData\(\)\.textTheme\.copyWith/);
+  assert.match(themes, /'global'/);
+  assert.match(themes, /PenpotMode\.dark => const \['dark'\]/);
+});
+
+test("diagnoses unresolved and ambiguous token theme configurations", () => {
+  const registry = buildTokenRegistry(
+    [
+      { id: "base", name: "color.primary", type: "color", value: "#ffffff", setId: "base" },
+      { id: "wrong-type", name: "color.primary", type: "spacing", value: 8, setId: "override" },
+      { id: "alias", name: "color.surface", type: "color", value: "#ffffff", rawValue: "{color.missing}", references: ["color.missing"], setId: "base" },
+      { id: "case", name: "COLOR.PRIMARY", type: "color", value: "#000000", setId: "base" },
+    ],
+    [
+      { id: "base", name: "Base", active: true, tokenIds: ["base", "alias", "case"] },
+      { id: "override", name: "Override", active: false, tokenIds: ["wrong-type"] },
+    ],
+    [
+      { id: "collision-a", name: "Brand A", group: "Brand", active: false, activeSetIds: ["override"] },
+      { id: "collision-b", name: "Brand-A", group: "Brand", active: false, activeSetIds: ["override"] },
+      { id: "missing-base", name: "No Base", group: "Mode", active: false, activeSetIds: [] },
+    ],
+  );
+  const codes = new Set(registry.diagnostics.map((diagnostic) => diagnostic.code));
+  assert.ok(codes.has("THEME_NAME_COLLISION"));
+  assert.ok(codes.has("THEME_INHERITANCE_UNRESOLVED"));
+  assert.ok(codes.has("THEME_VALUE_TYPE_MISMATCH"));
+  assert.ok(codes.has("THEME_TOKEN_MISSING"));
+  assert.ok(codes.has("THEME_SEMANTIC_MAPPING_AMBIGUOUS"));
+});
+
+test("normalizes token names without erasing negative signs or zero padding", () => {
+  assert.equal(dartMemberName("level-1", "token"), "level1");
+  assert.equal(dartMemberName("level--1", "token"), "levelNegative1");
+  assert.equal(dartMemberName("level--2", "token"), "levelNegative2");
+  assert.equal(dartMemberName("050", "token"), "x050");
+  assert.equal(dartMemberName("50", "token"), "x50");
+  assert.equal(dartMemberName("golden-ratio", "token"), "goldenRatio");
+  assert.equal(dartMemberName("major-third", "token"), "majorThird");
+  assert.equal(dartMemberName("2xl", "token"), "x2xl");
+
+  const registry = buildTokenRegistry([
+    { id: "positive", name: "color.level-1.border", type: "color", value: "#ffffff", setId: "scale" },
+    { id: "negative", name: "color.level--1.border", type: "color", value: "#000000", setId: "scale" },
+  ], [{ id: "scale", name: "Scale", active: true, tokenIds: ["positive", "negative"] }]);
+  assert.equal(registry.diagnostics.filter((diagnostic) => diagnostic.code === "TOKEN_DART_NAME_COLLISION").length, 0);
+});
+
+test("parses CSS font-family stacks and resolves numeric token expressions", () => {
+  const registry = buildTokenRegistry([
+    { id: "family", name: "font-family.primary", type: "font-family", value: '"DM Sans", sans-serif', setId: "base", fontFamilyFallbacks: ["sans-serif"] },
+    { id: "base", name: "dimension.base", type: "dimension", value: "8px", setId: "base" },
+    { id: "scale", name: "dimension.scale", type: "number", value: 3, setId: "base" },
+    { id: "modular", name: "modular.md", type: "dimension", value: "{dimension.base} * {dimension.scale}", rawValue: "{dimension.base} * {dimension.scale}", references: ["dimension.base", "dimension.scale"], setId: "base" },
+  ], [{ id: "base", name: "Base", active: true, tokenIds: ["family", "base", "scale", "modular"] }]);
+  const resolved = resolveTokenSets(registry.tokens, registry.sets, new Set(["base"]));
+  assert.equal(registry.tokens.find((token) => token.id === "family")?.value, "DM Sans");
+  assert.deepEqual(registry.tokens.find((token) => token.id === "family")?.fontFamilyFallbacks, ["sans-serif"]);
+  assert.equal(resolved.tokens.get("modular.md")?.value, 24);
+  assert.deepEqual(registry.tokens.find((token) => token.id === "modular")?.dependencies, ["dimension.base", "dimension.scale"]);
+  assert.equal(registry.diagnostics.filter((diagnostic) => diagnostic.code === "TOKEN_ALIAS_UNRESOLVED").length, 0);
+});
+
+test("splits font-family arrays that contain CSS stacks", () => {
+  const catalog = {
+    sets: [tokenSet("fonts", "Fonts", true, [{
+      id: "font-stack",
+      name: "font-family.primary",
+      type: "fontFamilies",
+      value: ["DM Sans, sans-serif"],
+      resolvedValue: ["DM Sans, sans-serif"],
+    }])],
+    themes: [],
+  } as unknown as TokenCatalog;
+  const extracted = extractTokenCatalog(catalog);
+  const family = extracted.input.tokens?.find((token) => token.id === "font-stack");
+  assert.equal(family?.value, "DM Sans");
+  assert.deepEqual(family?.fontFamilyFallbacks, ["sans-serif"]);
+});
+
+test("keeps same token IDs distinct when they belong to different sets", () => {
+  const registry = buildTokenRegistry([
+    { id: "shared-id", name: "color.primary", type: "color", value: "#ffffff", setId: "light" },
+    { id: "shared-id", name: "color.primary", type: "color", value: "#000000", setId: "dark" },
+  ], [
+    { id: "light", name: "Light", active: true, tokenIds: ["shared-id"] },
+    { id: "dark", name: "Dark", active: true, tokenIds: ["shared-id"] },
+  ]);
+  assert.equal(registry.tokens.length, 2);
+  assert.equal(registry.diagnostics.filter((diagnostic) => diagnostic.code === "TOKEN_IDENTITY_AMBIGUOUS").length, 0);
+  assert.equal(resolveTokenSets(registry.tokens, registry.sets, new Set(["light"])).tokens.get("color.primary")?.value, "#ffffff");
+  assert.equal(resolveTokenSets(registry.tokens, registry.sets, new Set(["dark"])).tokens.get("color.primary")?.value, "#000000");
+});
+
 test("diagnoses missing bindings, unsupported types, invalid values, and alias cycles", () => {
   const result = extractSelection([{
     id: "bad-token-shape", name: "Bad token shape", type: "rectangle", x: 0, y: 0, width: 10, height: 10, visible: true,
@@ -1509,7 +1651,7 @@ test("diagnoses missing bindings, unsupported types, invalid values, and alias c
   const resolved = resolveTokenSets(result.tokens, result.tokenSets, new Set(["set"]));
   const codes = new Set([...result.diagnostics, ...resolved.diagnostics].map((diagnostic) => diagnostic.code));
   assert.ok(codes.has("TOKEN_BINDING_NOT_FOUND"));
-  assert.ok(codes.has("TOKEN_ALIAS_CYCLE"));
+  assert.ok(codes.has("TOKEN_REFERENCE_CYCLE"));
   assert.ok(codes.has("TOKEN_VALUE_INVALID"));
   assert.ok(codes.has("TOKEN_TYPE_UNSUPPORTED"));
 });

@@ -1,5 +1,6 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrNode, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 import { generateFlutterThemeFiles, tokenAccessPath } from "./flutter-theme-generator.js";
+export { dartMemberName } from "./token-naming.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
 let declaredParameters: ReadonlySet<string> = new Set();
@@ -52,7 +53,7 @@ export function generateFlutterWidget(
 ): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((component) => component.variant?.representation === "members").map((component) => [component.id, component.variant?.enumName ?? `${component.name}Variant`]));
-  tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
+  tokenDefinitions = tokenDefinitionMap(tokens);
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   declaredParameters = new Set();
   const roots = responsiveScreen?.variants.map((variant) => variant.root) ?? [root];
@@ -121,7 +122,7 @@ function renderResponsiveRoot(root: IrNode, depth: number): string {
 export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = []): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((candidate) => candidate.variant?.representation === "members").map((candidate) => [candidate.id, candidate.variant?.enumName ?? `${candidate.name}Variant`]));
-  tokenDefinitions = new Map(tokens.map((token) => [token.id, token]));
+  tokenDefinitions = tokenDefinitionMap(tokens);
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
   const axes = component.variant?.representation === "members" ? [] : component.variant?.axes ?? [];
@@ -778,13 +779,28 @@ function hasPaddingToken(node: IrNode): boolean {
   return ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].some((property) => hasToken(node, property));
 }
 
+function tokenDefinitionMap(tokens: readonly IrToken[]): ReadonlyMap<string, IrToken> {
+  const definitions = new Map<string, IrToken>();
+  for (const token of tokens) {
+    definitions.set(`${token.setId ?? ""}:${token.id}`, token);
+    if (token.setId === undefined) definitions.set(token.id, token);
+  }
+  return definitions;
+}
+
+function tokenDefinition(reference: IrTokenReference): IrToken | undefined {
+  if (reference.tokenId === undefined) return undefined;
+  return tokenDefinitions.get(`${reference.tokenSetId ?? ""}:${reference.tokenId}`)
+    ?? (reference.tokenSetId === undefined ? tokenDefinitions.get(reference.tokenId) : undefined);
+}
+
 function hasToken(node: IrNode | undefined, property: string, ...aliases: readonly string[]): boolean {
-  return node?.tokenReferences?.some((reference) => [property, ...aliases].includes(reference.property) && reference.tokenId !== undefined && tokenDefinitions.has(reference.tokenId)) === true;
+  return node?.tokenReferences?.some((reference) => [property, ...aliases].includes(reference.property) && tokenDefinition(reference) !== undefined) === true;
 }
 
 function tokenValue(node: IrNode | undefined, property: string, fallback: string, ...aliases: readonly string[]): string {
   const reference = node?.tokenReferences?.find((candidate) => [property, ...aliases].includes(candidate.property));
-  if (reference?.tokenId === undefined || !tokenDefinitions.has(reference.tokenId)) return fallback;
+  if (reference === undefined || tokenDefinition(reference) === undefined) return fallback;
   return `context.penpot.${tokenAccessPath(reference.tokenPath)}`;
 }
 
@@ -873,9 +889,10 @@ function tokenColor(value: string): string | undefined {
 
 function typographyTokenLiteral(value: IrToken["value"]): string | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value) || isGradientTokenValue(value)) return undefined;
-  const typography = value as { fontFamily?: string; fontSize?: number; fontWeight?: number; lineHeight?: number; letterSpacing?: number; color?: string };
+  const typography = value as { fontFamily?: string; fontFamilyFallbacks?: readonly string[]; fontSize?: number; fontWeight?: number; lineHeight?: number; letterSpacing?: number; color?: string };
   const properties = [
     ...(typeof typography.fontFamily === "string" ? [`fontFamily: ${stringLiteral(typography.fontFamily)}`] : []),
+    ...(typography.fontFamilyFallbacks === undefined || typography.fontFamilyFallbacks.length === 0 ? [] : [`fontFamilyFallback: const [${typography.fontFamilyFallbacks.map(stringLiteral).join(", ")}]`]),
     ...(typeof typography.fontSize === "number" ? [`fontSize: ${number(typography.fontSize)}`] : []),
     ...(typeof typography.fontWeight === "number" ? [`fontWeight: ${fontWeight(typography.fontWeight)}`] : []),
     ...(typeof typography.lineHeight === "number" ? [`height: ${number(typography.lineHeight)}`] : []),
@@ -893,11 +910,6 @@ function isGradientTokenValue(value: IrToken["value"]): value is GradientFill {
   return typeof value === "object" && value !== null && !Array.isArray(value) && "type" in value && (value.type === "linear" || value.type === "radial") && "stops" in value && Array.isArray(value.stops);
 }
 
-export function dartMemberName(value: string, fallback: string): string {
-  const pascal = value.split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
-  const camel = pascal === "" ? fallback : pascal.charAt(0).toLowerCase() + pascal.slice(1);
-  return /^[A-Za-z]/.test(camel) ? camel : `${fallback}${camel}`;
-}
 
 function fontWeight(value: number): string {
   return `FontWeight.w${Math.min(900, Math.max(100, Math.round(value / 100) * 100))}`;

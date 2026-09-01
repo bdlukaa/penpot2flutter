@@ -49,7 +49,7 @@ export function extractTokenCatalog(catalog: TokenCatalog): ExtractedTokenCatalo
     try {
       for (const token of set.tokens) {
         try {
-          tokens.push(tokenSource(token, set.id, setIndex));
+          tokens.push(tokenSource(token, set.id, set.name, setIndex));
           tokenIds.push(token.id);
         } catch {
           diagnostics.push({ severity: "error", sourceId: set.id, code: "TOKEN_EXTRACTION_FAILED", message: `A token in set "${set.name}" could not be read and was not silently replaced with a shape literal.` });
@@ -90,20 +90,23 @@ export function extractTokenCatalog(catalog: TokenCatalog): ExtractedTokenCatalo
   };
 }
 
-function tokenSource(token: Token, setId: string, setIndex: number): PenpotTokenSource {
+function tokenSource(token: Token, setId: string, setName: string, setIndex: number): PenpotTokenSource {
   const rawValue = serializable(token.value);
   const resolvedValue = normalizedResolvedValue(token);
   const hasInsetShadow = token.type === "shadow" && token.resolvedValue?.some((shadow) => shadow.inset) === true;
+  const fontFamilies = token.type === "fontFamilies" ? parseFontFamilyList(token.resolvedValue ?? rawValue) : undefined;
   return {
     id: token.id,
     name: token.name,
     type: tokenTypes[token.type],
     sourceType: token.type,
-    value: resolvedValue ?? rawValue,
+    value: fontFamilies?.primary ?? resolvedValue ?? rawValue,
     rawValue,
     references: tokenReferences(rawValue),
+    ...(fontFamilies === undefined ? {} : { fontFamilyFallbacks: fontFamilies.fallbacks }),
     ...(hasInsetShadow ? { unsupportedReason: `Shadow token "${token.name}" contains an inset shadow that Flutter BoxShadow cannot represent; inset entries are omitted and the limitation is diagnosed.` } : {}),
     setId,
+    setName,
     setIndex,
   };
 }
@@ -116,7 +119,8 @@ function normalizedResolvedValue(token: Token): unknown {
     case "typography": {
       const typography = token.resolvedValue?.[0];
       return typography === undefined ? undefined : {
-        fontFamily: typography.fontFamilies[0],
+        fontFamily: parseFontFamilyList(typography.fontFamilies).primary,
+        fontFamilyFallbacks: parseFontFamilyList(typography.fontFamilies).fallbacks,
         fontSize: typography.fontSizes,
         fontWeight: fontWeight(typography.fontWeights),
         lineHeight: typography.lineHeight,
@@ -125,6 +129,36 @@ function normalizedResolvedValue(token: Token): unknown {
     }
     default: return serializable(token.resolvedValue);
   }
+}
+
+interface FontFamilyList {
+  readonly primary?: string;
+  readonly fallbacks: readonly string[];
+}
+
+function parseFontFamilyList(value: unknown): FontFamilyList {
+  const values = Array.isArray(value)
+    ? value.flatMap((item) => typeof item === "string" ? splitFontFamilyStack(item) : [])
+    : typeof value === "string" ? splitFontFamilyStack(value) : [];
+  const cleaned = values.map((item) => item.trim().replace(/^(?:"([\\s\\S]*)"|'([\\s\\S]*)')$/, "$1$2")).filter(Boolean);
+  return { ...(cleaned[0] === undefined ? {} : { primary: cleaned[0] }), fallbacks: [...new Set(cleaned.slice(1))] };
+}
+
+function splitFontFamilyStack(value: string): readonly string[] {
+  const result: string[] = [];
+  let current = "";
+  let quote = "";
+  for (const character of value) {
+    if ((character === "\"" || character === "'") && (quote === "" || quote === character)) quote = quote === "" ? character : "";
+    if (character === "," && quote === "") {
+      result.push(current);
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  if (current.trim() !== "") result.push(current);
+  return result;
 }
 
 function fontWeight(value: string | undefined): number | undefined {

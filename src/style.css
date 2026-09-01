@@ -43,4 +43,9 @@ textarea { background: #1d1b20; border: 0; border-radius: 8px; color: #e9ddff; f
 
 #diagnostics { background: #fff8e1; border-radius: 8px; color: #594000; padding: 12px; }
 #diagnostics h2 { margin-bottom: 6px; }
-#diagnostic-list { margin: 0; padding-left: 20px; }
+#diagnostic-list { display: grid; gap: 8px; margin: 0; padding-left: 20px; }
+.diagnostic-section { display: grid; gap: 4px; }
+.diagnostic-details { display: grid; gap: 4px; margin: 0; padding-left: 20px; }
+.diagnostic-error { color: #8b1e1e; }
+.diagnostic-warning { color: #594000; }
+.diagnostic-info { color: #3d4968; }

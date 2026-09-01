@@ -207,7 +207,7 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
 
   while (queue.length > 0) {
     const shape = queue.shift()!;
-    if (shape.isComponentInstance === true && !visitedInstances.has(shape.id)) {
+    if ((shape.isComponentInstance === true || shape.isComponentMainInstance === true) && !visitedInstances.has(shape.id)) {
       visitedInstances.add(shape.id);
       await resolveOne(shape);
     }
