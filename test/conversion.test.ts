@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
 import { extractSelection, type PenpotSourceShape } from "../src/core/extractor.js";
-import { generateComponentWidget, generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
+import { generateComponentWidget, generateFlutterFiles, generateFlutterTypography, generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
 import { validateFlutterThemeGeneration } from "../src/core/flutter-theme-generator.js";
 import { dartMemberName } from "../src/core/token-naming.js";
 import { buildTokenRegistry, resolveTokenSets } from "../src/core/token-registry.js";
@@ -1643,6 +1643,8 @@ test("normalizes token names without erasing negative signs or zero padding", ()
   assert.equal(dartMemberName("golden-ratio", "token"), "goldenRatio");
   assert.equal(dartMemberName("major-third", "token"), "majorThird");
   assert.equal(dartMemberName("2xl", "token"), "x2xl");
+  assert.equal(dartMemberName("Café", "token"), "cafe");
+  assert.equal(dartMemberName("class", "token"), "classValue");
 
   const registry = buildTokenRegistry([
     { id: "positive", name: "color.level-1.border", type: "color", value: "#ffffff", setId: "scale" },
@@ -1951,13 +1953,38 @@ test("deduplicates repeated typography styles into AppTextStyles", () => {
   });
   const result = extractSelection([text("type-1", "Body", 0), text("type-2", "Body copy", 130)]);
   assert.equal(result.typographyStyles.length, 1);
-  assert.equal(result.typographyStyles[0].name, "body");
+  assert.equal(result.typographyStyles[0].name, "inter16Regular");
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, undefined, result.typographyStyles);
-  assert.match(files.find((file) => file.path === "screens/selection.dart")!.source, /style: AppTextStyles\.body/);
+  assert.match(files.find((file) => file.path === "screens/selection.dart")!.source, /style: AppTextStyles\.inter16Regular/);
   const typographyDartPath = new URL("../app_typography.dart", import.meta.url);
   writeFileSync(typographyDartPath, files.find((file) => file.path === "app_typography.dart")!.source);
   execFileSync("dart", ["format", typographyDartPath.pathname]);
   assert.equal(files.find((file) => file.path === "app_typography.dart")!.source, readFileSync(typographyDartPath, "utf8"));
+});
+
+test("uses structural typography names instead of text content and sanitizes explicit names", () => {
+  const text = (id: string, name: string, typographyName?: string) => ({
+    id,
+    name,
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 24,
+    visible: true,
+    characters: name,
+    fontFamily: "Karla",
+    fontSize: "15",
+    fontWeight: "600",
+    ...(typographyName === undefined ? {} : { typographyName }),
+  });
+  const structural = extractSelection([text("paris", "Paris"), text("village", "Village")]);
+  assert.equal(structural.typographyStyles[0].name, "karla15SemiBold");
+  assert.doesNotMatch(generateFlutterTypography(structural.typographyStyles), /AppTextStyles\\.paris/);
+
+  const numeric = extractSelection([text("numeric-1", "One", "1.1.2"), text("numeric-2", "Two", "1.1.2")]);
+  assert.equal(numeric.typographyStyles[0].name, "x112");
+  assert.doesNotMatch(generateFlutterTypography(numeric.typographyStyles), /static const 112/);
 });
 
 test("tracks custom fonts, fallback families, and unavailable font assets", () => {

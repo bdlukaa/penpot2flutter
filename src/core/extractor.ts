@@ -1,4 +1,5 @@
 import { componentKey } from "../shared/component-key.js";
+import { dartClassSegment, dartMemberName, DartSymbolAllocator } from "./token-naming.js";
 import { assetForId, assetTypeForMimeType, contentHashOf, createAssetRegistry, type AssetCandidate, type AssetRegistry } from "./asset-pipeline.js";
 import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsive-analyzer.js";
 import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource, type TokenRegistryResult } from "./token-registry.js";
@@ -230,6 +231,8 @@ export interface PenpotSourceShape {
   readonly vectorRasterFallback?: PenpotSourceImageData | null;
   /** SVG markup captured at the Penpot boundary for safe export. */
   readonly svgContent?: string | null;
+  /** Set by the plugin boundary when Penpot rejects SVG export for this live shape. */
+  readonly svgExportFailed?: boolean;
   readonly borderRadius?: number | null;
   readonly borderRadiusTopLeft?: number | null;
   readonly borderRadiusTopRight?: number | null;
@@ -245,6 +248,9 @@ export interface PenpotSourceShape {
   readonly characters?: string | null;
   readonly growType?: "fixed" | "auto-width" | "auto-height" | null;
   readonly fontId?: string | null;
+  /** Optional adapter-provided Penpot typography/style token name. */
+  readonly typographyName?: string | null;
+  readonly textStyleName?: string | null;
   readonly fontFamily?: string | null;
   readonly fontFamilyFallbacks?: readonly string[] | null;
   readonly fontSize?: string | null;
@@ -345,7 +351,6 @@ interface ExtractionContext {
   readonly usedDartNames: Map<string, string>;
   readonly tokenRegistry: ReadonlyMap<string, IrToken>;
   readonly typographyCandidates: Map<string, TypographyCandidate>;
-  readonly usedTypographyNames: Set<string>;
   readonly fontSources: ReadonlyMap<string, PenpotFontSource>;
   readonly fontResolutionEnabled: boolean;
   readonly fontUsages: Map<string, FontUsage>;
@@ -373,7 +378,6 @@ export function extractSelection(
     usedDartNames: new Map(),
     tokenRegistry: effectiveTokensByName(tokenRegistry.tokens, tokenRegistry.sets, tokenRegistry.themes),
     typographyCandidates: new Map(),
-    usedTypographyNames: new Set(),
     fontSources: new Map((typographyInput.fonts ?? []).map((font) => [font.family.toLowerCase(), font])),
     fontResolutionEnabled: typographyInput.fonts !== undefined,
     fontUsages: new Map(),
@@ -542,7 +546,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
       const textStyle = textStyleOf(shape, diagnostics, context);
       const runs = textRunsOf(shape, diagnostics, context);
       const parameterName = context.currentComponent === undefined ? undefined : context.components.get(context.currentComponent)?.slots.get(path)?.parameterName;
-      const typographyStyleId = registerTypographyStyle(textStyle, shape.name, context);
+      const typographyStyleId = registerTypographyStyle(textStyle, shape.typographyName ?? shape.textStyleName, context);
       const textTransform = textTransformOf(shape.textTransform, shape, diagnostics);
       const maxLines = positiveInteger(shape.maxLines);
       if (shape.maxLines != null && maxLines === undefined) {
@@ -1003,9 +1007,7 @@ function variantMemberSelections(member: PenpotVariantMemberSource, axes: readon
 }
 
 function dedupeName(base: string, used: Set<string>): string {
-  let candidate = base || "value";
-  let suffix = 2;
-  while (used.has(candidate)) candidate = `${base || "value"}${suffix++}`;
+  const candidate = new DartSymbolAllocator(used).allocate(base, "value");
   used.add(candidate);
   return candidate;
 }
@@ -1130,14 +1132,12 @@ function detectDependencyCycles(context: ExtractionContext): void {
 const flutterTypeNames = new Set(["IconButton", "Button", "Text", "Container", "Column", "Row", "Stack", "SizedBox", "Padding", "Align", "Image", "Theme", "Color"]);
 
 function dartNameFor(sourceName: string, componentId: string, context: ExtractionContext, collisionCode = "COMPONENT_NAME_COLLISION"): string {
-  const normalized = pascalCase(sourceName) || "Component";
+  const existing = [...context.usedDartNames.entries()].find(([, owner]) => owner === componentId)?.[0];
+  if (existing !== undefined) return existing;
+  const normalized = dartClassSegment(sourceName) || "Component";
   const base = flutterTypeNames.has(normalized) ? `Penpot${normalized}` : normalized;
-  let candidate = base;
-  let suffix = 2;
-  while (context.usedDartNames.has(candidate) && context.usedDartNames.get(candidate) !== componentId) {
-    candidate = `${base}${suffix}`;
-    suffix++;
-  }
+  const allocated = new DartSymbolAllocator(context.usedDartNames.keys()).allocate(base, "component");
+  const candidate = allocated.charAt(0).toUpperCase() + allocated.slice(1);
   if (candidate !== base) {
     context.diagnostics.push({ severity: "warning", sourceId: componentId, code: collisionCode, message: `Component "${sourceName}" collides with another component name; generated "${candidate}".` });
   }
@@ -1157,13 +1157,11 @@ function dedupeParameterName(base: string, builder: ComponentBuilder): string {
 }
 
 function parameterNameFor(name: unknown): string {
-  const words = (typeof name === "string" ? name : "").match(/[A-Za-z0-9]+/g) ?? [];
-  const base = words.map((word, index) => index === 0 ? word.charAt(0).toLowerCase() + word.slice(1) : word.charAt(0).toUpperCase() + word.slice(1)).join("");
-  return base || "text";
+  return dartMemberName(typeof name === "string" ? name : "", "text");
 }
 
 function pascalCase(value: string): string {
-  return value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("").replace(/^[^A-Za-z]+/, "");
+  return value.trim() === "" ? "" : dartClassSegment(value);
 }
 
 function flexOf(flex: PenpotSourceFlexLayout): FlexLayout {
@@ -1480,6 +1478,8 @@ function svgAssetPathOf(shape: PenpotSourceShape, context: ExtractionContext, di
     diagnostics.push({ severity: "warning", sourceId, code: "VECTOR_EFFECT_UNSUPPORTED", message: "This vector uses an effect that cannot be represented reliably as SVG." });
     if (type !== "svg") diagnostics.push({ severity: "warning", sourceId, code: "VECTOR_RASTERIZED", message: "The vector was assigned a raster fallback asset to preserve its unsupported effect." });
     else diagnostics.push({ severity: "warning", sourceId, code: "ASSET_EXPORT_FAILED", message: "No raster fallback was supplied for this vector effect; export the vector as SVG manually." });
+  } else if (shape.svgExportFailed === true) {
+    diagnostics.push({ severity: "warning", sourceId, code: "ASSET_EXPORT_FAILED", message: "Penpot rejected SVG export for this vector; place an SVG or raster fallback at the generated asset path." });
   }
   if (!context.assets.has(sourceId)) {
     context.assets.set(sourceId, {
@@ -1568,7 +1568,7 @@ function runOf(run: PenpotSourceTextRun, sourceId: string, diagnostics: Diagnost
   const style = runStyleOf(run, sourceId, diagnostics, context);
   const children = run.children?.flatMap((child) => runOf(child, sourceId, diagnostics, context));
   const textTransform = runTextTransformOf(run.textTransform, sourceId, diagnostics);
-  const typographyStyleId = registerTypographyStyle(style, "Inline", context);
+  const typographyStyleId = registerTypographyStyle(style, undefined, context);
   if (text.length === 0 && (children?.length ?? 0) === 0) return [];
   return [{
     text,
@@ -1684,7 +1684,7 @@ function positiveInteger(value: number | null | undefined): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-function registerTypographyStyle(style: TextStyle, sourceName: string, context: ExtractionContext): string | undefined {
+function registerTypographyStyle(style: TextStyle, explicitName: string | null | undefined, context: ExtractionContext): string | undefined {
   const reusable = typographyOnly(style);
   if (Object.keys(reusable).length === 0) return undefined;
   const signature = JSON.stringify(reusable);
@@ -1694,8 +1694,11 @@ function registerTypographyStyle(style: TextStyle, sourceName: string, context: 
     return existing.id;
   }
   const id = `typography-${stableHash(signature)}`;
-  const baseName = parameterNameFor(sourceName) || "textStyle";
-  const name = dedupeName(baseName, context.usedTypographyNames);
+  const name = explicitName?.trim() === ""
+    ? structuralTypographyName(reusable)
+    : explicitName === undefined || explicitName === null
+      ? structuralTypographyName(reusable)
+      : dartMemberName(explicitName, "textStyle");
   context.typographyCandidates.set(signature, { id, name, style: reusable, count: 1 });
   return id;
 }
@@ -1706,10 +1709,33 @@ function typographyOnly(style: TextStyle): TextStyle {
 }
 
 function finalizeTypographyStyles(context: ExtractionContext): readonly IrTypographyStyle[] {
+  const allocator = new DartSymbolAllocator();
   return [...context.typographyCandidates.values()]
     .filter((candidate) => candidate.count > 1)
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map((candidate) => ({ id: candidate.id, name: candidate.name, ...candidate.style }));
+    .map((candidate) => ({ id: candidate.id, name: allocator.allocate(candidate.name, "textStyle"), ...candidate.style }));
+}
+
+function structuralTypographyName(style: TextStyle): string {
+  const family = style.fontFamily === undefined ? "text" : dartMemberName(style.fontFamily, "text");
+  const size = style.fontSize === undefined ? "" : String(Math.round(style.fontSize));
+  const weight = typographyWeightName(style.fontWeight ?? 400);
+  const italic = style.fontStyle === "italic" ? "Italic" : "";
+  return `${family}${size}${weight}${italic}`;
+}
+
+function typographyWeightName(weight: number): string {
+  switch (weight) {
+    case 100: return "Thin";
+    case 200: return "ExtraLight";
+    case 300: return "Light";
+    case 500: return "Medium";
+    case 600: return "SemiBold";
+    case 700: return "Bold";
+    case 800: return "ExtraBold";
+    case 900: return "Black";
+    default: return "Regular";
+  }
 }
 
 function registerFontUsage(style: TextStyle, context: ExtractionContext): void {

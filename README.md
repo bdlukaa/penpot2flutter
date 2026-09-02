@@ -39,7 +39,8 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Responsive screen IR and conservative Mobile/Tablet/Desktop board-family detection, with explicit metadata support for unambiguous custom groups
 - Dependency-free `LayoutBuilder` breakpoint generation, responsive Row/Column and grid variants, hidden breakpoint content, component/variant preservation, and Stack fallback for overlays
 - Penpot child min/max dimensions as `ConstrainedBox`, fill sizing as `Expanded`, auto sizing without forced expansion, and optional aspect-ratio constraints when source metadata provides one
-- Reusable typography styles in `app_typography.dart`, parsed CSS font stacks with Flutter fallback families, aggregated external-font requirements, font usage manifests, Penpot weight normalization, absolute/percentage line-height conversion, text transforms, paragraph alignment, max-lines/overflow metadata, and nested mixed-style `RichText` spans
+- Reusable typography styles in `app_typography.dart`, parsed CSS font stacks with Flutter fallback families, aggregated external-font requirements, font usage manifests, Penpot weight normalization, structural typography names, absolute/percentage line-height conversion, text transforms, paragraph alignment, max-lines/overflow metadata, and nested mixed-style `RichText` spans
+- Centralized Dart identifier allocation for components, parameters, variants, routes, assets, and typography, with deterministic case-insensitive collision handling and generated-source declaration validation
 - Node-associated warnings for unsupported or approximate conversion
 - A `// layer-name` comment above every generated widget for traceability back to the Penpot layer
 
@@ -79,6 +80,7 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Material `ColorScheme`/`TextTheme` roles are mapped only for explicit semantic names such as `color.primary` and `typography.bodyMedium`; the complete catalog remains available through `ThemeExtension`. Theme-specific domain values are exposed through generated nested namespaces and `BuildContext.penpot`.
 - Local component output remains under `screens/`, `components/`, and `theme/`. Connected shared libraries generate once under `libraries/<library_module>/` with component/theme/asset module boundaries and a library barrel. `penpot_manifest.json` records the stable library identities and generated file list; Penpot Plugin API 1.5 exposes no source revision, so no revision is invented. The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
 - Asset binaries are exported as individual downloadable files in the plugin UI (raster bytes are transferred as base64; SVG is transferred as text). The plugin intentionally does not claim to create a ZIP bundle because the current browser/plugin setup provides no verified archive workflow.
+- A selected reusable component remains a component conversion even when the document also contains prototype flows; prototype board expansion is reserved for screen selections. Failed Penpot SVG exports become `ASSET_EXPORT_FAILED` diagnostics instead of raw console errors.
 - Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
 
 ## Permissions
@@ -126,7 +128,7 @@ Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while
 12. Select matching boards named `Screen / Mobile`, `Screen / Tablet`, and `Screen / Desktop`. Confirm one generated screen uses `LayoutBuilder`, omits fixed top-level board dimensions, preserves component calls, and reports inferred breakpoints.
 13. In a file with tokens, open the plugin and immediately change selection while **Indexing in background…** is visible. Confirm the selection count updates without blocking Penpot, then confirm the Design System counts settle and `theme/penpot_tokens.dart`, `theme/penpot_themes.dart`, and `penpot_manifest.json` are non-empty.
 14. In a development build, inspect the `Penpot to Flutter design-system index` console summary for extraction, serialization, alias/theme, and theme-file timings. Use **Refresh Design System** after changing token/theme data and confirm that only one replacement index run starts.
-15. Inspect at least three token-bound layers and verify generated properties use `context.penpot.<semantic.path>` rather than resolved literals. Export the generated tree, then run `dart format lib/generated/penpot` and `flutter analyze` in the target Flutter project.
+15. Inspect at least three token-bound layers and verify generated properties use `context.penpot.<semantic.path>` rather than resolved literals. Export the generated tree, then run `dart format lib/generated/penpot` and `flutter analyze` in the target Flutter project. The plugin blocks Copy/Download when its generated declaration validation reports errors; run the target project's Dart analyzer for full cross-file validation.
 
 ## Adding the SVG dependency
 

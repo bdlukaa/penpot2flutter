@@ -1,6 +1,7 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrInteraction, IrLibrary, IrNavigationGraph, IrNode, IrResponsiveScreen, IrScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, Diagnostic, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrInteraction, IrLibrary, IrNavigationGraph, IrNode, IrResponsiveScreen, IrScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 import { generateFlutterThemeFiles, tokenAccessPath } from "./flutter-theme-generator.js";
 import { libraryModuleName } from "./library-registry.js";
+import { dartClassSegment, dartMemberName, DartSymbolAllocator, isDartIdentifier } from "./token-naming.js";
 export { dartMemberName } from "./token-naming.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
@@ -55,32 +56,22 @@ function assetFilename(asset: PubspecAsset): string {
 }
 
 export function generateFlutterAssets(assets: readonly IrAsset[]): string {
+  const constants = buildAssetConstants(assets);
   const lines = ["abstract final class AppAssets {"];
-  for (const asset of assets) lines.push(`  static const ${assetConstants.get(asset.id) ?? dartAssetName(asset.filename)} = '${escapeDart(asset.filename)}';`);
+  for (const asset of [...assets].sort((left, right) => left.filename.localeCompare(right.filename) || left.id.localeCompare(right.id))) lines.push(`  static const ${constants.get(asset.id)!} = '${escapeDart(asset.filename)}';`);
   lines.push("}", "");
   return lines.join("\n");
 }
 
 function buildAssetConstants(assets: readonly IrAsset[]): ReadonlyMap<string, string> {
-  const used = new Set<string>();
+  const allocator = new DartSymbolAllocator();
   const entries = [...assets].sort((left, right) => left.filename.localeCompare(right.filename) || left.id.localeCompare(right.id));
   const result = new Map<string, string>();
   for (const asset of entries) {
-    const base = dartAssetName(asset.filename);
-    let name = base;
-    let suffix = 2;
-    while (used.has(name)) name = `${base}${suffix++}`;
-    used.add(name);
-    result.set(asset.id, name);
+    const basename = asset.filename.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "asset";
+    result.set(asset.id, allocator.allocate(basename, "asset"));
   }
   return result;
-}
-
-function dartAssetName(filename: string): string {
-  const basename = filename.split("/")[filename.split("/").length - 1]?.replace(/\.[^.]+$/, "") ?? "asset";
-  const words: string[] = basename.split(/[^A-Za-z0-9]+/).filter(Boolean);
-  const value = words.map((word: string, index: number) => index === 0 ? word.charAt(0).toLowerCase() + word.slice(1) : word.charAt(0).toUpperCase() + word.slice(1)).join("");
-  return /^[A-Za-z_]/.test(value) ? value || "asset" : `asset${value}`;
 }
 
 function assetReference(assetId: string | undefined, fallback: string): string {
@@ -98,10 +89,41 @@ export function generateFlutterTypography(styles: readonly IrTypographyStyle[]):
     "import 'package:flutter/material.dart';",
     "",
     "abstract final class AppTextStyles {",
-    ...[...styles].sort((left, right) => left.name.localeCompare(right.name)).map((style) => `  static const ${style.name} = ${standaloneTextStyle(style)};`),
+    ...normalizeTypographyStyles(styles).map((style) => `  static const ${style.name} = ${standaloneTextStyle(style)};`),
     "}",
     "",
   ].join("\n");
+}
+
+function normalizeTypographyStyles(styles: readonly IrTypographyStyle[]): readonly IrTypographyStyle[] {
+  const allocator = new DartSymbolAllocator();
+  return [...styles]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((style) => ({ ...style, name: allocator.allocate(style.name, "textStyle") }));
+}
+
+export function validateGeneratedDartFiles(files: readonly GeneratedFile[]): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const file of files.filter((candidate) => candidate.path.endsWith(".dart"))) {
+    validateDeclarations(file, /^\s*static\s+(?:const|final)\s+([^\s=;]+)/gm, "static members", diagnostics);
+    validateDeclarations(file, /^\s*(?:abstract\s+final\s+class|class|enum|mixin|typedef)\s+([^\s{]+)/gm, "types", diagnostics);
+  }
+  return diagnostics;
+}
+
+function validateDeclarations(file: GeneratedFile, pattern: RegExp, scope: string, diagnostics: Diagnostic[]): void {
+  const names = new Set<string>();
+  for (const match of file.source.matchAll(pattern)) {
+    const name = match[1];
+    if (name === undefined) continue;
+    if (!isDartIdentifier(name)) {
+      diagnostics.push({ severity: "error", sourceId: file.path, code: "DART_INVALID_IDENTIFIER", message: `Generated ${scope} identifier "${name}" in ${file.path} is not a valid Dart identifier.` });
+      continue;
+    }
+    const key = name.toLowerCase();
+    if (names.has(key)) diagnostics.push({ severity: "error", sourceId: file.path, code: "DART_DUPLICATE_IDENTIFIER", message: `Generated ${scope} identifier "${name}" is duplicated in ${file.path}.` });
+    names.add(key);
+  }
 }
 
 export function generateFlutterWidget(
@@ -122,7 +144,7 @@ export function generateFlutterWidget(
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((component) => component.variant?.representation === "members").map((component) => [component.id, component.variant?.enumName ?? `${component.name}Variant`]));
   tokenDefinitions = tokenDefinitionMap(tokens);
-  typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
+  typographyDefinitions = new Map(normalizeTypographyStyles(typographyStyles).map((style) => [style.id, style]));
   assetDefinitions = new Map(assets.map((asset) => [asset.id, asset]));
   assetConstants = buildAssetConstants(assets);
   declaredParameters = new Set();
@@ -201,7 +223,7 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((candidate) => candidate.variant?.representation === "members").map((candidate) => [candidate.id, candidate.variant?.enumName ?? `${candidate.name}Variant`]));
   tokenDefinitions = tokenDefinitionMap(tokens);
-  typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
+  typographyDefinitions = new Map(normalizeTypographyStyles(typographyStyles).map((style) => [style.id, style]));
   assetDefinitions = new Map(assets.map((asset) => [asset.id, asset]));
   assetConstants = buildAssetConstants(assets);
   nodeInteractions = interactionsByNode(interactions);
@@ -421,8 +443,7 @@ function screenClassName(screen: IrScreen): string {
 }
 
 function routeConstantName(route: string): string {
-  const name = toPascalCase(route.replace(/^\//, "")) || "Screen";
-  return name.charAt(0).toLowerCase() + name.slice(1);
+  return dartMemberName(route.replace(/^\//, ""), "screen");
 }
 
 function generateRoutesFile(graph: IrNavigationGraph): string {
@@ -1306,7 +1327,7 @@ function fontWeight(value: number): string {
 }
 
 function toPascalCase(value: string): string {
-  return value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("").replace(/^[^A-Za-z]+/, "");
+  return value.trim() === "" ? "" : dartClassSegment(value);
 }
 
 function doubleLiteral(value: number): string {

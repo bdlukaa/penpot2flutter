@@ -177,11 +177,12 @@ function renderConversion(message: ConversionMessage): void {
   pubspecAssets.hidden = message.pubspecAssets === undefined || message.pubspecAssets === "";
   pubspecAssets.value = message.pubspecAssets ?? "";
   renderExportedAssets(message.exportedAssets ?? []);
-  copy.disabled = false;
-  copy.textContent = "Copy Dart";
-  download.disabled = false;
-
   const conversionDiagnostics = message.result.diagnostics;
+  const hasGenerationErrors = conversionDiagnostics.some((diagnostic) => diagnostic.severity === "error");
+  status.textContent = hasGenerationErrors ? "Generation completed with errors; inspect diagnostics before export" : "Generated from the current selection";
+  copy.disabled = hasGenerationErrors;
+  copy.textContent = hasGenerationErrors ? "Copy unavailable" : "Copy Dart";
+  download.disabled = hasGenerationErrors;
   diagnostics.hidden = conversionDiagnostics.length === 0;
   const grouped = new Map<string, Map<string, { readonly code: string; readonly message: string; count: number }>>();
   for (const diagnostic of conversionDiagnostics) {

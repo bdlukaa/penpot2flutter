@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createAssetRegistry } from "../src/core/asset-pipeline.js";
 import { extractSelection } from "../src/core/extractor.js";
-import { generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
+import { generateFlutterAssets, generateFlutterFiles, generateFlutterWidget, generatePubspecSnippet, validateGeneratedDartFiles } from "../src/core/flutter-generator.js";
 
 const dimensions = { width: 32, height: 32 } as const;
 
@@ -154,6 +154,32 @@ test("keeps component asset references reusable in component output", () => {
   assert.equal(result.assetRegistry.length, 1);
   assert.match(files.find((file) => file.path === "components/avatar.dart")!.source, /AppAssets\.avatar/);
   assert.match(files.find((file) => file.path === "assets.dart")!.source, /assets\/images\/avatar\.png/);
+});
+
+test("allocates one valid Dart symbol for every asset, including case and punctuation collisions", () => {
+  const assets = [
+    { id: "highlight-6", sourceNodeId: "node-6", type: "svg" as const, filename: "assets/vectors/highlight-6.svg" },
+    { id: "highlight-5", sourceNodeId: "node-5", type: "svg" as const, filename: "assets/vectors/highlight-5.svg" },
+    { id: "highlight-copy", sourceNodeId: "node-copy", type: "svg" as const, filename: "assets/vectors/Highlight_5.svg" },
+    { id: "numeric", sourceNodeId: "node-numeric", type: "svg" as const, filename: "assets/vectors/1.svg" },
+  ];
+  const dart = generateFlutterAssets(assets);
+
+  assert.match(dart, /static const highlight5 = 'assets\/vectors\/Highlight_5\.svg';/);
+  assert.match(dart, /static const highlight6 = 'assets\/vectors\/highlight-6\.svg';/);
+  assert.match(dart, /static const highlight52 = 'assets\/vectors\/highlight-5\.svg';/);
+  assert.match(dart, /static const x1 = 'assets\/vectors\/1\.svg';/);
+  assert.equal(validateGeneratedDartFiles([{ path: "assets.dart", source: dart }]).length, 0);
+  assert.equal((dart.match(/static const /g) ?? []).length, 4);
+});
+
+test("reports invalid and duplicate generated Dart declarations", () => {
+  const diagnostics = validateGeneratedDartFiles([{
+    path: "assets.dart",
+    source: "abstract final class AppAssets {\n  static const 112 = 'a';\n  static const cart = 'b';\n  static const Cart = 'c';\n}\n",
+  }]);
+
+  assert.deepEqual(diagnostics.map((diagnostic) => diagnostic.code), ["DART_INVALID_IDENTIFIER", "DART_DUPLICATE_IDENTIFIER"]);
 });
 
 test("does not duplicate pubspec declarations", () => {

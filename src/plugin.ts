@@ -1,7 +1,7 @@
 import { extractSelection, type PenpotComponentSource, type PenpotSourceShape, type PenpotSourceTextRun, type PenpotTokenInput, type PenpotVariantFamilySource, type PenpotVariantMemberSource } from "./core/extractor.js";
 import { type PenpotPrototypeSource, type PenpotSourceInteraction } from "./core/screen-navigation-analyzer.js";
 import { contentHashOf } from "./core/asset-pipeline.js";
-import { generateFlutterFiles, generatePubspecSnippet } from "./core/flutter-generator.js";
+import { generateFlutterFiles, generatePubspecSnippet, validateGeneratedDartFiles } from "./core/flutter-generator.js";
 import { generateFlutterThemeFiles, validateFlutterThemeGeneration } from "./core/flutter-theme-generator.js";
 import { buildTokenRegistry } from "./core/token-registry.js";
 import { LibraryResolver, type ComponentResolution, type LibraryComponentLike, type ReadOnlyLibraryContext } from "./penpot/library-resolver.js";
@@ -97,7 +97,8 @@ async function sendConversion(): Promise<void> {
   const request = ++conversionRequest;
   const rawSelection = penpot.selection as unknown as readonly PenpotSourceShape[];
   const prototype = prototypeSource();
-  const rawConversionShapes = prototype === undefined ? rawSelection : prototypeBoards(rawSelection, prototype);
+  const preservesSelection = rawSelection.some(isReusableComponentBoundary);
+  const rawConversionShapes = prototype === undefined || preservesSelection ? rawSelection : prototypeBoards(rawSelection, prototype);
   sendPendingSelection(rawSelection.length);
   const selection = await Promise.all(rawConversionShapes.map((shape) => enrichAssetTree(enrichShape(shape), shape)));
   const requiredTokens = tokenReferenceNames(selection);
@@ -122,7 +123,7 @@ async function sendConversion(): Promise<void> {
     : exportAssets(extracted.assetRegistry, [...selection, ...resolution.components.map((component) => component.root), ...resolution.variants.flatMap((variant) => variant.members.map((member) => member.root))]);
   const result = extracted === undefined ? undefined : {
     ...extracted,
-    diagnostics: [...catalogDiagnostics, ...extracted.diagnostics, ...exportedAssets.diagnostics, ...validateFlutterThemeGeneration(extracted.tokens, extracted.tokenThemes, generatedFiles!)],
+    diagnostics: [...catalogDiagnostics, ...extracted.diagnostics, ...exportedAssets.diagnostics, ...validateFlutterThemeGeneration(extracted.tokens, extracted.tokenThemes, generatedFiles!), ...validateGeneratedDartFiles(generatedFiles!)],
   };
   const bindingStart = now();
   const tokenBindings = tokenBindingStats(result);
@@ -150,6 +151,16 @@ async function sendConversion(): Promise<void> {
   const transferStart = now();
   penpot.ui.sendMessage(message);
   measurePerformance("penpot-index:message-transfer", transferStart);
+}
+
+function isReusableComponentBoundary(shape: PenpotSourceShape): boolean {
+  const live = shape as unknown as LiveComponentShape;
+  try {
+    const isBoundary = live.isComponentRoot?.() === true || live.isComponentHead?.() === true;
+    return isBoundary && (live.isComponentInstance?.() === true || live.isComponentCopyInstance?.() === true || live.isComponentMainInstance?.() === true);
+  } catch {
+    return shape.isComponentRoot === true && (shape.isComponentInstance === true || shape.isComponentMainInstance === true);
+  }
 }
 
 function prototypeSource(): PenpotPrototypeSource | undefined {
@@ -463,8 +474,11 @@ async function enrichAssetData(enriched: PenpotSourceShape, liveShape: PenpotSou
     try {
       const svg = penpot.generateMarkup([liveShape as unknown as Shape], { type: "svg" });
       if (typeof svg === "string" && svg.trim() !== "") enriched = { ...enriched, svgContent: svg };
-    } catch (error) {
-      reportPluginLog("Unable to export Penpot vector as SVG", error);
+      else enriched = { ...enriched, svgExportFailed: true };
+    } catch {
+      // The extractor records this as an asset diagnostic; avoid leaking a raw
+      // Penpot validation error into the plugin console.
+      enriched = { ...enriched, svgExportFailed: true };
     }
   }
   return enriched;
