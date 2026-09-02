@@ -197,20 +197,21 @@ function renderResponsiveRoot(root: IrNode, depth: number): string {
   ].join("\n");
 }
 
-export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = [], assets: readonly IrAsset[] = [], assetImport?: string, componentPaths?: ReadonlyMap<string, string>, sourcePath?: string): string {
+export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = [], assets: readonly IrAsset[] = [], assetImport?: string, componentPaths?: ReadonlyMap<string, string>, sourcePath?: string, interactions: readonly IrInteraction[] = [], targets: ReadonlyMap<string, PrototypeTarget> = new Map(), prototypeImports: readonly string[] = []): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((candidate) => candidate.variant?.representation === "members").map((candidate) => [candidate.id, candidate.variant?.enumName ?? `${candidate.name}Variant`]));
   tokenDefinitions = tokenDefinitionMap(tokens);
   typographyDefinitions = new Map(typographyStyles.map((style) => [style.id, style]));
   assetDefinitions = new Map(assets.map((asset) => [asset.id, asset]));
   assetConstants = buildAssetConstants(assets);
-  nodeInteractions = new Map();
-  prototypeTargets = new Map();
+  nodeInteractions = interactionsByNode(interactions);
+  prototypeTargets = targets;
 
-  prototypeOverlayActions = new Map();
-  prototypeOverlayControllers = new Map();
+  prototypeOverlayActions = new Map(interactions.filter((interaction) => (interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay") && interaction.targetId !== undefined).map((interaction) => [interaction.targetId!, interaction]));
+  prototypeOverlayControllers = overlayControllerNames(prototypeOverlayActions.keys(), targets);
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
   const axes = component.variant?.representation === "members" ? [] : component.variant?.axes ?? [];
+  const hasOverlayState = interactions.some((interaction) => interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay");
   const lines = [
     ...(componentRoots(component).some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
@@ -218,12 +219,16 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
     ...(assetImport !== undefined && componentRoots(component).some(containsAssetReference) ? [`import '${assetImport}';`] : []),
     ...(componentRoots(component).some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
     ...(componentRoots(component).some(containsTypography) ? ["import '../app_typography.dart';"] : []),
+    ...(interactions.some((interaction) => interaction.trigger === "after-delay") ? [`import '${relativeDartImport(sourcePath ?? "components/generated.dart", "prototype_interactions.dart")}';`] : []),
+    ...prototypeImports,
     ...componentImports(component.dependencies, components, "", componentPaths, sourcePath),
     "",
     ...(component.variant?.representation === "members"
       ? [`enum ${component.variant.enumName ?? `${component.name}Variant`} {`, ...component.variant.members.map((member) => `  ${member.dartName ?? "member"},`), "}", ""]
       : axes.flatMap((axis) => [`enum ${axis.enumName} {`, ...axis.values.map((value) => `  ${value.name},`), "}", ""])),
-    `class ${component.name} extends StatelessWidget {`,
+    ...(hasOverlayState
+      ? [`class ${component.name} extends StatefulWidget {`]
+      : [`class ${component.name} extends StatelessWidget {`]),
   ];
   const parameters = component.parameters;
   const memberVariant = component.variant?.representation === "members" ? component.variant.enumName ?? `${component.name}Variant` : undefined;
@@ -243,7 +248,9 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
     for (const axis of axes) lines.push(`  final ${axis.enumName} ${axis.name};`);
     for (const parameter of parameters) lines.push(`  final ${parameter.type === "Color" ? "Color?" : parameter.type} ${parameter.name};`);
   }
-  lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${commentText(component.sourceName)}`, ...renderVariantComponentBody(component), "  }", "}", "");
+  if (hasOverlayState) lines.push("", `  @override State<${component.name}> createState() => _${component.name}State();`, "}", "", `class _${component.name}State extends State<${component.name}> {`, ...[...prototypeOverlayControllers.values()].map((name) => `  final ${name} = OverlayPortalController();`));
+  const body = renderVariantComponentBody(component, hasOverlayState).map((line) => hasOverlayState ? line.replace(/\bthis\./g, "widget.") : line);
+  lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${commentText(component.sourceName)}`, ...body, "  }", "}", "");
   return lines.join("\n");
 }
 
@@ -255,13 +262,13 @@ function variantDefaultName(axis: IrVariantAxis): string {
   return axis.values.find((value) => value.sourceValue === axis.defaultValue)?.name ?? axis.values[0]?.name ?? "value";
 }
 
-function renderVariantComponentBody(component: IrComponentDefinition): string[] {
+function renderVariantComponentBody(component: IrComponentDefinition, _stateful = false): string[] {
   const variant = component.variant;
   if (variant === undefined || variant.members.length === 0) {
     return [`    return ${renderNode(component.root, 2, false)};`];
   }
   if (variant.representation === "members") {
-    const selector = "variant";
+    const selector = _stateful ? "widget.variant" : "variant";
     const enumName = variant.enumName ?? `${component.name}Variant`;
     const lines = [`    return switch (${selector}) {`];
     for (const member of variant.members) lines.push(`      ${enumName}.${member.dartName ?? "member"} => ${renderNode(member.root, 3, false)},`);
@@ -269,7 +276,8 @@ function renderVariantComponentBody(component: IrComponentDefinition): string[] 
     return lines;
   }
   if (variant.axes.length === 0) return [`    return ${renderNode(component.root, 2, false)};`];
-  const selector = variant.axes.length === 1 ? variant.axes[0].name : `(${variant.axes.map((axis) => axis.name).join(", ")})`;
+  const axisNames = variant.axes.map((axis) => _stateful ? `widget.${axis.name}` : axis.name);
+  const selector = variant.axes.length === 1 ? axisNames[0] : `(${axisNames.join(", ")})`;
   const lines = [`    return switch (${selector}) {`];
   for (const member of variant.members) {
     const pattern = variant.axes.length === 1
@@ -308,10 +316,13 @@ export function generateFlutterFiles(
     ...navigationGraph.screens.map((screen) => [screen.id, { className: screenClassName(screen), path: `screens/${snakeCase(screenClassName(screen))}.dart`, routeName: screen.routeName }] as const),
     ...navigationGraph.overlays.map((overlay) => [overlay.id, { className: overlayClassName(overlay.name), path: `overlays/${snakeCase(overlayClassName(overlay.name))}.dart` }] as const),
   ]);
-  const prototypeImportsFor = (sourcePath: string, interactions: readonly IrInteraction[]): readonly string[] => [...new Set(interactions.flatMap((interaction) => {
-    const target = interaction.targetId === undefined ? undefined : targets.get(interaction.targetId);
-    return target === undefined || target.path === sourcePath ? [] : [`import '${relativeDartImport(sourcePath, target.path)}';`];
-  }))].sort();
+  const prototypeImportsFor = (sourcePath: string, interactions: readonly IrInteraction[]): readonly string[] => [...new Set([
+    ...(interactions.some((interaction) => interaction.kind === "navigate") ? [`import '${relativeDartImport(sourcePath, "routes.dart")}';`] : []),
+    ...interactions.flatMap((interaction) => {
+      const target = interaction.targetId === undefined ? undefined : targets.get(interaction.targetId);
+      return target === undefined || target.path === sourcePath ? [] : [`import '${relativeDartImport(sourcePath, target.path)}';`];
+    }),
+  ])].sort();
   const files: GeneratedFile[] = navigationGraph === undefined
     ? [{
         path: screenPath,
@@ -328,12 +339,13 @@ export function generateFlutterFiles(
         }),
       ];
   if (navigationGraph !== undefined) {
+    files.push({ path: "routes.dart", source: generateRoutesFile(navigationGraph) });
     files.push({ path: "navigation.dart", source: generateNavigatorFile(navigationGraph) });
-    if (navigationGraph.screens.some((screen) => screen.interactions.some((interaction) => interaction.trigger === "after-delay")) || navigationGraph.overlays.some((overlay) => overlay.interactions.some((interaction) => interaction.trigger === "after-delay"))) files.push({ path: "prototype_interactions.dart", source: generatePrototypeInteractions() });
+    if (navigationGraph.screens.some((screen) => screen.interactions.some((interaction) => interaction.trigger === "after-delay")) || navigationGraph.overlays.some((overlay) => overlay.interactions.some((interaction) => interaction.trigger === "after-delay")) || components.some((component) => component.interactions.some((interaction) => interaction.trigger === "after-delay"))) files.push({ path: "prototype_interactions.dart", source: generatePrototypeInteractions() });
   }
   for (const component of components) {
     const path = componentPaths.get(component.id)!;
-    files.push({ path, source: generateComponentWidget(component, components, tokens, typographyStyles, assets, assetImportFor(path), componentPaths, path) });
+    files.push({ path, source: generateComponentWidget(component, components, tokens, typographyStyles, assets, assetImportFor(path), componentPaths, path, component.interactions, targets, prototypeImportsFor(path, component.interactions)) });
   }
   if (assets.length > 0) files.push({ path: "assets.dart", source: generateFlutterAssets(assets) });
 
@@ -362,7 +374,7 @@ export function generateFlutterFiles(
   if (typographyStyles.length > 0) files.push({ path: "app_typography.dart", source: generateFlutterTypography(typographyStyles) });
   const barrel = files.find((file) => file.path === "penpot.dart");
   const exports = generateBarrelExport(components.filter((component) => component.sourceLibraryScope !== "shared"), navigationGraph === undefined ? [snakeCase(screenName)] : navigationGraph.screens.map((screen) => snakeCase(screenClassName(screen))), localTokens.length > 0, typographyStyles.length > 0, assets.length > 0)
-    + (navigationGraph === undefined ? "" : "export 'navigation.dart';\n")
+    + (navigationGraph === undefined ? "" : "export 'routes.dart';\nexport 'navigation.dart';\n")
     + sharedLibraries.map((library) => `export 'libraries/${libraryModuleName(library)}/${libraryModuleName(library)}.dart';`).join("\n")
     + (sharedLibraries.length === 0 ? "" : "\n");
   if (barrel === undefined) files.push({ path: "penpot.dart", source: exports });
@@ -408,6 +420,21 @@ function screenClassName(screen: IrScreen): string {
   return name.endsWith("Screen") ? name : `${name}Screen`;
 }
 
+function routeConstantName(route: string): string {
+  const name = toPascalCase(route.replace(/^\//, "")) || "Screen";
+  return name.charAt(0).toLowerCase() + name.slice(1);
+}
+
+function generateRoutesFile(graph: IrNavigationGraph): string {
+  const screens = [...graph.screens].sort((left, right) => left.routeName!.localeCompare(right.routeName!));
+  return [
+    "abstract final class PenpotRoutes {",
+    ...screens.map((screen) => `  static const ${routeConstantName(screen.routeName!)} = '${escapeDart(screen.routeName!)}';`),
+    "}",
+    "",
+  ].join("\n");
+}
+
 function generateNavigatorFile(graph: IrNavigationGraph): string {
   const screens = [...graph.screens].sort((left, right) => left.id.localeCompare(right.id));
   const initialRoute = graph.flowEntries[0]?.screenId ?? screens[0]?.id;
@@ -415,20 +442,22 @@ function generateNavigatorFile(graph: IrNavigationGraph): string {
   if (initialScreen === undefined) return "";
   return [
     "import 'package:flutter/material.dart';",
+    "import 'routes.dart';",
     ...screens.map((screen) => `import 'screens/${snakeCase(screenClassName(screen))}.dart';`),
     "",
-    "abstract final class PenpotNavigation {",
-    `  static const initialRoute = '${escapeDart(initialScreen.routeName ?? "/")}';`,
+    "class UnknownRouteScreen extends StatelessWidget {",
+    "  const UnknownRouteScreen({super.key, required this.routeName});",
+    "  final String? routeName;",
+    "  @override Widget build(BuildContext context) => const Scaffold(body: Center(child: Text('Unknown route')));",
+    "}",
     "",
-    "  static Route<dynamic> onGenerateRoute(RouteSettings settings) {",
-    "    return MaterialPageRoute<void>(",
-    "      settings: settings,",
-    "      builder: (context) => switch (settings.name) {",
-    ...screens.map((screen) => `        '${escapeDart(screen.routeName ?? "/")}' => const ${screenClassName(screen)}(),`),
-    `        _ => const ${screenClassName(initialScreen)}(),`,
-    "      },",
-    "    );",
-    "  }",
+    "abstract final class PenpotNavigation {",
+    `  static const initialRoute = PenpotRoutes.${routeConstantName(initialScreen.routeName!)};`,
+    "",
+    "  static Route<dynamic> onGenerateRoute(RouteSettings settings) => switch (settings.name) {",
+    ...screens.map((screen) => `    PenpotRoutes.${routeConstantName(screen.routeName!)} => MaterialPageRoute<void>(settings: settings, builder: (_) => const ${screenClassName(screen)}()),`),
+    "    _ => MaterialPageRoute<void>(settings: settings, builder: (_) => UnknownRouteScreen(routeName: settings.name)),",
+    "  };",
     "}",
     "",
   ].join("\n");
@@ -620,7 +649,7 @@ function renderPrototypeInteractions(node: IrNode, child: string, depth: number)
     switch (interaction.kind) {
       case "navigate": {
         const target = interaction.targetId === undefined ? undefined : prototypeTargets.get(interaction.targetId);
-        return target === undefined ? "assert(false, 'Unresolved Penpot navigation target')" : `Navigator.of(context).pushNamed('${escapeDart(target.routeName ?? `/${snakeCase(target.className)}`)}')`;
+        return target === undefined ? "assert(false, 'Unresolved Penpot navigation target')" : `Navigator.of(context).pushNamed(PenpotRoutes.${routeConstantName(target.routeName ?? `/${snakeCase(target.className)}`)})`;
       }
       case "open-overlay": {
         const target = interaction.targetId === undefined ? undefined : prototypeTargets.get(interaction.targetId);

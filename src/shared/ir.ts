@@ -464,6 +464,7 @@ export interface IrComponentDefinition {
   readonly sourceLibraryId?: string;
   readonly sourceLibraryScope?: IrLibraryScope;
   readonly root: IrNode;
+  readonly interactions: readonly IrInteraction[];
   readonly variant?: IrVariantFamily;
   readonly parameters: readonly IrComponentParameter[];
   readonly dependencies: readonly string[];

@@ -3,7 +3,7 @@ import { assetForId, assetTypeForMimeType, contentHashOf, createAssetRegistry, t
 import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsive-analyzer.js";
 import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource, type TokenRegistryResult } from "./token-registry.js";
 import { buildIrLibraries, libraryModuleName } from "./library-registry.js";
-import { analyzeScreenNavigation, type PenpotPrototypeSource, type PenpotSourceScreenMetadata } from "./screen-navigation-analyzer.js";
+import { analyzeScreenNavigation, irInteractionFromSource, type PenpotPrototypeSource, type PenpotSourceInteraction, type PenpotSourceScreenMetadata } from "./screen-navigation-analyzer.js";
 
 import type {
   AssetManifestEntry,
@@ -178,6 +178,7 @@ export interface PenpotComponentSource {
   readonly libraryScope?: IrLibraryScope;
   readonly name: string;
   readonly root: PenpotSourceShape;
+  readonly interactions?: readonly PenpotSourceInteraction[];
 }
 
 export interface PenpotVariantMemberSource extends PenpotComponentSource {
@@ -307,6 +308,7 @@ interface ComponentBuilder {
   readonly libraryId?: string;
   readonly libraryScope?: IrLibraryScope;
   root?: IrNode;
+  readonly interactions: PenpotSourceInteraction[];
   readonly slots: Map<string, ComponentSlot>;
   readonly usedParameterNames: Set<string>;
   readonly overridden: Set<string>;
@@ -702,6 +704,7 @@ function registerVariants(variants: readonly PenpotVariantFamilySource[], contex
       usedParameterNames: new Set(variantAxes.map((axis) => axis.name)),
       overridden: new Set(),
       dependencies: new Set(),
+      interactions: [...variant.members.flatMap((member) => member.interactions ?? [])],
       variant,
       variantAxes,
       variantRepresentation: variantRepresentationOf(variant),
@@ -746,6 +749,7 @@ function registerComponents(components: readonly PenpotComponentSource[], contex
       usedParameterNames: new Set(),
       overridden: new Set(),
       dependencies: new Set(),
+      interactions: [...(component.interactions ?? [])],
     });
     context.componentOrder.push(id);
   }
@@ -1085,6 +1089,7 @@ function finalizeComponents(context: ExtractionContext): IrComponentDefinition[]
       ...(builder.libraryId === undefined ? {} : { sourceLibraryId: builder.libraryId }),
       ...(builder.libraryScope === undefined ? {} : { sourceLibraryScope: builder.libraryScope }),
       root: builder.root!,
+      interactions: dedupeIrInteractions(builder.interactions.map(irInteractionFromSource)),
       ...(builder.variant === undefined || builder.variantAxes === undefined || builder.variantMembers === undefined ? {} : {
         variant: {
           id: builder.variant.id,
@@ -1099,6 +1104,10 @@ function finalizeComponents(context: ExtractionContext): IrComponentDefinition[]
       dependencies: [...builder.dependencies],
     };
   });
+}
+
+function dedupeIrInteractions(interactions: readonly ReturnType<typeof irInteractionFromSource>[]): readonly ReturnType<typeof irInteractionFromSource>[] {
+  return [...new Map(interactions.map((interaction) => [interaction.id, interaction])).values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function detectDependencyCycles(context: ExtractionContext): void {

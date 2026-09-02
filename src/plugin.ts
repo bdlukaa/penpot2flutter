@@ -573,6 +573,7 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
         libraryScope: result.library.id === penpot.library.local.id ? "local" : "shared",
         name: result.component.name,
         root,
+        interactions: prototypeInteractions(main),
       });
       for (const child of root.children ?? []) queue.push(child);
     } catch {
@@ -603,6 +604,7 @@ async function resolveComponentSources(selection: readonly PenpotSourceShape[]):
           libraryScope: variants.libraryId === penpot.library.local.id ? "local" as const : "shared" as const,
           name: member.name,
           root,
+          interactions: prototypeInteractions(main),
         };
         sources.set(componentKey(member.libraryId, member.id), source);
         members.push({ ...source, values: member.variantProps ?? {} });

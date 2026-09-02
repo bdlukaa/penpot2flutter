@@ -119,6 +119,21 @@ export function analyzeScreenNavigation(candidates: readonly ScreenCandidate[], 
   };
 }
 
+export function irInteractionFromSource(interaction: PenpotSourceInteraction): IrInteraction {
+  return {
+    id: interaction.id,
+    sourceNodeId: interaction.ownerShapeId,
+    trigger: interaction.trigger,
+    kind: interaction.action.type,
+    ...(interaction.action.destinationBoardId === undefined ? {} : { targetId: interaction.action.destinationBoardId }),
+    ...(interaction.delayMs === undefined ? {} : { delayMs: interaction.delayMs }),
+    ...(interaction.action.url === undefined ? {} : { url: interaction.action.url }),
+    ...(interaction.action.preserveScrollPosition === undefined ? {} : { preserveScrollPosition: interaction.action.preserveScrollPosition }),
+    ...(interaction.action.animation === undefined ? {} : { animation: interaction.action.animation }),
+    ...(interaction.action.overlay === undefined ? {} : { overlay: interaction.action.overlay }),
+  };
+}
+
 function screenFor(candidate: ScreenCandidate, interactions: readonly PenpotSourceInteraction[], ownerBoards: ReadonlyMap<string, string>): IrScreen {
   return {
     id: candidate.id,
@@ -126,18 +141,7 @@ function screenFor(candidate: ScreenCandidate, interactions: readonly PenpotSour
     root: candidate.root,
     interactions: dedupeInteractions(interactions
       .filter((interaction) => ownerBoards.get(interaction.ownerShapeId) === candidate.id))
-      .map((interaction): IrInteraction => ({
-        id: interaction.id,
-        sourceNodeId: interaction.ownerShapeId,
-        trigger: interaction.trigger,
-        kind: interaction.action.type,
-        ...(interaction.action.destinationBoardId === undefined ? {} : { targetId: interaction.action.destinationBoardId }),
-        ...(interaction.delayMs === undefined ? {} : { delayMs: interaction.delayMs }),
-        ...(interaction.action.url === undefined ? {} : { url: interaction.action.url }),
-        ...(interaction.action.preserveScrollPosition === undefined ? {} : { preserveScrollPosition: interaction.action.preserveScrollPosition }),
-        ...(interaction.action.animation === undefined ? {} : { animation: interaction.action.animation }),
-        ...(interaction.action.overlay === undefined ? {} : { overlay: interaction.action.overlay }),
-      }))
+      .map(irInteractionFromSource)
       .sort((left, right) => left.id.localeCompare(right.id)),
   };
 }

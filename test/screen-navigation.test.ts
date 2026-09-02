@@ -48,8 +48,11 @@ test("builds deterministic screen routes and Navigator files for a three-screen 
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries, graph);
   assert.match(files.find((file) => file.path === "screens/checkout_screen.dart")!.source, /class CheckoutScreen extends StatelessWidget/);
   const navigation = files.find((file) => file.path === "navigation.dart")!.source;
-  assert.match(navigation, /static const initialRoute = '\/login';/);
-  assert.match(navigation, /'\/checkout' => const CheckoutScreen\(\)/);
+  assert.match(files.find((file) => file.path === "routes.dart")!.source, /static const login = '\/login';/);
+  assert.match(navigation, /static const initialRoute = PenpotRoutes.login;/);
+  assert.match(navigation, /PenpotRoutes.checkout => MaterialPageRoute/);
+  assert.doesNotMatch(navigation, /\\n/);
+  assertDartParses(navigation);
   assert.deepEqual(generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries, graph), files);
 });
 
@@ -72,16 +75,19 @@ test("emits Penpot triggers, actions, and animations around their source nodes",
   );
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries, result.navigationGraph);
   const login = files.find((file) => file.path === "screens/login_screen.dart")!.source;
+  const navigation = files.find((file) => file.path === "navigation.dart")!.source;
   assert.match(login, /GestureDetector\(/);
   assert.match(login, /MouseRegion\(/);
   assert.match(login, /PenpotDelayedInteraction\(/);
   assert.match(login, /Link\(/);
-  assert.match(login, /Navigator\.of\(context\)\.pushNamed\('\/home'/);
-  assert.equal((login.match(/Navigator\.of\(context\)\.pushNamed\('\/home'/g) ?? []).length, 1);
+  assert.match(login, /Navigator\.of\(context\)\.pushNamed\(PenpotRoutes.home\)/);
+  assert.equal((login.match(/Navigator\.of\(context\)\.pushNamed\(PenpotRoutes\.home\)/g) ?? []).length, 1);
   assert.match(login, /OverlayPortal\(/);
   assert.match(login, /controller: _dialogOverlayController/);
   assert.match(login, /Positioned\(left: 13, top: 14/);
   assert.match(login, /Uri\.parse\('https:\/\/example\.com'\)/);
+  assert.match(navigation, /UnknownRouteScreen/);
+  assert.doesNotMatch(navigation, /_ => const LoginScreen/);
   assert.ok(files.some((file) => file.path === "overlays/dialog_overlay.dart"));
   assert.ok(files.some((file) => file.path === "prototype_interactions.dart"));
   assertDartParses(login);
@@ -117,6 +123,45 @@ test("keeps reusable components and responsive visual variants separate from nav
   assert.equal(result.responsiveScreen?.name, "product");
   assert.equal(result.navigationGraph!.screens[0].id, "product-mobile");
   assert.equal(result.components.length, 1);
+});
+
+test("generates navigation interactions owned by reusable components", () => {
+  const trigger = { id: "navigation-trigger", name: "Trending", type: "rectangle", x: 0, y: 0, width: 120, height: 40, visible: true } as const;
+  const componentRoot = board("navigation-root", "Navigation", [trigger]);
+  const result = extractSelection(
+    [board("home", "Home"), board("trending", "Trending")],
+    [{ id: "navigation", name: "Navigation", root: componentRoot, interactions: [{ id: "navigation:trending", ownerShapeId: "navigation-trigger", trigger: "click", action: { type: "navigate", destinationBoardId: "trending" } }] }],
+    [],
+    {},
+    {},
+    { flows: [{ id: "flow", name: "Main", startingBoardId: "home" }], interactions: [{ id: "navigation:trending", ownerShapeId: "navigation-trigger", trigger: "click", action: { type: "navigate", destinationBoardId: "trending" } }] },
+  );
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries, result.navigationGraph);
+  const navigation = files.find((file) => file.path === "components/navigation.dart")!.source;
+  assert.match(navigation, /Navigator\.of\(context\)\.pushNamed\(PenpotRoutes\.trending\)/);
+  assert.equal((navigation.match(/Navigator\.of\(context\)\.pushNamed\(PenpotRoutes\.trending\)/g) ?? []).length, 1);
+  assert.match(navigation, /import '\.\.\/routes\.dart';/);
+  assert.doesNotMatch(navigation, /PenpotPrototype|PenpotOverlayPortal|OverlayEntry/);
+  assertDartParses(navigation);
+});
+
+test("lets reusable components own raw overlay portals", () => {
+  const trigger = { id: "filter-trigger", name: "Filter", type: "rectangle", x: 0, y: 0, width: 100, height: 40, visible: true } as const;
+  const result = extractSelection(
+    [board("home", "Home"), board("filter-dialog", "Filter")],
+    [{ id: "filters", name: "Filters", root: board("filters-root", "Filters", [trigger]), interactions: [{ id: "filters:open", ownerShapeId: "filter-trigger", trigger: "click", action: { type: "open-overlay", destinationBoardId: "filter-dialog", overlay: { position: "center" } } }] }],
+    [],
+    {},
+    {},
+    { flows: [{ id: "flow", name: "Main", startingBoardId: "home" }], interactions: [{ id: "filters:open", ownerShapeId: "filter-trigger", trigger: "click", action: { type: "open-overlay", destinationBoardId: "filter-dialog", overlay: { position: "center" } } }] },
+  );
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries, result.navigationGraph);
+  const filters = files.find((file) => file.path === "components/filters.dart")!.source;
+  assert.match(filters, /class Filters extends StatefulWidget/);
+  assert.match(filters, /final _filterOverlayController = OverlayPortalController\(\);/);
+  assert.match(filters, /OverlayPortal\(/);
+  assert.doesNotMatch(filters, /PenpotPrototype|PenpotOverlayPortal|OverlayEntry/);
+  assertDartParses(filters);
 });
 
 test("reports unresolved targets and stable route collisions", () => {
