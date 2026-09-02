@@ -86,6 +86,81 @@ test("uses parent coordinates, default opacity, and Penpot line-height factors",
   assert.match(dart, /height: 1\.17,/);
 });
 
+test("marks static widget values const without constifying token-backed values", () => {
+  const staticResult = extractSelection([{
+    id: "const-board",
+    name: "Const board",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 120,
+    visible: true,
+    flex: { dir: "column", rowGap: 8, topPadding: 12, rightPadding: 12, bottomPadding: 12, leftPadding: 12 },
+    fills: [{ fillColor: "#ffffff", fillOpacity: 1 }],
+    children: [{
+      id: "const-card",
+      name: "Const card",
+      type: "rectangle",
+      x: 0,
+      y: 0,
+      width: 176,
+      height: 64,
+      visible: true,
+      fills: [{ fillColor: "#6750a4", fillOpacity: 1 }],
+      borderRadius: 8,
+      shadows: [{ style: "drop-shadow", offsetX: 1, offsetY: 2, blur: 4, spread: 0, color: { color: "#000000", opacity: 0.2 } }],
+    }, {
+      id: "const-label",
+      name: "Const label",
+      type: "text",
+      x: 0,
+      y: 72,
+      width: 176,
+      height: 20,
+      visible: true,
+      characters: "Static label",
+      fontFamily: "Inter",
+      fontSize: "14",
+      fontWeight: "400",
+    }],
+  }]);
+  const staticDart = generateFlutterWidget(staticResult.root);
+
+  assert.match(staticDart, /return const Container\(/);
+  assert.match(staticDart, /padding: EdgeInsetsDirectional\.only\(/);
+  assert.match(staticDart, /decoration: BoxDecoration/);
+  assert.match(staticDart, /borderRadius: BorderRadius\.all\(Radius\.circular\(8\)\)/);
+  assert.match(staticDart, /boxShadow: <BoxShadow>/);
+  assert.match(staticDart, /Text\(/);
+  assert.match(staticDart, /style: TextStyle\(/);
+  assert.match(staticDart, /return const Container\([\s\S]*child: Padding\([\s\S]*child: Column\(/);
+
+  const tokenResult = extractSelection([{
+    id: "token-board",
+    name: "Token board",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 120,
+    visible: true,
+    fills: [{ fillColor: "#ffffff", fillOpacity: 1 }],
+    flex: { dir: "column", rowGap: 8, topPadding: 12, rightPadding: 12, bottomPadding: 12, leftPadding: 12 },
+    tokenBindings: { fill: "color.primary", paddingTop: "space.md" },
+  }], [], [], {
+    tokens: [
+      { id: "primary", name: "color.primary", type: "color", value: "#6750a4", setId: "global" },
+      { id: "space", name: "space.md", type: "spacing", value: 12, setId: "global" },
+    ],
+    sets: [{ id: "global", name: "Global", active: true, tokenIds: ["primary", "space"] }],
+  });
+  const tokenDart = generateFlutterWidget(tokenResult.root, [], tokenResult.tokens);
+
+  assert.match(tokenDart, /context\.penpot\.color\.primary/);
+  assert.doesNotMatch(tokenDart, /const (?:Container|BoxDecoration|EdgeInsetsDirectional|TextStyle).*context\.penpot/);
+});
+
 test("clamps invalid source dimensions and reports a geometry warning", () => {
   const result = extractSelection([
     {
@@ -265,7 +340,7 @@ test("extracts and generates flex board layouts", () => {
   });
   assert.match(dart, /Stack\(/);
   assert.match(dart, /Positioned\.fill\(/);
-  assert.match(dart, /EdgeInsetsDirectional\.only\(top: 8, start: 24, end: 20, bottom: 12\)/);
+  assert.match(dart, /(?:const )?EdgeInsetsDirectional\.only\(top: 8, start: 24, end: 20, bottom: 12\)/);
   assert.match(dart, /Row\(\n\s*textDirection: TextDirection\.rtl,/);
   assert.match(dart, /mainAxisAlignment: MainAxisAlignment\.spaceBetween,/);
   assert.doesNotMatch(dart, /crossAxisAlignment:/);
@@ -327,7 +402,7 @@ test("extracts image shapes and fillImage assets into deterministic Flutter outp
     height: 400,
     path: "assets/images/media_2fhero.jpg",
   }]);
-  assert.match(dart, /DecorationImage\(\n\s*image: AssetImage\('assets\/images\/media_2fhero\.jpg'\),/);
+  assert.match(dart, /DecorationImage\(\n\s*image: (?:const )?AssetImage\((?:\n\s*)?'assets\/images\/media_2fhero\.jpg'/);
   assert.match(dart, /fit: BoxFit\.cover,/);
   assert.equal(generatePubspecSnippet(result.assets), "flutter:\n  assets:\n    - assets/images/media_2fhero.jpg\n");
   assert.equal(result.diagnostics.length, 0);
@@ -435,7 +510,7 @@ test("simplifies a stack containing only a no-op layer and one positioned child"
   const dart = generateFlutterWidget(result.root);
 
   assert.doesNotMatch(dart, /Stack\(/);
-  assert.match(dart, /Padding\(\n\s*padding: EdgeInsets\.only\(left: 1\.22, top: 1\.22\),/);
+  assert.match(dart, /Padding\(\n\s*padding: (?:const )?EdgeInsets\.only\(left: 1\.22, top: 1\.22\),/);
   assert.match(dart, /SvgPicture\.asset/);
 });
 
@@ -571,10 +646,10 @@ test("extracts and generates solid strokes, per-corner radii, and drop shadows",
     blur: 6,
     spread: 1,
   }]);
-  assert.match(dart, /Border\.all\(color: Color\(0xbf6750a4\), width: 2\)/);
-  assert.match(dart, /BorderRadius\.only\(\n\s*topLeft: Radius\.circular\(4\),/);
-  assert.match(dart, /boxShadow: \[\n\s*BoxShadow\(/);
-  assert.match(dart, /offset: Offset\(2, 4\),/);
+  assert.match(dart, /(?:const )?Border\.fromBorderSide\(\s*(?:const )?BorderSide\(/);
+  assert.match(dart, /(?:const )?BorderRadius\.only\(\n\s*topLeft: (?:const )?Radius\.circular\(4\),/);
+  assert.match(dart, /boxShadow: (?:const )?<BoxShadow>\[\n\s*(?:const )?BoxShadow\(/);
+  assert.match(dart, /offset: (?:const )?Offset\(2, 4\),/);
   assert.match(dart, /blurRadius: 6,/);
   assert.match(dart, /spreadRadius: 1,/);
   assert.match(dart, /Row\(/);
@@ -1340,9 +1415,9 @@ test("preserves component fill overrides as a color parameter", () => {
 
   assert.doesNotMatch(result.diagnostics.map((diagnostic) => diagnostic.code).join("\n"), /COMPONENT_OVERRIDE_UNSUPPORTED/);
   const dart = generateFlutterWidget(result.root, result.components);
-  assert.match(dart, /PrimaryButton\(\n\s*backgroundColor: Color\(0xffff0000\),/);
+  assert.match(dart, /(?:const )?PrimaryButton\(\n\s*backgroundColor: (?:const )?Color\(0xffff0000\),/);
   assert.match(generateComponentWidget(result.components[0], result.components), /final Color\? backgroundColor;/);
-  assert.match(generateComponentWidget(result.components[0], result.components), /this\.backgroundColor \?\? Color\(0xff6750a4\)/);
+  assert.match(generateComponentWidget(result.components[0], result.components), /this\.backgroundColor \?\? (?:const )?Color\(0xff6750a4\)/);
 });
 
 test("reports unresolved components and falls back safely", () => {
@@ -1782,8 +1857,8 @@ test("merges mobile and desktop Row-to-Column boards with LayoutBuilder breakpoi
   const dart = responsiveDart(result);
   assert.match(dart, /LayoutBuilder\(/);
   assert.match(dart, /constraints\.maxWidth < 600/);
-  assert.match(dart, /return Column\(/);
-  assert.match(dart, /return Row\(/);
+  assert.match(dart, /return (?:const )?Column\(/);
+  assert.match(dart, /return (?:const )?Row\(/);
   assert.doesNotMatch(dart, /width: 390/);
   assert.doesNotMatch(dart, /width: 1440/);
   const responsiveDartPath = new URL("../responsive_checkout.dart", import.meta.url);
@@ -1821,8 +1896,8 @@ test("preserves elements hidden at a mobile breakpoint", () => {
     responsiveBoard("Account / Desktop", 1440, "row", desktopChildren),
   ]);
   const dart = responsiveDart(result);
-  assert.match(dart, /\/\/ Sidebar\n\s*const SizedBox\.shrink\(\)/);
-  assert.match(dart, /\/\/ Sidebar\n\s*SizedBox\(/);
+  assert.match(dart, /\/\/ Sidebar\n\s*SizedBox\.shrink\(\)/);
+  assert.match(dart, /\/\/ Sidebar\n\s*(?:const )?SizedBox\(/);
 });
 
 test("preserves different selections of the same component variant across breakpoints", () => {
@@ -2008,7 +2083,7 @@ test("tracks custom fonts, fallback families, and unavailable font assets", () =
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "FONT_WEIGHT_APPROXIMATED"));
   assert.deepEqual(result.fonts[0].fallbackFamilies, ["Courier", "sans-serif"]);
   assert.equal(result.fonts[0].available, false);
-  assert.match(generateFlutterWidget(result.root), /fontFamilyFallback: const \['Courier', 'sans-serif'\]/);
+  assert.match(generateFlutterWidget(result.root), /fontFamilyFallback: \['Courier', 'sans-serif'\]/);
 });
 
 test("converts absolute and percentage line heights and preserves alignment, transform, and overflow", () => {

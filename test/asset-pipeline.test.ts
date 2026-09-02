@@ -91,7 +91,7 @@ test("preserves image fit, alignment, and clipping metadata", () => {
 
   assert.match(dart, /fit: BoxFit\.contain/);
   assert.match(dart, /alignment: Alignment\.bottomRight/);
-  assert.match(dart, /borderRadius: BorderRadius\.circular\(12\)/);
+  assert.match(dart, /borderRadius: (?:const )?BorderRadius\.all\((?:const )?Radius\.circular\(12\)\)/);
 });
 
 test("selects a raster asset for an unsupported vector effect when supplied", () => {
@@ -112,6 +112,7 @@ test("selects a raster asset for an unsupported vector effect when supplied", ()
   assert.equal(result.assetRegistry[0].type, "png");
   assert.deepEqual(result.diagnostics.map((diagnostic) => diagnostic.code), ["VECTOR_EFFECT_UNSUPPORTED", "VECTOR_RASTERIZED"]);
   assert.match(dart, /Image\.asset\(/);
+  assert.doesNotMatch(dart, /const Image\.asset\(/);
   assert.match(dart, /AppAssets\.complexIllustration/);
 });
 

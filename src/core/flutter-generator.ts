@@ -155,7 +155,7 @@ export function generateFlutterWidget(
   prototypeOverlayControllers = overlayControllerNames(prototypeOverlayActions.keys(), targets);
   const roots = responsiveScreen?.variants.map((variant) => variant.root) ?? [root];
   const className = classNameOverride ?? (toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedWidget");
-  return [
+  return stripNestedConst([
     ...(roots.some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(roots.some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
@@ -178,7 +178,133 @@ export function generateFlutterWidget(
     "  }",
     "}",
     "",
-  ].join("\n");
+  ].join("\n"));
+}
+
+function stripNestedConst(source: string): string {
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (let index = 0; index < source.length;) {
+    const token = nextDartToken(source, index, "const");
+    if (token === undefined) break;
+    const opening = constExpressionOpening(source, token + "const".length);
+    if (opening === undefined) {
+      index = token + "const".length;
+      continue;
+    }
+    const closing = matchingDelimiter(source, opening);
+    if (closing === undefined) {
+      index = token + "const".length;
+      continue;
+    }
+    ranges.push({ start: opening + 1, end: closing });
+    index = closing + 1;
+  }
+  const stripped = ranges.reverse().reduce((result, range) => `${result.slice(0, range.start)}${removeNestedConstKeywords(result.slice(range.start, range.end))}${result.slice(range.end)}`, source);
+  return compactDartAssetImages(stripped);
+}
+
+function compactDartAssetImages(source: string): string {
+  return source.replace(/^(\s*)image: ((?:const )?)AssetImage\(\n\s*([^,\n]+),\n\s*\),$/gm, (line, indentation: string, constant: string, asset: string) => {
+    const compact = `${indentation}image: ${constant}AssetImage(${asset}),`;
+    return compact.length <= 80 ? compact : line;
+  });
+}
+
+function nextDartToken(source: string, start: number, value: string): number | undefined {
+  for (let index = start; index <= source.length - value.length;) {
+    const character = source[index];
+    if (character === "'" || character === '"') {
+      index = skipDartString(source, index);
+      continue;
+    }
+    if (source.startsWith("//", index)) {
+      const newline = source.indexOf("\n", index + 2);
+      index = newline < 0 ? source.length : newline + 1;
+      continue;
+    }
+    if (source.startsWith("/*", index)) {
+      const end = source.indexOf("*/", index + 2);
+      index = end < 0 ? source.length : end + 2;
+      continue;
+    }
+    if (source.startsWith(value, index) && !isDartWord(source[index - 1]) && !isDartWord(source[index + value.length])) return index;
+    index++;
+  }
+  return undefined;
+}
+
+function constExpressionOpening(source: string, start: number): number | undefined {
+  let index = start;
+  while (/\s/.test(source[index] ?? "")) index++;
+  if (source[index] === "[") return index;
+  if (source[index] === "<") {
+    const genericEnd = matchingDelimiter(source, index);
+    if (genericEnd === undefined) return undefined;
+    index = genericEnd + 1;
+    while (/\s/.test(source[index] ?? "")) index++;
+    if (source[index] === "[") return index;
+  }
+  while (/[A-Za-z0-9_.]/.test(source[index] ?? "")) index++;
+  while (/\s/.test(source[index] ?? "")) index++;
+  return source[index] === "(" || source[index] === "{" ? index : undefined;
+}
+
+function matchingDelimiter(source: string, opening: number): number | undefined {
+  const stack: string[] = [];
+  const pairs = new Map([["(", ")"], ["[", "]"], ["{", "}"], ["<", ">"]]);
+  for (let index = opening; index < source.length; index++) {
+    const character = source[index];
+    if (character === "'" || character === '"') {
+      index = skipDartString(source, index) - 1;
+      continue;
+    }
+    if (source.startsWith("//", index)) {
+      const newline = source.indexOf("\n", index + 2);
+      index = newline < 0 ? source.length : newline;
+      continue;
+    }
+    if (source.startsWith("/*", index)) {
+      const end = source.indexOf("*/", index + 2);
+      index = end < 0 ? source.length : end + 1;
+      continue;
+    }
+    const closing = pairs.get(character!);
+    if (closing !== undefined) stack.push(closing);
+    else if (stack[stack.length - 1] === character) {
+      stack.pop();
+      if (stack.length === 0) return index;
+    }
+  }
+  return undefined;
+}
+
+function skipDartString(source: string, start: number): number {
+  const quote = source[start];
+  for (let index = start + 1; index < source.length; index++) {
+    if (source[index] === "\\") {
+      index++;
+      continue;
+    }
+    if (source[index] === quote) return index + 1;
+  }
+  return source.length;
+}
+
+function removeNestedConstKeywords(source: string): string {
+  let result = "";
+  for (let index = 0; index < source.length;) {
+    const token = nextDartToken(source, index, "const");
+    if (token === undefined) return result + source.slice(index);
+    result += source.slice(index, token);
+    let end = token + "const".length;
+    while (source[end] === " ") end++;
+    index = end;
+  }
+  return result;
+}
+
+function isDartWord(value: string | undefined): boolean {
+  return value !== undefined && /[A-Za-z0-9_]/.test(value);
 }
 
 function renderResponsiveScreen(screen: IrResponsiveScreen): string[] {
@@ -211,12 +337,12 @@ function renderResponsiveRoot(root: IrNode, depth: number): string {
       : renderStack(root.children, depth, clipBehavior);
   const decoration = renderDecoration(root, depth + 1);
   if (decoration === undefined) return child;
-  return [
+  return constWidget([
     "DecoratedBox(",
     `${indent(depth + 1)}decoration: ${decoration},`,
-    `${indent(depth + 1)}child: ${root.clipContent ? `ClipRect(\n${indent(depth + 2)}child: ${child},\n${indent(depth + 1)})` : child},`,
+    `${indent(depth + 1)}child: ${root.clipContent ? constWidget(`ClipRect(\n${indent(depth + 2)}child: ${child},\n${indent(depth + 1)})`) : child},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = [], assets: readonly IrAsset[] = [], assetImport?: string, componentPaths?: ReadonlyMap<string, string>, sourcePath?: string, interactions: readonly IrInteraction[] = [], targets: ReadonlyMap<string, PrototypeTarget> = new Map(), prototypeImports: readonly string[] = []): string {
@@ -273,7 +399,7 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
   if (hasOverlayState) lines.push("", `  @override State<${component.name}> createState() => _${component.name}State();`, "}", "", `class _${component.name}State extends State<${component.name}> {`, ...[...prototypeOverlayControllers.values()].map((name) => `  final ${name} = OverlayPortalController();`));
   const body = renderVariantComponentBody(component, hasOverlayState).map((line) => hasOverlayState ? line.replace(/\bthis\./g, "widget.") : line);
   lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${commentText(component.sourceName)}`, ...body, "  }", "}", "");
-  return lines.join("\n");
+  return stripNestedConst(lines.join("\n"));
 }
 
 function componentRoots(component: IrComponentDefinition): readonly IrNode[] {
@@ -340,7 +466,7 @@ export function generateFlutterFiles(
   ]);
   const prototypeImportsFor = (sourcePath: string, interactions: readonly IrInteraction[]): readonly string[] => [...new Set([
     ...(interactions.some((interaction) => interaction.kind === "navigate") ? [`import '${relativeDartImport(sourcePath, "routes.dart")}';`] : []),
-    ...interactions.flatMap((interaction) => {
+    ...interactions.filter((interaction) => interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay").flatMap((interaction) => {
       const target = interaction.targetId === undefined ? undefined : targets.get(interaction.targetId);
       return target === undefined || target.path === sourcePath ? [] : [`import '${relativeDartImport(sourcePath, target.path)}';`];
     }),
@@ -586,12 +712,12 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
   if (constraintsDepth > 0) content = renderConstraints(node, content, contentDepth + transformDepth + opacityDepth);
   if (node.transform !== undefined) content = renderTransform(node, content, contentDepth + opacityDepth);
   if (node.style.opacity !== 1 || hasToken(node, "opacity")) {
-    content = [
+    content = constWidget([
       "Opacity(",
       `${indent(contentDepth + 1)}opacity: ${tokenValue(node, "opacity", number(node.style.opacity))},`,
       `${indent(contentDepth + 1)}child: ${content},`,
       `${indent(contentDepth)})`,
-    ].join("\n");
+    ].join("\n"));
   }
   content = renderPrototypeInteractions(node, content, contentDepth);
   for (const interaction of prototypeOverlayActions.values()) {
@@ -602,13 +728,13 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
     content = renderRawOverlayPortal(interaction, target.className, controller, content, contentDepth);
   }
   if (!positioned) return content;
-  return [
+  return constWidget([
     "Positioned(",
     `${indent(depth + 1)}left: ${tokenValue(node, "x", number(node.geometry.x))},`,
     `${indent(depth + 1)}top: ${tokenValue(node, "y", number(node.geometry.y))},`,
     `${indent(depth + 1)}child: ${content},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function overlayControllerNames(ids: Iterable<string>, targets: ReadonlyMap<string, PrototypeTarget>): ReadonlyMap<string, string> {
@@ -633,12 +759,12 @@ function shortIdentifier(value: string): string {
 function renderRawOverlayPortal(interaction: IrInteraction, targetClassName: string, controller: string, child: string, depth: number): string {
   const options = interaction.overlay;
   const overlayChild = options?.manualPosition === undefined
-    ? `Align(alignment: ${overlayAlignment(options?.position)}, child: const ${targetClassName}())`
-    : `Positioned(left: ${number(options.manualPosition.x)}, top: ${number(options.manualPosition.y)}, child: const ${targetClassName}())`;
+    ? `const Align(alignment: ${overlayAlignment(options?.position)}, child: const ${targetClassName}())`
+    : `const Positioned(left: ${number(options.manualPosition.x)}, top: ${number(options.manualPosition.y)}, child: const ${targetClassName}())`;
   return [
     "OverlayPortal(",
     `${indent(depth + 1)}controller: ${controller},`,
-    `${indent(depth + 1)}overlayChildBuilder: (context) => Stack(children: [${options?.addBackgroundOverlay === true ? "ModalBarrier(dismissible: true, color: Colors.black54), " : ""}${overlayChild}]),`,
+    `${indent(depth + 1)}overlayChildBuilder: (context) => ${constWidget(`Stack(children: [${options?.addBackgroundOverlay === true ? "const ModalBarrier(dismissible: true, color: Colors.black54), " : ""}${overlayChild}])`)},`,
     `${indent(depth + 1)}child: ${nestedInteractionChild(child)},`,
     `${indent(depth)})`,
   ].join("\n");
@@ -694,7 +820,7 @@ function renderPrototypeInteractions(node: IrNode, child: string, depth: number)
   const leave = callbacks("mouse-leave", urlInteraction === undefined ? undefined : "followLink()");
   if (enter.length > 0 || leave.length > 0) rendered = ["MouseRegion(", ...(enter.length === 0 ? [] : [`${indent(depth + 1)}onEnter: (_) ${actionBlock(enter, depth + 1)},`]), ...(leave.length === 0 ? [] : [`${indent(depth + 1)}onExit: (_) ${actionBlock(leave, depth + 1)},`]), `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
   for (const interaction of interactions.filter((item) => item.trigger === "after-delay")) {
-    rendered = ["PenpotDelayedInteraction(", `${indent(depth + 1)}delay: Duration(milliseconds: ${number(interaction.delayMs ?? 0)}),`, `${indent(depth + 1)}onTriggered: (context) ${actionBlock([callback(interaction, urlInteraction === undefined ? undefined : "followLink()")], depth + 1)},`, `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
+    rendered = ["PenpotDelayedInteraction(", `${indent(depth + 1)}delay: const Duration(milliseconds: ${number(interaction.delayMs ?? 0)}),`, `${indent(depth + 1)}onTriggered: (context) ${actionBlock([callback(interaction, urlInteraction === undefined ? undefined : "followLink()")], depth + 1)},`, `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
   }
   return urlInteraction === undefined ? rendered : ["Link(", `${indent(depth + 1)}uri: Uri.parse('${escapeDart(urlInteraction.url!)}'),`, `${indent(depth + 1)}builder: (context, followLink) => ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
 }
@@ -717,12 +843,12 @@ function renderConstraints(node: Exclude<IrNode, { kind: "unsupported" }>, child
   let constrained = child;
   const innerDepth = depth + Number(layout.minWidth !== undefined || layout.maxWidth !== undefined || layout.minHeight !== undefined || layout.maxHeight !== undefined);
   if (layout.aspectRatio !== undefined) {
-    constrained = [
+    constrained = constWidget([
       "AspectRatio(",
       `${indent(innerDepth + 1)}aspectRatio: ${tokenValue(node, "aspectRatio", number(layout.aspectRatio))},`,
       `${indent(innerDepth + 1)}child: ${constrained},`,
       `${indent(innerDepth)})`,
-    ].join("\n");
+    ].join("\n"));
   }
   const properties = [
     ...(layout.minWidth === undefined ? [] : [`minWidth: ${tokenValue(node, "minWidth", number(layout.minWidth))}`]),
@@ -731,12 +857,12 @@ function renderConstraints(node: Exclude<IrNode, { kind: "unsupported" }>, child
     ...(layout.maxHeight === undefined ? [] : [`maxHeight: ${tokenValue(node, "maxHeight", number(layout.maxHeight))}`]),
   ];
   if (properties.length === 0) return constrained;
-  return [
+  return constWidget([
     "ConstrainedBox(",
-    `${indent(depth + 1)}constraints: BoxConstraints(${properties.join(", ")}),`,
+    `${indent(depth + 1)}constraints: ${constWidget(`BoxConstraints(${properties.join(", ")})`)},`,
     `${indent(depth + 1)}child: ${constrained},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function transformWrapperCount(node: Exclude<IrNode, { kind: "unsupported" }>): number {
@@ -791,15 +917,15 @@ function renderContainer(node: BoardNode, depth: number, clipBehavior: string): 
   const decoration = renderDecoration(node, depth + 1);
   const child = node.flex !== undefined ? renderFlex(node, depth + 1, clipBehavior) : node.grid?.supported === true ? renderGrid(node, node.grid, node.children, depth + 1) : renderStack(node.children, depth + 1, clipBehavior);
   if (decoration === undefined) {
-    return [
+    return constWidget([
       "SizedBox(",
       `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
       `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
       `${indent(depth + 1)}child: ${child},`,
       `${indent(depth)})`,
-    ].join("\n");
+    ].join("\n"));
   }
-  return [
+  return constWidget([
     "Container(",
     `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
     `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
@@ -807,7 +933,7 @@ function renderContainer(node: BoardNode, depth: number, clipBehavior: string): 
     ...(clipBehavior === "Clip.hardEdge" ? [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`] : []),
     `${indent(depth + 1)}child: ${child},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderStack(children: readonly IrNode[], depth: number, clipBehavior: string): string {
@@ -818,21 +944,21 @@ function renderStack(children: readonly IrNode[], depth: number, clipBehavior: s
     const left = child.geometry.x;
     const top = child.geometry.y;
     if (left === 0 && top === 0) return commentFor(child, depth, rendered);
-    return commentFor(child, depth, [
+    return commentFor(child, depth, constWidget([
       "Padding(",
-      `${indent(depth + 1)}padding: EdgeInsets.only(left: ${number(left)}, top: ${number(top)}),`,
+      `${indent(depth + 1)}padding: ${constWidget(`EdgeInsets.only(left: ${number(left)}, top: ${number(top)})`)},`,
       `${indent(depth + 1)}child: ${rendered},`,
       `${indent(depth)})`,
-    ].join("\n"));
+    ].join("\n")));
   }
-  return [
+  return constWidget([
     "Stack(",
-    ...(clipBehavior === "Clip.hardEdge" ? [] : [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`]),
+    ...(clipBehavior === "Clip.none" ? [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`] : []),
     `${indent(depth + 1)}children: [`,
     ...children.map((child) => `${commentFor(child, depth + 2, renderNode(child, depth + 2, true))},`),
     `${indent(depth + 1)}],`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function isNoopNode(node: IrNode): boolean {
@@ -859,17 +985,20 @@ function renderFlex(node: BoardNode, depth: number, clipBehavior: string): strin
   const absoluteChildren = node.children.filter((child) => child.layoutChild?.absolute);
   const flex = renderFlexFlow(node, flowChildren, depth + (absoluteChildren.length === 0 ? 0 : 2));
   if (absoluteChildren.length === 0) return flex;
-  return [
+  const fill = constWidget([
+    "Positioned.fill(",
+    `${indent(depth + 3)}child: ${flex},`,
+    `${indent(depth + 2)})`,
+  ].join("\n"));
+  return constWidget([
     "Stack(",
     ...(clipBehavior === "Clip.hardEdge" ? [] : [`${indent(depth + 1)}clipBehavior: ${clipBehavior},`]),
     `${indent(depth + 1)}children: [`,
-    `${indent(depth + 2)}Positioned.fill(`,
-    `${indent(depth + 3)}child: ${flex},`,
-    `${indent(depth + 2)}),`,
+    `${indent(depth + 2)}${fill},`,
     ...absoluteChildren.map((child) => `${commentFor(child, depth + 2, renderNode(child, depth + 2, true))},`),
     `${indent(depth + 1)}],`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderFlexFlow(node: BoardNode, children: readonly IrNode[], depth: number): string {
@@ -891,13 +1020,14 @@ function renderFlexFlow(node: BoardNode, children: readonly IrNode[], depth: num
     `${indent(depth + 1)}],`,
     `${indent(depth)})`,
   ];
-  if (paddingIsZero(flex.padding) && !hasPaddingToken(node)) return flow.join("\n");
-  return [
+  const renderedFlow = constWidget(flow.join("\n"));
+  if (paddingIsZero(flex.padding) && !hasPaddingToken(node)) return renderedFlow;
+  return constWidget([
     "Padding(",
     `${indent(depth + 1)}padding: ${edgeInsetsDirectional(flex.padding, node)},`,
-    `${indent(depth + 1)}child: ${flow.join("\n")},`,
+    `${indent(depth + 1)}child: ${renderedFlow},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderFlexChild(node: IrNode, depth: number, isRow: boolean): string {
@@ -905,10 +1035,10 @@ function renderFlexChild(node: IrNode, depth: number, isRow: boolean): string {
   const crossAxisSizing = isRow ? node.layoutChild?.verticalSizing : node.layoutChild?.horizontalSizing;
   const child = renderNode(node, depth + Number(mainAxisSizing === "fill") + Number(crossAxisSizing === "fill"), false);
   const crossAxisChild = crossAxisSizing === "fill"
-    ? ["SizedBox(", `${indent(depth + Number(mainAxisSizing === "fill") + 1)}${isRow ? "height" : "width"}: double.infinity,`, `${indent(depth + Number(mainAxisSizing === "fill") + 1)}child: ${child},`, `${indent(depth + Number(mainAxisSizing === "fill"))})`].join("\n")
+    ? constWidget(["SizedBox(", `${indent(depth + Number(mainAxisSizing === "fill") + 1)}${isRow ? "height" : "width"}: double.infinity,`, `${indent(depth + Number(mainAxisSizing === "fill") + 1)}child: ${child},`, `${indent(depth + Number(mainAxisSizing === "fill"))})`].join("\n"))
     : child;
   return mainAxisSizing === "fill"
-    ? ["Expanded(", `${indent(depth + 1)}child: ${crossAxisChild},`, `${indent(depth)})`].join("\n")
+    ? constWidget(["Expanded(", `${indent(depth + 1)}child: ${crossAxisChild},`, `${indent(depth)})`].join("\n"))
     : crossAxisChild;
 }
 
@@ -933,7 +1063,7 @@ function crossAxisAlignment(value: string | undefined): string {
 }
 
 function renderGroup(node: GroupNode, depth: number): string {
-  return [
+  return constWidget([
     "SizedBox(",
     `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
     `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
@@ -943,7 +1073,7 @@ function renderGroup(node: GroupNode, depth: number): string {
     `${indent(depth + 2)}],`,
     `${indent(depth + 1)}),`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderShape(node: IrNode, depth: number, ellipse: boolean): string {
@@ -953,7 +1083,7 @@ function renderShape(node: IrNode, depth: number, ellipse: boolean): string {
   const clipDepth = ellipse && !circle ? 1 : 0;
   const decoration = renderDecoration(node, depth + 2 + clipDepth, circle);
   if (decoration === undefined) {
-    return `SizedBox(width: ${tokenValue(node, "width", number(width))}, height: ${tokenValue(node, "height", number(height))})`;
+    return constWidget(`SizedBox(width: ${tokenValue(node, "width", number(width))}, height: ${tokenValue(node, "height", number(height))})`);
   }
   const decorated = [
     "DecoratedBox(",
@@ -963,13 +1093,25 @@ function renderShape(node: IrNode, depth: number, ellipse: boolean): string {
   const content = ellipse && !circle
     ? ["ClipOval(", `${indent(depth + 2)}child: ${decorated},`, `${indent(depth + 1)})`].join("\n")
     : decorated;
-  return [
+  return constWidget([
     "SizedBox(",
     `${indent(depth + 1)}width: ${tokenValue(node, "width", number(width))},`,
     `${indent(depth + 1)}height: ${tokenValue(node, "height", number(height))},`,
     `${indent(depth + 1)}child: ${content},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
+}
+
+const constWidgetConstructors = new Set([
+  "Align", "Alignment", "AspectRatio", "AssetImage", "Border.fromBorderSide", "BorderRadius", "BorderSide", "BoxConstraints", "BoxDecoration", "BoxShadow", "Center", "ClipOval", "ClipRect", "ClipRRect", "Column", "ConstrainedBox", "Container", "DecoratedBox", "DecorationImage", "Duration", "EdgeInsets", "EdgeInsetsDirectional", "Expanded", "Flexible", "LinearGradient", "ModalBarrier", "NeverScrollableScrollPhysics", "Offset", "Opacity", "Padding", "Positioned", "RadialGradient", "Radius", "RichText", "Row", "Scaffold", "SizedBox", "Stack", "Text", "TextSpan", "TextStyle",
+]);
+
+function constWidget(expression: string): string {
+  if (/^\s*const\b/.test(expression)) return expression;
+  const constructor = /^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\(/.exec(expression.trim())?.[1];
+  if (constructor === undefined || (!constWidgetConstructors.has(constructor) && !constWidgetConstructors.has(constructor.split(".")[0]!))) return expression;
+  if (/\b(?:context|constraints|followLink|settings)\.|\b(?:this|widget)\.|Navigator\.|SvgPicture\b|Image\.asset\b|Matrix4\b|RegExp\(|Uri\.parse|on(?:Tap|Enter|Exit):/.test(expression)) return expression;
+  return `const ${expression}`;
 }
 
 function argumentTokenValue(argument: IrComponentInstanceNode["arguments"][number]): string | undefined {
@@ -989,9 +1131,10 @@ function renderComponentInstance(node: IrComponentInstanceNode, depth: number): 
     : [`variant: ${variantEnumNameFor(node.componentId)}.${node.variantMemberName},`];
   const overrideArguments = node.arguments.map((argument) => `${argument.name}: ${argumentTokenValue(argument) ?? (argument.type === "Color" ? dartColor(argument.value, 1) : `'${escapeDart(argument.value)}'`)},`);
   const argumentsList = [...variantArguments, ...overrideArguments];
-  if (argumentsList.length === 0) return `${name}()`;
+  const canBeConst = node.arguments.every((argument) => argument.tokenPath === undefined);
+  if (argumentsList.length === 0) return canBeConst ? `const ${name}()` : `${name}()`;
   return [
-    `${name}(`,
+    `${canBeConst ? "const " : ""}${name}(`,
     ...argumentsList.map((argument) => `${indent(depth + 1)}${argument}`),
     `${indent(depth)})`,
   ].join("\n");
@@ -999,14 +1142,14 @@ function renderComponentInstance(node: IrComponentInstanceNode, depth: number): 
 
 function renderSvg(node: SvgNode, depth: number): string {
   const asset = node.assetType !== undefined && node.assetType !== "svg"
-    ? [
+    ? constWidget([
         "Image.asset(",
         `${indent(depth + 1)}${assetReference(node.assetId, node.assetPath)},`,
         `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
         `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
         `${indent(depth + 1)}fit: BoxFit.contain,`,
         `${indent(depth)})`,
-      ].join("\n")
+      ].join("\n"))
     : [
         "SvgPicture.asset(",
         `${indent(depth + 1)}${assetReference(node.assetId, node.assetPath)},`,
@@ -1016,12 +1159,12 @@ function renderSvg(node: SvgNode, depth: number): string {
       ].join("\n");
   const radius = node.style.radius;
   if (radius === undefined || [radius.topLeft, radius.topRight, radius.bottomRight, radius.bottomLeft].every((value) => value === 0)) return asset;
-  return [
+  return constWidget([
     "ClipRRect(",
     `${indent(depth + 1)}borderRadius: ${borderRadius(radius, depth + 2, node)},`,
     `${indent(depth + 1)}child: ${asset},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderText(node: TextNode, depth: number): string {
@@ -1042,19 +1185,20 @@ function renderText(node: TextNode, depth: number): string {
     ...(textStyle === undefined ? [] : [`${indent(textDepth + 2)}style: ${textStyle},`]),
     `${indent(textDepth + 1)})`,
   ].join("\n");
-  const aligned = node.verticalAlign === undefined || node.verticalAlign === "top" ? textWidget : [
+  const renderedTextWidget = constWidget(textWidget);
+  const aligned = node.verticalAlign === undefined || node.verticalAlign === "top" ? renderedTextWidget : constWidget([
     "Align(",
     `${indent(depth + 2)}alignment: Alignment.${verticalTextAlignment(node.verticalAlign, style.align)},`,
-    `${indent(depth + 2)}child: ${textWidget},`,
+    `${indent(depth + 2)}child: ${renderedTextWidget},`,
     `${indent(depth + 1)})`,
-  ].join("\n");
-  return [
+  ].join("\n"));
+  return constWidget([
     "SizedBox(",
     `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
     `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
     `${indent(depth + 1)}child: ${aligned},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderRichText(node: TextNode, depth: number): string {
@@ -1073,24 +1217,25 @@ function renderRichText(node: TextNode, depth: number): string {
     `${indent(richDepth + 2)}),`,
     `${indent(richDepth + 1)})`,
   ].join("\n");
-  const aligned = node.verticalAlign === undefined || node.verticalAlign === "top" ? richText : [
+  const renderedRichText = constWidget(richText);
+  const aligned = node.verticalAlign === undefined || node.verticalAlign === "top" ? renderedRichText : constWidget([
     "Align(",
     `${indent(depth + 2)}alignment: Alignment.${verticalTextAlignment(node.verticalAlign, node.textStyle.align)},`,
-    `${indent(depth + 2)}child: ${richText},`,
+    `${indent(depth + 2)}child: ${renderedRichText},`,
     `${indent(depth + 1)})`,
-  ].join("\n");
-  return [
+  ].join("\n"));
+  return constWidget([
     "SizedBox(",
     `${indent(depth + 1)}width: ${tokenValue(node, "width", number(node.geometry.width))},`,
     `${indent(depth + 1)}height: ${tokenValue(node, "height", number(node.geometry.height))},`,
     `${indent(depth + 1)}child: ${aligned},`,
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderTextSpan(run: TextRun, depth: number): string {
   const style = renderTextStyle(run.style, undefined, depth + 1, undefined, run.typographyStyleId);
-  return [
+  return constWidget([
     "TextSpan(",
     ...(style === undefined ? [] : [`${indent(depth + 1)}style: ${style},`]),
     ...(run.text === "" ? [] : [`${indent(depth + 1)}text: ${stringLiteral(transformedLiteral(run.text, run.textTransform))},`]),
@@ -1100,7 +1245,7 @@ function renderTextSpan(run: TextRun, depth: number): string {
       `${indent(depth + 1)}],`,
     ]),
     `${indent(depth)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, styleDepth: number, node?: IrNode, typographyStyleId?: string): string | undefined {
@@ -1118,7 +1263,7 @@ function renderTextStyle(style: TextStyle, fillColor: ColorFill | undefined, sty
     ...(style.decoration === "underline" ? [`decoration: ${tokenValue(node, "textDecoration", "TextDecoration.underline")}`] : style.decoration === "line-through" ? [`decoration: ${tokenValue(node, "textDecoration", "TextDecoration.lineThrough")}`] : hasToken(node, "textDecoration") ? [`decoration: ${tokenValue(node, "textDecoration", "TextDecoration.none")}`] : []),
     ...(style.color !== undefined ? [`color: ${tokenValue(node, "textColor", dartColor(style.color.color, style.color.opacity), "fill")}`] : fillColor === undefined ? [] : [`color: ${tokenValue(node, "textColor", dartColor(fillColor.color, fillColor.opacity), "fill")}`]),
   ];
-  return properties.length === 0 ? undefined : [`TextStyle(`, ...properties.map((property) => `${indent(styleDepth + 1)}${property},`), `${indent(styleDepth)})`].join("\n");
+  return properties.length === 0 ? undefined : constWidget([`TextStyle(`, ...properties.map((property) => `${indent(styleDepth + 1)}${property},`), `${indent(styleDepth)})`].join("\n"));
 }
 
 function renderDecoration(node: IrNode, depth: number, circle = false): string | undefined {
@@ -1131,43 +1276,63 @@ function renderDecoration(node: IrNode, depth: number, circle = false): string |
     ...(circle ? ["shape: BoxShape.circle"] : []),
     ...(style.fill === undefined ? [] : [`color: ${node.fillParameterName === undefined || !declaredParameters.has(node.fillParameterName) ? tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity)) : `this.${node.fillParameterName} ?? ${tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity))}`}`]),
     ...(style.gradient === undefined ? [] : [`gradient: ${tokenValue(node, "gradient", renderGradient(style.gradient, depth + 1))}`]),
-    ...(style.image === undefined ? [] : [`image: DecorationImage(\n${indent(depth + 2)}image: AssetImage(${assetReference(style.image.assetId, style.image.assetPath)}),\n${indent(depth + 2)}fit: BoxFit.${imageFit(style.image)},\n${style.image.alignment === undefined ? "" : `${indent(depth + 2)}alignment: Alignment.${style.image.alignment},\n`}${indent(depth + 1)})`]),
-    ...(border === undefined ? [] : [`border: Border.all(color: ${tokenValue(node, "strokeColor", dartColor(border.color, border.opacity))}, width: ${tokenValue(node, "strokeWidth", number(border.width))})`]),
+    ...(style.image === undefined ? [] : [`image: ${renderDecorationImage(style.image, depth)}`]),
+    ...(border === undefined ? [] : [`border: ${renderBorder(border, node, depth)}`]),
     ...(radius === undefined ? [] : [`borderRadius: ${borderRadius(radius, depth + 2, node)}`]),
-    ...(shadows === undefined ? [] : [`boxShadow: ${tokenValue(node, "shadow", `[\n${shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`)}`]),
+    ...(shadows === undefined ? [] : [`boxShadow: ${tokenValue(node, "shadow", `const <BoxShadow>[\n${shadows.map((shadow) => `${indent(depth + 2)}${renderShadow(shadow, depth + 3)},`).join("\n")}\n${indent(depth + 1)}]`)}`]),
   ];
-  const hasRuntimeValue = (node.fillParameterName !== undefined && declaredParameters.has(node.fillParameterName)) || (hasToken(node, "fill") && tokenDefinitions.get(node.tokenReferences?.find((reference) => reference.property === "fill")?.tokenId ?? "")?.type === "color");
-  return properties.length === 1 && !properties[0].includes("\n") && !hasRuntimeValue
-    ? `const BoxDecoration(${properties[0]})`
+  const expression = properties.length === 1 && !properties[0]!.includes("\n")
+    ? `BoxDecoration(${properties[0]})`
     : `BoxDecoration(\n${properties.map((property) => `${indent(depth + 1)}${property},`).join("\n")}\n${indent(depth)})`;
+  return constWidget(expression);
+}
+
+function renderDecorationImage(image: NonNullable<NodeStyle["image"]>, depth: number): string {
+  const assetReferenceExpression = assetReference(image.assetId, image.assetPath);
+  const asset = constWidget(`AssetImage(${assetReferenceExpression})`);
+  const imageLine = `image: ${asset},`;
+  const renderedAsset = indent(depth + 2).length + imageLine.length > 80
+    ? `${asset.startsWith("const ") ? "const " : ""}AssetImage(\n${indent(depth + 3)}${assetReferenceExpression},\n${indent(depth + 2)})`
+    : asset;
+  return constWidget(`DecorationImage(\n${indent(depth + 2)}image: ${renderedAsset},\n${indent(depth + 2)}fit: BoxFit.${imageFit(image)},\n${image.alignment === undefined ? "" : `${indent(depth + 2)}alignment: Alignment.${image.alignment},\n`}${indent(depth + 1)})`);
+}
+
+function renderBorder(border: NonNullable<NodeStyle["border"]>, node: IrNode, depth: number): string {
+  const color = tokenValue(node, "strokeColor", dartColor(border.color, border.opacity));
+  const width = tokenValue(node, "strokeWidth", number(border.width));
+  const side = constWidget(`BorderSide(color: ${color}, width: ${width})`);
+  const rendered = constWidget(`Border.fromBorderSide(${side})`);
+  if (indent(depth + 1).length + "border: ".length + rendered.length + 1 <= 80) return rendered;
+  return `${rendered.startsWith("const ") ? "const " : ""}Border.fromBorderSide(\n${indent(depth + 2)}${side},\n${indent(depth + 1)})`;
 }
 
 function renderGradient(gradient: GradientFill, depth: number): string {
   const colors = gradient.stops.map((stop) => dartColor(stop.color, stop.opacity)).join(", ");
   const stops = gradient.stops.map((stop) => number(stop.offset)).join(", ");
+  const colorList = `const <Color>[${colors}]`;
   if (gradient.type === "radial") {
-    return ["RadialGradient(", `${indent(depth + 1)}center: Alignment(${number(gradient.startX * 2 - 1)}, ${number(gradient.startY * 2 - 1)}),`, `${indent(depth + 1)}radius: ${number(gradient.width)},`, `${indent(depth + 1)}colors: [${colors}],`, `${indent(depth + 1)}stops: [${stops}],`, `${indent(depth)})`].join("\n");
+    return `const RadialGradient(\n${indent(depth + 1)}center: const Alignment(${number(gradient.startX * 2 - 1)}, ${number(gradient.startY * 2 - 1)}),\n${indent(depth + 1)}radius: ${number(gradient.width)},\n${indent(depth + 1)}colors: ${colorList},\n${indent(depth + 1)}stops: const <double>[${stops}],\n${indent(depth)})`;
   }
-  return ["LinearGradient(", `${indent(depth + 1)}begin: Alignment(${number(gradient.startX * 2 - 1)}, ${number(gradient.startY * 2 - 1)}),`, `${indent(depth + 1)}end: Alignment(${number(gradient.endX * 2 - 1)}, ${number(gradient.endY * 2 - 1)}),`, `${indent(depth + 1)}colors: [${colors}],`, `${indent(depth + 1)}stops: [${stops}],`, `${indent(depth)})`].join("\n");
+  return `const LinearGradient(\n${indent(depth + 1)}begin: const Alignment(${number(gradient.startX * 2 - 1)}, ${number(gradient.startY * 2 - 1)}),\n${indent(depth + 1)}end: const Alignment(${number(gradient.endX * 2 - 1)}, ${number(gradient.endY * 2 - 1)}),\n${indent(depth + 1)}colors: ${colorList},\n${indent(depth + 1)}stops: const <double>[${stops}],\n${indent(depth)})`;
 }
 
 function borderRadius(radius: NonNullable<NodeStyle["radius"]>, depth: number, node: IrNode): string {
   const values = [radius.topLeft, radius.topRight, radius.bottomRight, radius.bottomLeft];
   if (values.every((value) => value === values[0]) || hasToken(node, "borderRadius")) {
-    return `BorderRadius.circular(${tokenValue(node, "borderRadius", number(values[0]))})`;
+    return constWidget(`BorderRadius.all(${constWidget(`Radius.circular(${tokenValue(node, "borderRadius", number(values[0]))})`)})`);
   }
-  return [
+  return constWidget([
     "BorderRadius.only(",
-    `${indent(depth)}topLeft: Radius.circular(${tokenValue(node, "borderRadiusTopLeft", number(radius.topLeft))}),`,
-    `${indent(depth)}topRight: Radius.circular(${tokenValue(node, "borderRadiusTopRight", number(radius.topRight))}),`,
-    `${indent(depth)}bottomRight: Radius.circular(${tokenValue(node, "borderRadiusBottomRight", number(radius.bottomRight))}),`,
-    `${indent(depth)}bottomLeft: Radius.circular(${tokenValue(node, "borderRadiusBottomLeft", number(radius.bottomLeft))}),`,
+    `${indent(depth)}topLeft: ${constWidget(`Radius.circular(${tokenValue(node, "borderRadiusTopLeft", number(radius.topLeft))})`)},`,
+    `${indent(depth)}topRight: ${constWidget(`Radius.circular(${tokenValue(node, "borderRadiusTopRight", number(radius.topRight))})`)},`,
+    `${indent(depth)}bottomRight: ${constWidget(`Radius.circular(${tokenValue(node, "borderRadiusBottomRight", number(radius.bottomRight))})`)},`,
+    `${indent(depth)}bottomLeft: ${constWidget(`Radius.circular(${tokenValue(node, "borderRadiusBottomLeft", number(radius.bottomLeft))})`)},`,
     `${indent(depth - 1)})`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 function renderShadow(shadow: NonNullable<NodeStyle["shadows"]>[number], depth: number): string {
-  return ["BoxShadow(", `${indent(depth)}color: ${dartColor(shadow.color, shadow.opacity)},`, `${indent(depth)}offset: Offset(${number(shadow.offsetX)}, ${number(shadow.offsetY)}),`, `${indent(depth)}blurRadius: ${number(shadow.blur)},`, `${indent(depth)}spreadRadius: ${number(shadow.spread)},`, `${indent(depth - 1)})`].join("\n");
+  return ["const BoxShadow(", `${indent(depth)}color: ${dartColor(shadow.color, shadow.opacity)},`, `${indent(depth)}offset: const Offset(${number(shadow.offsetX)}, ${number(shadow.offsetY)}),`, `${indent(depth)}blurRadius: ${number(shadow.blur)},`, `${indent(depth)}spreadRadius: ${number(shadow.spread)},`, `${indent(depth - 1)})`].join("\n");
 }
 
 function commentFor(node: IrNode, depth: number, rendered: string): string {
@@ -1183,7 +1348,7 @@ function paddingIsZero(padding: EdgeInsets): boolean {
 }
 
 function edgeInsetsDirectional(padding: EdgeInsets, node: IrNode): string {
-  return `EdgeInsetsDirectional.only(top: ${tokenValue(node, "paddingTop", number(padding.top))}, start: ${tokenValue(node, "paddingLeft", number(padding.left))}, end: ${tokenValue(node, "paddingRight", number(padding.right))}, bottom: ${tokenValue(node, "paddingBottom", number(padding.bottom))})`;
+  return constWidget(`EdgeInsetsDirectional.only(top: ${tokenValue(node, "paddingTop", number(padding.top))}, start: ${tokenValue(node, "paddingLeft", number(padding.left))}, end: ${tokenValue(node, "paddingRight", number(padding.right))}, bottom: ${tokenValue(node, "paddingBottom", number(padding.bottom))})`);
 }
 
 function hasPaddingToken(node: IrNode): boolean {
@@ -1217,7 +1382,7 @@ function tokenValue(node: IrNode | undefined, property: string, fallback: string
 
 function dartColor(hex: string, opacity: number): string {
   const alpha = Math.round(Math.min(Math.max(opacity, 0), 1) * 255).toString(16).padStart(2, "0");
-  return `Color(0x${alpha}${hex.slice(1)})`;
+  return `const Color(0x${alpha}${hex.slice(1)})`;
 }
 
 
@@ -1285,7 +1450,7 @@ export function tokenDartLiteral(token: IrToken): string | undefined {
     case "typography": return typographyTokenLiteral(token.value);
     case "shadow": return Array.isArray(token.value) ? shadowTokenLiteral(token.value as readonly DropShadow[]) : undefined;
     case "gradient": return isGradientTokenValue(token.value) ? renderGradient(token.value, 0) : undefined;
-    case "duration": return typeof token.value === "number" && Number.isFinite(token.value) ? `Duration(milliseconds: ${number(token.value)})` : undefined;
+    case "duration": return typeof token.value === "number" && Number.isFinite(token.value) ? `const Duration(milliseconds: ${number(token.value)})` : undefined;
     case "unknown": return undefined;
     default: return typeof token.value === "number" && Number.isFinite(token.value) ? doubleLiteral(token.value) : undefined;
   }
@@ -1293,8 +1458,8 @@ export function tokenDartLiteral(token: IrToken): string | undefined {
 
 function tokenColor(value: string): string | undefined {
   const normalized = value.trim().replace(/^#/, "");
-  if (/^[0-9a-fA-F]{6}$/.test(normalized)) return `Color(0xff${normalized.toLowerCase()})`;
-  if (/^[0-9a-fA-F]{8}$/.test(normalized)) return `Color(0x${normalized.toLowerCase()})`;
+  if (/^[0-9a-fA-F]{6}$/.test(normalized)) return `const Color(0xff${normalized.toLowerCase()})`;
+  if (/^[0-9a-fA-F]{8}$/.test(normalized)) return `const Color(0x${normalized.toLowerCase()})`;
   return undefined;
 }
 
@@ -1310,7 +1475,7 @@ function typographyTokenLiteral(value: IrToken["value"]): string | undefined {
     ...(typeof typography.letterSpacing === "number" ? [`letterSpacing: ${number(typography.letterSpacing)}`] : []),
     ...(typeof typography.color === "string" && tokenColor(typography.color) !== undefined ? [`color: ${tokenColor(typography.color)}`] : []),
   ];
-  return `TextStyle(${properties.join(", ")})`;
+  return `const TextStyle(${properties.join(", ")})`;
 }
 
 function shadowTokenLiteral(shadows: readonly DropShadow[]): string {

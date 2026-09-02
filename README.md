@@ -52,6 +52,7 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 
 - Flex gaps use `Row.spacing`/`Column.spacing` instead of interleaved `SizedBox` spacers.
 - Padding uses `EdgeInsetsDirectional.only(...)` for RTL/LTR-aware layout.
+- `const` is used whenever applicable: generated widgets, padding, decorations, styles, and other compile-time-safe values should be const; values depending on runtime context, tokens, or callbacks remain non-const.
 - Default-valued properties are omitted (`mainAxisAlignment: start`, `crossAxisAlignment: center`, empty `BoxDecoration`, zero padding, `clipBehavior: Clip.none`, and zero grid spacing).
 - Decoration-less containers are emitted as `SizedBox`; `clipBehavior` is only emitted when a decoration box actually exists.
 - Square ellipses use `BoxDecoration(shape: BoxShape.circle, ...)`; `ClipOval` is reserved for non-square ellipses where a circle shape cannot represent the geometry.

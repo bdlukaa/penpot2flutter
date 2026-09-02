@@ -141,6 +141,7 @@ test("generates navigation interactions owned by reusable components", () => {
   assert.match(navigation, /Navigator\.of\(context\)\.pushNamed\(PenpotRoutes\.trending\)/);
   assert.equal((navigation.match(/Navigator\.of\(context\)\.pushNamed\(PenpotRoutes\.trending\)/g) ?? []).length, 1);
   assert.match(navigation, /import '\.\.\/routes\.dart';/);
+  assert.doesNotMatch(navigation, /import '.*screens\/.*\.dart';/);
   assert.doesNotMatch(navigation, /PenpotPrototype|PenpotOverlayPortal|OverlayEntry/);
   assertDartParses(navigation);
 });
