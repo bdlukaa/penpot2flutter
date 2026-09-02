@@ -61,6 +61,10 @@ app.innerHTML = `
       <textarea id="pubspec-assets" readonly spellcheck="false" aria-label="Generated pubspec assets"></textarea>
       <div id="asset-download-list" class="generated-file-list" aria-label="Exported assets"></div>
     </section>
+    <section id="quality-summary" hidden aria-live="polite">
+      <h2>Generation quality</h2>
+      <p id="quality-summary-text" class="muted"></p>
+    </section>
     <section id="diagnostics" hidden aria-live="polite">
       <h2>Conversion diagnostics</h2>
       <ul id="diagnostic-list"></ul>
@@ -82,6 +86,8 @@ const pubspecAssets = requiredElement<HTMLTextAreaElement>("pubspec-assets");
 const assetDownloadList = requiredElement<HTMLElement>("asset-download-list");
 const generatedFiles = requiredElement<HTMLElement>("generated-files");
 const generatedFileList = requiredElement<HTMLElement>("generated-file-list");
+const qualitySummary = requiredElement<HTMLElement>("quality-summary");
+const qualitySummaryText = requiredElement<HTMLElement>("quality-summary-text");
 const diagnostics = requiredElement<HTMLElement>("diagnostics");
 const diagnosticList = requiredElement<HTMLUListElement>("diagnostic-list");
 const tokenSetCount = requiredElement<HTMLElement>("token-set-count");
@@ -178,6 +184,11 @@ function renderConversion(message: ConversionMessage): void {
   pubspecAssets.value = message.pubspecAssets ?? "";
   renderExportedAssets(message.exportedAssets ?? []);
   const conversionDiagnostics = message.result.diagnostics;
+  const quality = message.result.qualitySummary;
+  qualitySummary.hidden = quality === undefined;
+  qualitySummaryText.textContent = quality === undefined
+    ? ""
+    : `${quality.errors} errors, ${quality.warnings} warnings, ${quality.information} informational decisions, ${quality.recommendations} design recommendations.`;
   const hasGenerationErrors = conversionDiagnostics.some((diagnostic) => diagnostic.severity === "error");
   status.textContent = hasGenerationErrors ? "Generation completed with errors; inspect diagnostics before export" : "Generated from the current selection";
   copy.disabled = hasGenerationErrors;
@@ -193,7 +204,7 @@ function renderConversion(message: ConversionMessage): void {
     if (current === undefined) byCode.set(key, { code: diagnostic.code, message: diagnostic.message, count: 1 });
     else current.count++;
   }
-  const severityOrder = ["error", "warning", "info"];
+  const severityOrder = ["error", "warning", "info", "design-recommendation"];
   diagnosticList.replaceChildren(
     ...severityOrder.flatMap((severity) => {
       const entries = grouped.get(severity);

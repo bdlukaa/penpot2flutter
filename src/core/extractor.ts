@@ -5,6 +5,7 @@ import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsi
 import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource, type TokenRegistryResult } from "./token-registry.js";
 import { buildIrLibraries, libraryModuleName } from "./library-registry.js";
 import { analyzeScreenNavigation, irInteractionFromSource, type PenpotPrototypeSource, type PenpotSourceInteraction, type PenpotSourceScreenMetadata } from "./screen-navigation-analyzer.js";
+import { analyzeDesignQuality } from "./design-quality-analyzer.js";
 
 import type {
   AssetManifestEntry,
@@ -436,6 +437,8 @@ export function extractSelection(
   context.diagnostics.push(...navigation.diagnostics);
   const root = responsive.screen?.variants[0]?.root ?? (extractedSelection.length === 1 ? extractedSelection[0] : extractSyntheticSelection(extractedSelection));
   const finalizedComponents = finalizeComponents(context);
+  const designQuality = analyzeDesignQuality(extractedSelection, finalizedComponents);
+  context.diagnostics.push(...designQuality.diagnostics);
   const libraryRegistry = buildIrLibraries({
     sources: tokenInput.libraries ?? [],
     components: finalizedComponents,
@@ -446,6 +449,7 @@ export function extractSelection(
   context.diagnostics.push(...libraryRegistry.diagnostics);
   return {
     root,
+    qualitySummary: designQuality.summary,
     ...(responsive.screen === undefined ? {} : { responsiveScreen: responsive.screen }),
     ...(navigation.graph === undefined ? {} : { navigationGraph: navigation.graph }),
     assets: [...context.assets.values()],

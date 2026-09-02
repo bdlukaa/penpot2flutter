@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
 import { extractSelection, type PenpotSourceShape } from "../src/core/extractor.js";
+import { analyzeDesignQuality } from "../src/core/design-quality-analyzer.js";
 import { generateComponentWidget, generateFlutterFiles, generateFlutterTypography, generateFlutterWidget, generatePubspecSnippet } from "../src/core/flutter-generator.js";
 import { validateFlutterThemeGeneration } from "../src/core/flutter-theme-generator.js";
 import { dartMemberName } from "../src/core/token-naming.js";
@@ -1011,6 +1012,42 @@ test("preserves Penpot stacking order when live children expose zIndex", () => {
     ],
   }]);
   assert.deepEqual(result.root.kind === "board" ? result.root.children.map((child) => child.sourceName) : [], ["Icon", "Text"]);
+});
+
+test("emits non-blocking design recommendations for repeated source structure and fixed screens", () => {
+  const repeated = (id: string, x: number) => ({
+    id,
+    sourceId: id,
+    sourceName: "Navigation",
+    name: "Navigation",
+    kind: "group" as const,
+    geometry: { x, y: 0, width: 20, height: 20 },
+    visible: true,
+    style: { fill: { color: "#352922", opacity: 1 }, opacity: 1 },
+    diagnostics: [],
+    children: [],
+  });
+  const root = {
+    id: "screen",
+    sourceId: "screen",
+    sourceName: "Home",
+    name: "Home",
+    kind: "board" as const,
+    geometry: { x: 0, y: 0, width: 360, height: 780 },
+    visible: true,
+    style: { opacity: 1 },
+    diagnostics: [],
+    clipContent: false,
+    children: [repeated("nav-1", 0), repeated("nav-2", 30), repeated("nav-3", 60)],
+  };
+  const analysis = analyzeDesignQuality([root], []);
+  assert.deepEqual(analysis.diagnostics.map((diagnostic) => diagnostic.code).sort(), [
+    "REPEATED_COLOR_NOT_TOKEN",
+    "REPEATED_STRUCTURE_NOT_COMPONENT",
+    "SCREEN_HAS_NO_RESPONSIVE_SEMANTICS",
+  ]);
+  assert.equal(analysis.summary.recommendations, 3);
+  assert.ok(analysis.diagnostics.every((diagnostic) => diagnostic.severity === "design-recommendation"));
 });
 
 // --- Shared library resolution fixtures ---

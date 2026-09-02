@@ -41,7 +41,9 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 - Penpot child min/max dimensions as `ConstrainedBox`, fill sizing as `Expanded`, auto sizing without forced expansion, and optional aspect-ratio constraints when source metadata provides one
 - Reusable typography styles in `app_typography.dart`, parsed CSS font stacks with Flutter fallback families, aggregated external-font requirements, font usage manifests, Penpot weight normalization, structural typography names, absolute/percentage line-height conversion, text transforms, paragraph alignment, max-lines/overflow metadata, and nested mixed-style `RichText` spans
 - Centralized Dart identifier allocation for components, parameters, variants, routes, assets, and typography, with deterministic case-insensitive collision handling and generated-source declaration validation
-- Node-associated warnings for unsupported or approximate conversion
+- Node-associated diagnostics for unsupported or approximate conversion, intentional decisions, and source-design recommendations
+- Non-blocking design-quality recommendations for repeated non-component structures, repeated literal colors/typography without token references, and screen-like fixed/absolute layouts without responsive semantics
+- A measured generation-quality summary of errors, warnings, informational decisions, and design recommendations (no arbitrary percentage score)
 - A `// layer-name` comment above every generated widget for traceability back to the Penpot layer
 
 ## Idiomatic Flutter output
@@ -67,10 +69,10 @@ Generated code follows Flutter conventions rather than pixel-positioning every n
 - Shared components resolve first from `Shape.component()`, then from the local/connected library index. Only components reachable from the selected roots are exported.
 - The plugin is read-only. A shared library that is available but not connected produces `LIBRARY_UNAVAILABLE` with remediation guidance; the plugin intentionally does not call `connectLibrary()` because it persistently modifies the Penpot file and requires `library:write`.
 - Missing libraries, components, and tokens produce `LIBRARY_UNAVAILABLE`, `LIBRARY_COMPONENT_UNRESOLVED`, or `LIBRARY_TOKEN_UNRESOLVED` diagnostics rather than being silently flattened. Cyclic library dependencies and module-name collisions report `LIBRARY_DEPENDENCY_CYCLE` and `LIBRARY_NAME_COLLISION`.
-- Component override inference currently supports meaningful text overrides as defaulted `String` parameters. Color, visibility, dimensions, and component swaps remain diagnostics/future work.
-- Variant metadata comes from `LibraryComponent.isVariant()`, `Variants.properties`, `Variants.variantComponents()`, and `variantProps`; family membership is never inferred from display names.
+- Component override inference supports meaningful text and solid-fill overrides as defaulted `String` and nullable `Color` parameters. Visibility, dimensions, gradients/multiple fills, and component swaps remain diagnostics/future work.
+- Variant metadata comes from `LibraryComponent.isVariant()`, `Variants.properties`, `Variants.variantComponents()`, and `variantProps`; family membership is never inferred from display names. Sparse matrices emit `VARIANT_SPARSE_MATRIX` information and expose an actual-member enum API when independent axes would make invalid combinations too easy to construct.
 - Structurally different variant members use a readable internal switch between complete member subtrees. Shared-value factoring into smaller conditional style expressions is a future optimization; public variant APIs already remain unified.
-- Incomplete variant matrices generate `VARIANT_COMBINATION_UNSUPPORTED`, and unsupported constructor combinations throw an `ArgumentError` instead of selecting an arbitrary member.
+- Design-quality recommendations never block export or change generated Flutter. They identify Penpot structures that limit reuse, tokenization, or responsiveness without inventing semantics.
 - Responsive board inference only accepts exact semantic families ending in `Mobile`, `Tablet`, or `Desktop` and requires structural similarity. Low-confidence or unrelated boards remain separate and produce `RESPONSIVE_GROUP_UNRESOLVED`; explicit metadata may confirm intentionally divergent layouts.
 - Inferred Mobile/Tablet/Desktop thresholds use available width (`600` and `1024`) with no device-type or orientation checks. Breakpoint branches stay inside one generated screen class; structurally divergent branches retain safe independent subtrees rather than forcing a brittle merge.
 - The official Penpot API exposes min/max child constraints but no aspect-ratio or flex grow/shrink fields. The IR supports an explicit aspect ratio for future/configured adapters; unavailable semantics are never inferred from canvas geometry alone.

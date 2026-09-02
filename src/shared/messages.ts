@@ -1,5 +1,5 @@
 import type { TokenCatalogStats } from "../penpot/token-catalog.js";
-import type { Diagnostic, GeneratedFile } from "./ir.js";
+import type { Diagnostic, GeneratedFile, IrQualitySummary } from "./ir.js";
 
 export interface RequestConversionMessage {
   readonly source: "penpot-to-flutter";
@@ -37,7 +37,7 @@ export interface ConversionMessage {
   readonly tokenCatalog: TokenCatalogStats;
   readonly tokenCatalogDiagnostics: readonly Diagnostic[];
   readonly tokenBindings: TokenBindingStats;
-  readonly result?: { readonly diagnostics: readonly Diagnostic[] };
+  readonly result?: { readonly diagnostics: readonly Diagnostic[]; readonly qualitySummary?: IrQualitySummary };
   readonly dart?: string;
   readonly pubspecAssets?: string;
   /** Exportable asset payloads. Binary payloads are base64 to keep the message serializable. */

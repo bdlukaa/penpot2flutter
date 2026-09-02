@@ -1,4 +1,4 @@
-export type DiagnosticSeverity = "info" | "warning" | "error";
+export type DiagnosticSeverity = "info" | "warning" | "error" | "design-recommendation";
 
 export interface Diagnostic {
   readonly severity: DiagnosticSeverity;
@@ -559,8 +559,16 @@ export interface IrNavigationGraph {
   readonly routerStrategy: IrRouterStrategy;
 }
 
+export interface IrQualitySummary {
+  readonly errors: number;
+  readonly warnings: number;
+  readonly information: number;
+  readonly recommendations: number;
+}
+
 export interface ConversionResult {
   readonly root: IrNode;
+  readonly qualitySummary?: IrQualitySummary;
   readonly responsiveScreen?: IrResponsiveScreen;
   readonly navigationGraph?: IrNavigationGraph;
   /** Legacy metadata projection. Prefer `assetRegistry` for generated projects. */
