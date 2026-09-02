@@ -71,11 +71,12 @@ test("generates a shared library module once and imports it deterministically", 
 
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries);
   const paths = files.map((file) => file.path);
-  assert.ok(paths.includes("libraries/company_design_system/components/penpot_button.dart"));
-  assert.ok(paths.includes("libraries/company_design_system/company_design_system.dart"));
-  assert.ok(paths.includes("libraries/company_design_system/theme/penpot_tokens.dart"));
-  assert.match(files.find((file) => file.path === "screens/selection.dart")!.source, /import '\.\.\/libraries\/company_design_system\/components\/penpot_button\.dart';/);
-  assert.match(files.find((file) => file.path === "libraries/company_design_system/company_design_system.dart")!.source, /export 'components\/penpot_button\.dart';/);
+  assert.ok(paths.includes("lib/generated/penpot/compositions/selection_design.dart"));
+  assert.ok(paths.includes("lib/generated/penpot/libraries/company_design_system/components/penpot_button.dart"));
+  assert.ok(paths.includes("lib/generated/penpot/libraries/company_design_system/company_design_system.dart"));
+  assert.ok(paths.includes("lib/generated/penpot/libraries/company_design_system/theme/penpot_tokens.dart"));
+  assert.match(files.find((file) => file.path === "lib/generated/penpot/compositions/selection_design.dart")!.source, /import '\.\.\/libraries\/company_design_system\/components\/penpot_button\.dart';/);
+  assert.match(files.find((file) => file.path === "lib/generated/penpot/libraries/company_design_system/company_design_system.dart")!.source, /export 'components\/penpot_button\.dart';/);
   assert.deepEqual(
     generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries),
     files,
@@ -84,7 +85,16 @@ test("generates a shared library module once and imports it deterministically", 
 
 test("preserves missing-library semantics and reports library graph diagnostics", () => {
   const unresolved = extractSelection([sharedInstance("unresolved", "missing-library")]);
-  assert.ok(unresolved.diagnostics.some((diagnostic) => diagnostic.code === "LIBRARY_UNAVAILABLE"));
+  assert.deepEqual(
+    unresolved.diagnostics.map(({ code, severity, sourceId }) => ({ code, severity, sourceId })),
+    [{ code: "LIBRARY_UNAVAILABLE", severity: "warning", sourceId: "unresolved" }],
+  );
+  assert.equal(unresolved.root.sourceId, "unresolved");
+  assert.equal(unresolved.root.visible, true);
+  assert.ok(unresolved.root.kind === "board" && unresolved.root.children.some((child) => child.sourceId === "button-label" && child.visible));
+  assert.deepEqual(unresolved.root.diagnostics.map(({ code, sourceId }) => ({ code, sourceId })), [
+    { code: "LIBRARY_UNAVAILABLE", sourceId: "unresolved" },
+  ]);
 
   const componentA = {
     ...buttonRoot,
@@ -151,7 +161,9 @@ test("keeps library assets and unresolved shared tokens attributable to their li
 
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "LIBRARY_TOKEN_UNRESOLVED"));
   assert.deepEqual(result.libraries[0]?.assets, ["avatar"]);
-  assert.equal(result.assetRegistry[0]?.filename, "libraries/assets/assets/images/avatar.png");
+  assert.equal(result.assetRegistry[0]?.filename, "assets/penpot/libraries/assets/images/avatar.png");
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries);
-  assert.ok(files.some((file) => file.path === "libraries/assets/assets.dart"));
+  assert.ok(files.some((file) => file.path === "lib/generated/penpot/compositions/shared_image_design.dart"));
+  assert.ok(files.some((file) => file.path === "lib/generated/penpot/assets.dart"));
+  assert.ok(files.some((file) => file.path === "lib/generated/penpot/libraries/assets/assets.dart"));
 });

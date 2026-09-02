@@ -1,14 +1,15 @@
 {
   "name": "penpot-to-flutter",
   "private": true,
-  "version": "0.0.47",
+  "version": "0.0.48",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit --pretty false",
     "lint": "eslint .",
-    "test": "rm -rf .test-build && tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js"
+    "test": "rm -rf .test-build && tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js",
+    "install-handoff": "node bin/install-handoff.mjs"
   },
   "dependencies": {
     "@penpot/plugin-types": "1.5.0",

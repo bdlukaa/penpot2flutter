@@ -57,7 +57,7 @@ export function createAssetRegistry(candidates: readonly AssetCandidate[]): Asse
     const filename = count === 1 ? base : addCollisionSuffix(base, count);
     if (count > 1) {
       diagnostics.push({
-        severity: "warning",
+        severity: "info",
         sourceId: candidate.sourceNodeId,
         code: "ASSET_NAME_COLLISION",
         message: `Asset name "${base}" collides with another asset; exported as "${filename}".`,
@@ -147,7 +147,7 @@ function baseFilename(candidate: AssetCandidate): string {
   const libraryPrefix = candidate.sourceLibraryScope === "shared" && candidate.sourceLibraryId !== undefined
     ? `libraries/${candidate.sourceLibraryModule ?? (slugify(candidate.sourceLibraryId) || "library")}/`
     : "";
-  return `${libraryPrefix}assets/${category}/${cleaned}.${extension}`;
+  return `assets/penpot/${libraryPrefix}${category}/${cleaned}.${extension}`;
 }
 
 function slugify(value: string): string {

@@ -18,8 +18,10 @@ test("allocates semantic asset paths and stable collision suffixes", () => {
   ]);
 
   assert.deepEqual(first.assets, reversed.assets);
-  assert.deepEqual(first.assets.map((asset) => asset.filename), ["assets/icons/cart.svg", "assets/icons/cart-2.svg"]);
-  assert.deepEqual(first.diagnostics.map((diagnostic) => diagnostic.code), ["ASSET_NAME_COLLISION"]);
+  assert.deepEqual(first.assets.map((asset) => asset.filename), ["assets/penpot/icons/cart.svg", "assets/penpot/icons/cart-2.svg"]);
+  assert.deepEqual(first.diagnostics.map(({ code, severity }) => ({ code, severity })), [
+    { code: "ASSET_NAME_COLLISION", severity: "info" },
+  ]);
 });
 
 test("deduplicates identical content while retaining source aliases", () => {
@@ -59,17 +61,17 @@ test("extracts semantic image and icon assets and generates AppAssets references
     ],
   }]);
   const files = generateFlutterFiles(result.root, [], [], [], [], undefined, [], undefined, result.assetRegistry);
-  const screen = files.find((file) => file.path.startsWith("screens/"))!.source;
-  const assets = files.find((file) => file.path === "assets.dart")!.source;
+  const screen = files.find((file) => file.path === "lib/generated/penpot/compositions/asset_design.dart")!.source;
+  const assets = files.find((file) => file.path === "lib/generated/penpot/assets.dart")!.source;
 
-  assert.deepEqual(result.assetRegistry.map((asset) => asset.filename), ["assets/icons/cart.svg", "assets/images/hero.webp"]);
-  assert.match(assets, /static const cart = 'assets\/icons\/cart\.svg';/);
-  assert.match(assets, /static const hero = 'assets\/images\/hero\.webp';/);
+  assert.deepEqual(result.assetRegistry.map((asset) => asset.filename), ["assets/penpot/icons/cart.svg", "assets/penpot/images/hero.webp"]);
+  assert.match(assets, /static const cart = 'assets\/penpot\/icons\/cart\.svg';/);
+  assert.match(assets, /static const hero = 'assets\/penpot\/images\/hero\.webp';/);
   assert.match(screen, /import '\.\.\/assets\.dart';/);
   assert.match(screen, /AppAssets\.cart/);
   assert.match(screen, /AppAssets\.hero/);
-  assert.match(generatePubspecSnippet(result.assetRegistry), /- assets\/icons\/cart\.svg/);
-  assert.match(generatePubspecSnippet(result.assetRegistry), /- assets\/images\/hero\.webp/);
+  assert.match(generatePubspecSnippet(result.assetRegistry), /- assets\/penpot\/icons\/cart\.svg/);
+  assert.match(generatePubspecSnippet(result.assetRegistry), /- assets\/penpot\/images\/hero\.webp/);
 });
 
 test("preserves image fit, alignment, and clipping metadata", () => {
@@ -153,30 +155,30 @@ test("keeps component asset references reusable in component output", () => {
   const files = generateFlutterFiles(result.root, result.components, [], [], [], undefined, [], undefined, result.assetRegistry);
 
   assert.equal(result.assetRegistry.length, 1);
-  assert.match(files.find((file) => file.path === "components/avatar.dart")!.source, /AppAssets\.avatar/);
-  assert.match(files.find((file) => file.path === "assets.dart")!.source, /assets\/images\/avatar\.png/);
+  assert.match(files.find((file) => file.path === "lib/generated/penpot/components/avatar.dart")!.source, /AppAssets\.avatar/);
+  assert.match(files.find((file) => file.path === "lib/generated/penpot/assets.dart")!.source, /assets\/penpot\/images\/avatar\.png/);
 });
 
 test("allocates one valid Dart symbol for every asset, including case and punctuation collisions", () => {
   const assets = [
-    { id: "highlight-6", sourceNodeId: "node-6", type: "svg" as const, filename: "assets/vectors/highlight-6.svg" },
-    { id: "highlight-5", sourceNodeId: "node-5", type: "svg" as const, filename: "assets/vectors/highlight-5.svg" },
-    { id: "highlight-copy", sourceNodeId: "node-copy", type: "svg" as const, filename: "assets/vectors/Highlight_5.svg" },
-    { id: "numeric", sourceNodeId: "node-numeric", type: "svg" as const, filename: "assets/vectors/1.svg" },
+    { id: "highlight-6", sourceNodeId: "node-6", type: "svg" as const, filename: "assets/penpot/vectors/highlight-6.svg" },
+    { id: "highlight-5", sourceNodeId: "node-5", type: "svg" as const, filename: "assets/penpot/vectors/highlight-5.svg" },
+    { id: "highlight-copy", sourceNodeId: "node-copy", type: "svg" as const, filename: "assets/penpot/vectors/Highlight_5.svg" },
+    { id: "numeric", sourceNodeId: "node-numeric", type: "svg" as const, filename: "assets/penpot/vectors/1.svg" },
   ];
   const dart = generateFlutterAssets(assets);
 
-  assert.match(dart, /static const highlight5 = 'assets\/vectors\/Highlight_5\.svg';/);
-  assert.match(dart, /static const highlight6 = 'assets\/vectors\/highlight-6\.svg';/);
-  assert.match(dart, /static const highlight52 = 'assets\/vectors\/highlight-5\.svg';/);
-  assert.match(dart, /static const x1 = 'assets\/vectors\/1\.svg';/);
-  assert.equal(validateGeneratedDartFiles([{ path: "assets.dart", source: dart }]).length, 0);
+  assert.match(dart, /static const highlight5 = 'assets\/penpot\/vectors\/Highlight_5\.svg';/);
+  assert.match(dart, /static const highlight6 = 'assets\/penpot\/vectors\/highlight-6\.svg';/);
+  assert.match(dart, /static const highlight52 = 'assets\/penpot\/vectors\/highlight-5\.svg';/);
+  assert.match(dart, /static const x1 = 'assets\/penpot\/vectors\/1\.svg';/);
+  assert.equal(validateGeneratedDartFiles([{ path: "lib/generated/penpot/assets.dart", source: dart }]).length, 0);
   assert.equal((dart.match(/static const /g) ?? []).length, 4);
 });
 
 test("reports invalid and duplicate generated Dart declarations", () => {
   const diagnostics = validateGeneratedDartFiles([{
-    path: "assets.dart",
+    path: "lib/generated/penpot/assets.dart",
     source: "abstract final class AppAssets {\n  static const 112 = 'a';\n  static const cart = 'b';\n  static const Cart = 'c';\n}\n",
   }]);
 
@@ -190,5 +192,5 @@ test("does not duplicate pubspec declarations", () => {
   ]);
   const pubspec = generatePubspecSnippet(registry.assets);
 
-  assert.equal((pubspec.match(/assets\/images/g) ?? []).length, 1);
+  assert.equal((pubspec.match(/assets\/penpot\/images/g) ?? []).length, 1);
 });

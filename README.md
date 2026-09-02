@@ -1,90 +1,222 @@
 # Penpot to Flutter
 
-A read-only Penpot plugin that converts the current selection into deterministic, formatted Flutter/Dart widget source.
+A read-only design-handoff compiler that converts explicit Penpot design semantics into deterministic Flutter/Dart code, assets, metadata, and diagnostics.
+
+Penpot to Flutter is not an application generator, no-code platform, or replacement for developer-owned Flutter architecture. It compiles what Penpot knows, preserves what Penpot says, and reports what cannot be represented without guessing.
+
+## Product boundary
+
+### Penpot is authoritative for
+
+- design tokens and token themes
+- typography and visual assets
+- components, instances, variants, and explicit overrides
+- connected shared libraries
+- explicit Flex, Grid, and absolute layout
+- explicit sizing, alignment, clipping, transforms, and styling
+- top-level board compositions
+- explicit prototype destinations, flows, and interactions
+
+### The generated handoff owns
+
+- deterministic Flutter representations of explicit Penpot semantics
+- reusable design-system code
+- design compositions
+- prototype metadata and callbacks
+- generated assets and integration metadata
+- source traceability, manifests, diagnostics, and designer recommendations
+
+### Flutter developers own
+
+- application and feature architecture
+- domain models and business logic
+- state management and async loading
+- API integration, persistence, authentication, and authorization
+- routing, route guards, deep links, and navigation policy
+- form validation and production error/loading/empty states
+- localization architecture
+- accessibility decisions not explicitly represented by the design
+- runtime responsive behavior beyond explicit design information
+- analytics, platform adaptation, and production application composition
+
+The generator does not invent these responsibilities from layer names, text, geometry, or visual similarity.
 
 ## Compiler pipeline
 
 ```text
-Penpot selection
-  -> normalized serializable IR
-  -> component / variant / token registries
-  -> Flutter theme and widget generators
-  -> formatted Dart preview, copy, or source download
+Penpot Plugin API
+  -> serializable source snapshot
+  -> normalized JSON-serializable IR
+  -> component / variant / token / library registries
+  -> Flutter generators
+  -> deterministic files + assets + diagnostics
 ```
 
-The generator never consumes Penpot objects directly. `src/plugin.ts` is the only Penpot API boundary; the UI receives typed, JSON-serializable conversion messages.
+`src/plugin.ts` is the Penpot API boundary. The iframe UI receives typed, JSON-serializable messages; Flutter generation does not consume live Penpot objects.
+
+## Three generated tiers
+
+| Tier | Output | Authority |
+| --- | --- | --- |
+| 1 — reusable design-system code | tokens, themes, typography, assets, components, variants, and shared-library modules | High-confidence generated API intended for direct import |
+| 2 — design compositions | selected boards and explicit responsive board variants under `compositions/` | Implementation references or composition helpers, not complete production screens |
+| 3 — prototype metadata | destinations, flows, interactions, and `onPrototypeInteraction` callbacks | Low-authority integration hints; application navigation remains developer-owned |
+
+`penpot_manifest.json` records generated files, tiers, source IDs, hashes, ownership roots, libraries, assets, tokens, compositions, and prototype references.
 
 ## Implemented conversion scope
 
-- Selection changes, empty selection state, and multiple roots through a synthetic parent
-- Boards, groups, rectangles, ellipses, images, text, and vector paths
-- Vector paths (`path`, `svg-raw`, `boolean`) as SVG assets rendered via `flutter_svg`
-- Nested children and source/z-order preservation
-- Flex rows and columns, reverse direction, spacing (`Row`/`Column.spacing`), alignment, fill sizing, and absolute children
-- Simple grids containing only flex tracks and unspanned auto-positioned children, generated as `GridView.count`
-- Stack/`Positioned` fallback for absolute containers and unsupported grid semantics
-- Solid fills, linear gradients, radial gradients, image fills, opacity, solid borders, corner radii, and drop shadows
-- Board clipping, rotation, and horizontal/vertical flips
-- Text content, family, size, weight, style, decoration, line height, letter spacing, and alignment
-- Mixed-style text runs as `RichText`/`TextSpan` with per-run style and color
-- Deterministic semantic asset registry for SVG, PNG, JPG, WebP, and font assets, content-hash deduplication, collision diagnostics, generated `AppAssets` constants, binary/SVG export payloads, and duplicate-free `pubspec.yaml` declarations
-- Preview syntax highlighting, Copy Dart, Download Dart, and per-file preview/copy/download for multi-file component output
-- Explicit Penpot component definitions and component instances: one Flutter widget per canonical component, with callers generated as widget invocations
-- Local and connected shared-library component resolution, including nested and cross-library component dependencies, composite library/component identity, deterministic name collision handling, and conservative text-override (`String`) parameters
-- Explicit `IrLibrary` registry entries keyed by stable Penpot library IDs, preserving local/shared component, token, and asset ownership plus library dependency diagnostics
-- One reusable Flutter module per reachable shared library (`libraries/<library>/components`, `theme`, `assets.dart`, and a barrel), so screens import components instead of duplicating their implementations
-- Penpot variant families as one reusable Flutter widget with deterministic typed enum axes, default values, explicit member matrices, instance arguments, and runtime rejection of undefined combinations
-- Incremental local token extraction plus connected-library token catalog serialization before the compiler boundary; shared token sets remain library-scoped
-- Typed nested token namespaces, `PenpotTokens extends ThemeExtension`, multidimensional theme-axis enums, `ThemeData` composition, `BuildContext.penpot`, full-catalog metadata, and semantic token references in generated widgets/components
-- Responsive screen IR and conservative Mobile/Tablet/Desktop board-family detection, with explicit metadata support for unambiguous custom groups
-- Dependency-free `LayoutBuilder` breakpoint generation, responsive Row/Column and grid variants, hidden breakpoint content, component/variant preservation, and Stack fallback for overlays
-- Penpot child min/max dimensions as `ConstrainedBox`, fill sizing as `Expanded`, auto sizing without forced expansion, and optional aspect-ratio constraints when source metadata provides one
-- Reusable typography styles in `app_typography.dart`, parsed CSS font stacks with Flutter fallback families, aggregated external-font requirements, font usage manifests, Penpot weight normalization, structural typography names, absolute/percentage line-height conversion, text transforms, paragraph alignment, max-lines/overflow metadata, and nested mixed-style `RichText` spans
-- Centralized Dart identifier allocation for components, parameters, variants, routes, assets, and typography, with deterministic case-insensitive collision handling and generated-source declaration validation
-- Node-associated diagnostics for unsupported or approximate conversion, intentional decisions, and source-design recommendations
-- Non-blocking design-quality recommendations for repeated non-component structures, repeated literal colors/typography without token references, and screen-like fixed/absolute layouts without responsive semantics
-- A measured generation-quality summary of errors, warnings, informational decisions, and design recommendations (no arbitrary percentage score)
-- A `// layer-name` comment above every generated widget for traceability back to the Penpot layer
+- Selection changes, empty selection state, and multiple selected roots through a synthetic parent
+- Boards, groups, rectangles, ellipses, images, text, and vector/path shapes
+- Nested children with source and z-order preservation
+- Explicit Flex rows and columns, reverse direction, spacing, alignment, fill sizing, constraints, and absolute children
+- Simple all-flex grids without spans or manual placement as `GridView.count`
+- Faithful `Stack`/`Positioned` output for explicit absolute layout and unsupported Grid semantics
+- Solid fills, linear/radial gradients, image fills, opacity, solid borders, corner radii, and drop shadows
+- Clipping, rotation, and horizontal/vertical flips
+- Text family, fallbacks, size, weight, style, decoration, line height, letter spacing, alignment, transforms, and mixed runs
+- SVG, PNG, JPG, WebP, and font asset registry entries with deterministic names, content-hash deduplication, collision diagnostics, generated `AppAssets`, and `pubspec.yaml` integration metadata
+- Canonical Penpot components as reusable Flutter widgets; instances call those widgets rather than duplicating their trees
+- Connected shared-library component, token, and asset ownership keyed by stable Penpot library IDs
+- Penpot variant families as one public widget API with explicit typed enum selection and validation of sparse combinations
+- Token catalogs, sets, aliases, theme axes, generated `ThemeExtension` APIs, `ThemeData` composition, and semantic token references
+- Reusable typography output and aggregated external-font requirements
+- Prototype destinations, flows, triggers, actions, overlay metadata, and callbacks without selecting a Flutter routing framework
+- Node-associated errors, warnings, informational decisions, and non-blocking design recommendations
+- Generated-source declaration validation before copy or download
 
-## Idiomatic Flutter output
+## Explicit layout and responsiveness
 
-Generated code intentionally favors direct Flutter widgets over exporter-specific intermediate widgets. Prefer raw `OverlayPortal`, `StatefulWidget`, named routes, and standard Flutter APIs in generated code; add an abstraction only when the application developer explicitly chooses one. This keeps generated output editable and gives developers maximum freedom to replace or extend behavior.
+Layout mapping follows source semantics:
 
-Generated code follows Flutter conventions rather than pixel-positioning every node:
+```text
+horizontal Flex       -> Row
+vertical Flex         -> Column
+simple supported Grid -> GridView.count
+absolute positioning  -> Stack + Positioned
+fill sizing           -> Expanded when explicitly represented
+fixed sizing          -> SizedBox / constraints
+padding                -> Padding
+rotation               -> Transform.rotate
+clipping               -> matching Flutter clip widget
+```
 
-- Flex gaps use `Row.spacing`/`Column.spacing` instead of interleaved `SizedBox` spacers.
-- Padding uses `EdgeInsetsDirectional.only(...)` for RTL/LTR-aware layout.
-- `const` is used whenever applicable: generated widgets, padding, decorations, styles, and other compile-time-safe values should be const; values depending on runtime context, tokens, or callbacks remain non-const.
-- Default-valued properties are omitted (`mainAxisAlignment: start`, `crossAxisAlignment: center`, empty `BoxDecoration`, zero padding, `clipBehavior: Clip.none`, and zero grid spacing).
-- Decoration-less containers are emitted as `SizedBox`; `clipBehavior` is only emitted when a decoration box actually exists.
-- Square ellipses use `BoxDecoration(shape: BoxShape.circle, ...)`; `ClipOval` is reserved for non-square ellipses where a circle shape cannot represent the geometry.
+A source container without explicit Flex or supported Grid semantics is preserved as fixed/absolute composition. The compiler does not reinterpret geometry as a Row, Column, Grid, or responsive layout because elements happen to align visually.
 
-## Intentional fallbacks and limitations
+Responsive output is explicit-only:
 
-- A grid containing fixed, percent, or auto tracks; spans; or manual/area placement falls back to `Stack`/`Positioned` and reports an `unsupported-grid` warning. This preserves placement instead of guessing incorrect Flutter grid constraints.
-- Mixed text runs are resolved into `RichText`/`TextSpan` from the live `Text.getRange` API when Penpot reports mixed styles; when runs cannot be resolved, the common style is used with a warning.
-- Inner shadows, non-solid strokes, unsupported colors, malformed geometry, and malformed image IDs report warnings.
-- `FONT_EXTERNAL_REQUIRED`, `FONT_WEIGHT_APPROXIMATED`, `TEXT_LINE_HEIGHT_INVALID`, `TEXT_STYLE_UNSUPPORTED`, `TEXT_OVERFLOW_INFERRED`, and `TEXT_MIXED_STYLE_UNSUPPORTED` identify typography requirements or data that cannot be represented exactly. External font requirements are aggregated once per conversion. Penpot exposes font metadata but no downloadable font files through the current Plugin API; an adapter must provide `assetPath` values before font assets are added to `pubspec.yaml`.
-- Simple and complex vector/path shapes become SVG asset references; `penpot.generateMarkup` exports SVG payloads when available. Vectors marked with unsupported effects use an adapter-provided raster fallback; without one, `ASSET_EXPORT_FAILED` is shown rather than silently dropping the effect.
-- Shared components resolve first from `Shape.component()`, then from the local/connected library index. Only components reachable from the selected roots are exported.
-- The plugin is read-only. A shared library that is available but not connected produces `LIBRARY_UNAVAILABLE` with remediation guidance; the plugin intentionally does not call `connectLibrary()` because it persistently modifies the Penpot file and requires `library:write`.
-- Missing libraries, components, and tokens produce `LIBRARY_UNAVAILABLE`, `LIBRARY_COMPONENT_UNRESOLVED`, or `LIBRARY_TOKEN_UNRESOLVED` diagnostics rather than being silently flattened. Cyclic library dependencies and module-name collisions report `LIBRARY_DEPENDENCY_CYCLE` and `LIBRARY_NAME_COLLISION`.
-- Component override inference supports meaningful text and solid-fill overrides as defaulted `String` and nullable `Color` parameters. Visibility, dimensions, gradients/multiple fills, and component swaps remain diagnostics/future work.
-- Variant metadata comes from `LibraryComponent.isVariant()`, `Variants.properties`, `Variants.variantComponents()`, and `variantProps`; family membership is never inferred from display names. Sparse matrices emit `VARIANT_SPARSE_MATRIX` information and expose an actual-member enum API when independent axes would make invalid combinations too easy to construct.
-- Structurally different variant members use a readable internal switch between complete member subtrees. Shared-value factoring into smaller conditional style expressions is a future optimization; public variant APIs already remain unified.
-- Design-quality recommendations never block export or change generated Flutter. They identify Penpot structures that limit reuse, tokenization, or responsiveness without inventing semantics.
-- Responsive board inference only accepts exact semantic families ending in `Mobile`, `Tablet`, or `Desktop` and requires structural similarity. Low-confidence or unrelated boards remain separate and produce `RESPONSIVE_GROUP_UNRESOLVED`; explicit metadata may confirm intentionally divergent layouts.
-- Inferred Mobile/Tablet/Desktop thresholds use available width (`600` and `1024`) with no device-type or orientation checks. Breakpoint branches stay inside one generated screen class; structurally divergent branches retain safe independent subtrees rather than forcing a brittle merge.
-- The official Penpot API exposes min/max child constraints but no aspect-ratio or flex grow/shrink fields. The IR supports an explicit aspect ratio for future/configured adapters; unavailable semantics are never inferred from canvas geometry alone.
-- Live token extraction requires Penpot Plugin API types compatible with `@penpot/plugin-types` `1.5.0`. Local and already-connected library `TokenCatalog`s are serialized in the plugin context; applied bindings come from `Shape.tokens`, whose values are semantic token names. Token identity is `(libraryId, setId, tokenId)`, while semantic paths and generated Dart names are separate concepts. The plugin never identifies tokens by matching equal resolved values.
-- Token sets remain ordered namespaces and themes select set combinations. Active theme sets are used for current shape bindings; same semantic paths across Light/Dark or brand sets become one theme-aware Flutter property rather than numbered fields.
-- The file-wide token catalog, normalized registry, generated theme files, and font metadata are session-cached and reused for selection changes. A single coordinator deduplicates in-flight work, rejects stale runs after invalidation, and keeps selection handling available while the catalog warms. `filechange` and **Refresh Design System** create replacement jobs; selection changes and ordinary document saves never invalidate the cache. Penpot Plugin API 1.5 has no token-specific mutation event, so refresh manually after editing tokens or themes.
-- Whole-token aliases and supported composite arithmetic expressions are resolved at generation time through a dependency graph with cycle detection; original references and dependencies remain in the IR. Unresolvable references use the source resolved fallback and a grouped diagnostic. Inset shadows are diagnosed because Flutter `BoxShadow` cannot represent them.
-- Material `ColorScheme`/`TextTheme` roles are mapped only for explicit semantic names such as `color.primary` and `typography.bodyMedium`; the complete catalog remains available through `ThemeExtension`. Theme-specific domain values are exposed through generated nested namespaces and `BuildContext.penpot`.
-- Local component output remains under `screens/`, `components/`, and `theme/`. Connected shared libraries generate once under `libraries/<library_module>/` with component/theme/asset module boundaries and a library barrel. `penpot_manifest.json` records the stable library identities and generated file list; Penpot Plugin API 1.5 exposes no source revision, so no revision is invented. The UI can preview, copy, and download each file individually; it does not create a ZIP bundle.
-- Asset binaries are exported as individual downloadable files in the plugin UI (raster bytes are transferred as base64; SVG is transferred as text). The plugin intentionally does not claim to create a ZIP bundle because the current browser/plugin setup provides no verified archive workflow.
-- A selected reusable component remains a component conversion even when the document also contains prototype flows; prototype board expansion is reserved for screen selections. Failed Penpot SVG exports become `ASSET_EXPORT_FAILED` diagnostics instead of raw console errors.
-- Gradient coordinates are interpreted as normalized Penpot coordinates. Complex gradient transforms are not supported.
+- Exact semantic board families such as `Checkout / Mobile`, `Checkout / Tablet`, and `Checkout / Desktop` may be grouped as related design compositions.
+- Board widths do not become breakpoints.
+- Each board keeps its own source subtree; structural differences are not merged into an invented adaptive layout.
+- A `LayoutBuilder` convenience resolver is generated only when explicit min/max bounds are present and complete.
+- Without explicit bounds, the compiler emits separate compositions and may recommend adding explicit metadata if a resolver is desired.
+
+The current Penpot plugin extraction does not derive min/max bounds from canvas dimensions.
+
+## Components, variants, tokens, and libraries
+
+Components are a primary handoff contract. One canonical Penpot component generates one reusable Flutter widget. Explicit instances become widget invocations, and conservative explicit overrides can become typed constructor parameters.
+
+Variant membership comes from Penpot variant APIs, never display-name or visual-difference guessing. Distinct variant structures remain distinct internally when collapsing them would lose source semantics.
+
+Token identity is preserved independently from resolved values. Repeated literals do not silently become tokens. Local and already-connected library token catalogs are serialized in the plugin context and generated into typed namespaces and theme extensions.
+
+Shared libraries remain keyed by stable library ID. The plugin is read-only and does not connect unavailable libraries because that would mutate the Penpot document and require write permission.
+
+## Prototype metadata, not routing
+
+When Penpot provides prototype data, generated output can include:
+
+- `PenpotDestination`
+- prototype action and trigger enums
+- interaction and flow metadata
+- overlay and animation metadata
+- `onPrototypeInteraction` callbacks on affected compositions/components
+
+Generated widgets report an interaction to application code. They do not create an application router, navigation stack, route guards, deep-link policy, or app shell.
+
+## Generator-owned output
+
+The handoff uses a hard ownership boundary:
+
+```text
+lib/generated/penpot/
+  components/
+  compositions/
+  libraries/
+  theme/
+  assets.dart
+  prototype_destinations.dart
+  penpot.dart
+  penpot_manifest.json
+
+assets/penpot/
+  images/
+  icons/
+  vectors/
+  libraries/
+```
+
+Everything under `lib/generated/penpot` and `assets/penpot` is generator-owned and replaceable on regeneration. Keep application code elsewhere; do not manually edit generated files.
+
+## JSON handoff bundle and installer
+
+**Download complete handoff** creates `penpot_handoff.json` with format version `1`:
+
+- generated files with project-relative paths and authority tiers
+- exported text/base64 assets
+- generated `pubspec.yaml` integration metadata
+- external font requirements
+
+Install it into a Flutter project from this repository:
+
+```sh
+node bin/install-handoff.mjs /path/to/penpot_handoff.json /path/to/flutter-project
+```
+
+Or through the package script:
+
+```sh
+npm run install-handoff -- /path/to/penpot_handoff.json /path/to/flutter-project
+```
+
+The installer:
+
+1. validates the bundle shape and format version;
+2. removes the existing generator-owned `lib/generated/penpot` and `assets/penpot` trees;
+3. rejects paths outside those ownership roots and the target Flutter project;
+4. writes generated Dart/JSON files and decoded assets;
+5. prints the `pubspec.yaml` snippet and font requirements for manual integration.
+
+It intentionally does not modify developer-owned `pubspec.yaml` or application files.
+
+### Current archive limitation
+
+The complete handoff is a JSON bundle, not a ZIP archive. The JSON contains source plus text/base64 asset payloads and is the supported input to `bin/install-handoff.mjs`. The UI also supports individual generated-file and asset downloads. No ZIP workflow is currently implemented or claimed.
+
+## Diagnostics and recommendations
+
+Unsupported or incomplete source semantics are not silently redesigned.
+
+- **Error:** generated output is unsafe or invalid; copy/download is blocked.
+- **Warning:** visible data may be unavailable, unsupported, or approximated.
+- **Info:** deterministic implementation decision or resolved limitation.
+- **Design recommendation:** non-blocking source-design improvement, such as using components/tokens or adding explicit responsive semantics.
+
+Recommendations never change generated semantics and never block export. Missing libraries, assets, fonts, tokens, unsupported Grid behavior, sparse variants, and unresolved prototype destinations remain visible through diagnostics.
+
+## Important limitations and fallbacks
+
+- Unsupported Grid tracks, spans, and manual placement fall back to `Stack`/`Positioned` with a diagnostic.
+- Mixed text uses `RichText` when Penpot exposes resolvable runs; otherwise the common style is preserved with a warning.
+- Inner shadows, unsupported effects/colors/strokes, malformed geometry, and failed exports produce diagnostics.
+- Complex vectors use SVG where available. Effects that cannot be preserved require an adapter-provided raster fallback or report `ASSET_EXPORT_FAILED`.
+- Penpot exposes font metadata but not downloadable font files through the current Plugin API; the bundle reports requirements until an asset path is supplied.
+- Only components reachable from the selected roots are exported.
+- Visibility, dimensions, gradients/multiple fills, and component swaps are not generalized into component override parameters.
+- The plugin uses `@penpot/plugin-types` `1.5.0`; token edits require **Refresh Design System** because that API version has no token-specific mutation event.
+- Material theme roles are mapped only from explicit semantic token names. The complete token catalog remains available through generated token/theme APIs.
+- Design compositions are valid generated Dart but are not claims of production-ready screens.
 
 ## Permissions
 
@@ -94,7 +226,7 @@ The manifest requests only:
 "permissions": ["content:read", "library:read"]
 ```
 
-`content:read` allows extraction of the selected design. `library:read` allows resolution of canonical component definitions in the local and already-connected shared libraries. The plugin does not request `library:write`: connecting a library is a persistent document change. Download Dart uses a browser-generated text file and requires no Penpot content-write permission.
+`content:read` allows selected design extraction. `library:read` allows canonical component and token resolution from local and already-connected libraries. The plugin does not request content or library write access.
 
 ## Development
 
@@ -108,82 +240,24 @@ npm run dev
 ```
 
 - `npm run typecheck` runs strict TypeScript checking without emitting files.
-- `npm run lint` runs the TypeScript-aware ESLint configuration.
-- `npm test` validates source-like fixtures -> IR -> deterministic Dart, including ordered-set precedence, aliases/cycles, multidimensional themes, official shape binding names, semantic component references, incremental coordinator lifecycle/cancellation, and 1,500/5,000-token indexing stress fixtures.
-- `npm run build` runs strict TypeScript checking and produces the plugin in `dist/`.
-- GitHub Actions runs typecheck, lint, test, and build on pushes to `main` and pull requests.
-- `npm run dev` hosts the manifest for local Penpot installation. Live preview reloads are deliberately disabled because a reload recreates the plugin context and discards the session index; refresh/reopen the plugin manually after a source rebuild.
+- `npm run lint` runs ESLint.
+- `npm test` validates extraction, IR, registries, deterministic generation, diagnostics, and handoff behavior through source-like fixtures.
+- `npm run build` runs TypeScript and creates the plugin build in `dist/`.
+- `npm run dev` rebuilds in watch mode; reopen or refresh the plugin after changes.
 
-Install `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager while the dev server is running. If hosted Penpot cannot access localhost due to browser/network policy, expose it through an HTTPS tunnel or deploy `dist/` to an HTTPS host.
+Install the built manifest URL in Penpot’s Plugin Manager. For local development, serve `dist/` over a URL reachable by the Penpot browser session.
 
-## Manual verification
+## Manual handoff check
 
-1. Create a board containing a flex row, a gradient rectangle, an ellipse, text, and an image fill.
-2. Select the board and open **Penpot to Flutter**.
-3. Confirm the preview uses `Row`/`Column` for flex, `LinearGradient` or `RadialGradient`, `ClipOval` for ellipses, and `Transform.rotate` for rotated layers.
-4. Select a text layer with mixed styling (bold, italic, underline, or colored runs) and confirm it emits `RichText` with per-run `TextSpan`s.
-5. Create a simple all-flex grid and confirm it emits `GridView.count`.
-6. Add a spanning or fixed-track grid child and confirm a warning is shown and the generated widget uses a `Stack` fallback.
-7. Create a local component, use several instances in a board, and override a text label. Confirm **Generated files** contains a component file and the screen calls that widget with a `String` argument instead of duplicating its internals.
-8. Place a component instance inside another component and confirm the parent component imports and calls the nested component. In a second Penpot file, connect a published shared library and use its component in the selected board; confirm it resolves to the same reusable component output. A library that is available but not connected must show `SHARED_LIBRARY_NOT_CONNECTED`, not expanded markup.
-9. Confirm **Copy Dart** and **Download Dart** act on the visible file; select each generated file to review component, screen, and barrel sources.
-10. For images and vectors, download each listed asset, add the displayed `pubspec.yaml` snippet, and place files at the generated `assets/images/`, `assets/icons/`, or `assets/vectors/` paths before running the Flutter app. Vector selections also include the `flutter_svg` dependency snippet when needed.
-12. Select matching boards named `Screen / Mobile`, `Screen / Tablet`, and `Screen / Desktop`. Confirm one generated screen uses `LayoutBuilder`, omits fixed top-level board dimensions, preserves component calls, and reports inferred breakpoints.
-13. In a file with tokens, open the plugin and immediately change selection while **Indexing in background…** is visible. Confirm the selection count updates without blocking Penpot, then confirm the Design System counts settle and `theme/penpot_tokens.dart`, `theme/penpot_themes.dart`, and `penpot_manifest.json` are non-empty.
-14. In a development build, inspect the `Penpot to Flutter design-system index` console summary for extraction, serialization, alias/theme, and theme-file timings. Use **Refresh Design System** after changing token/theme data and confirm that only one replacement index run starts.
-15. Inspect at least three token-bound layers and verify generated properties use `context.penpot.<semantic.path>` rather than resolved literals. Export the generated tree, then run `dart format lib/generated/penpot` and `flutter analyze` in the target Flutter project. The plugin blocks Copy/Download when its generated declaration validation reports errors; run the target project's Dart analyzer for full cross-file validation.
-
-## Adding the SVG dependency
-
-Generated code that contains vector paths references `SvgPicture.asset` from `package:flutter_svg/flutter_svg.dart`. The generated pubspec snippet declares this dependency; if applying snippets manually, add it to your Flutter app:
+1. Select a board or component and open **Penpot to Flutter**.
+2. Inspect generated files and their labels: reusable generated code, implementation reference, prototype integration hint, or manifest.
+3. Confirm explicit Flex/Grid/absolute semantics map directly and unsupported behavior is diagnosed.
+4. Confirm component instances call generated widgets and token-bound properties use generated token APIs.
+5. If prototype interactions exist, confirm affected widgets expose `onPrototypeInteraction` and no application routing is generated.
+6. Download `penpot_handoff.json` and install it with `bin/install-handoff.mjs` into a disposable Flutter project.
+7. Merge the printed `pubspec.yaml` metadata, then run:
 
 ```sh
-flutter pub add flutter_svg
+dart format lib/generated/penpot
+flutter analyze
 ```
-
-The generated `pubspec.yaml` snippet includes the `flutter_svg` dependency and asset entries. Download exported SVG files into the generated `assets/icons/` or `assets/vectors/` paths so `SvgPicture.asset` can load them. Raster payloads are available as individual downloads in the plugin UI.
-
-## Project structure
-
-```text
-src/
-  plugin.ts                  Penpot execution boundary
-  main.ts                    Iframe UI and code preview
-  core/extractor.ts          Penpot-like data -> normalized IR
-  core/flutter-generator.ts  IR -> Dart source
-  core/asset-pipeline.ts      deterministic asset registry and naming
-  core/library-registry.ts    stable library graph and module naming
-  penpot/token-catalog.ts      Official TokenCatalog -> incremental serializable snapshot
-  core/design-system-index-manager.ts Session cache, progress, cancellation, invalidation
-  core/token-registry.ts       Token sources -> deterministic token IR/resolution
-  core/flutter-theme-generator.ts Token IR -> typed ThemeExtension/ThemeData files
-  core/responsive-analyzer.ts  Responsive board analysis and breakpoint IR
-  shared/ir.ts                 Serializable layout, typography, token, and component IR
-  shared/messages.ts         Typed UI/plugin protocol
-  shared/version.ts          UI version indicator
-```
-
-## Component output
-
-For a selected screen containing component instances, the compiler emits deterministic source files such as:
-
-```text
-screens/checkout_screen.dart
-components/local_filter.dart
-libraries/company_design_system/components/primary_button.dart
-libraries/company_design_system/theme/penpot_token_namespaces.dart
-libraries/company_design_system/theme/penpot_tokens.dart
-libraries/company_design_system/theme/penpot_themes.dart
-libraries/company_design_system/theme/penpot_theme_extensions.dart
-libraries/company_design_system/assets.dart
-libraries/company_design_system/company_design_system.dart
-assets.dart
-penpot_manifest.json
-penpot.dart
-```
-
-Each main component becomes one `StatelessWidget`; each linked instance becomes a call to that widget. A composite `libraryId:componentId` key, rather than a display name or raw component ID, defines identity. A shared library's stable Penpot ID owns its registry entry; its display name only determines a deterministic module segment, and collisions are diagnosed. A detached instance remains an ordinary shape tree.
-
-## Next milestone
-
-The remaining post-MVP work is a configurable semantic-role mapping surface, a verified archive/download workflow for images and SVG assets, broader component override parameters, finer-grained factoring of variant-member differences, and project-wide export.

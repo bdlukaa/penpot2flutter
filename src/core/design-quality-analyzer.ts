@@ -34,8 +34,24 @@ export function analyzeDesignQuality(roots: readonly IrNode[], components: reado
       diagnostics.push({
         severity: "design-recommendation",
         sourceId: root.sourceId,
-        code: "SCREEN_HAS_NO_RESPONSIVE_SEMANTICS",
-        message: `Screen "${root.sourceName}" uses fixed/absolute layout without responsive semantics. Add Flex, Grid, constraints, or breakpoint boards to improve generated Flutter adaptability.`,
+        code: "DESIGN_COMPOSITION_RESPONSIVE_FAMILY_MISSING",
+        message: `Design composition "${root.sourceName}" has no explicit Flex, Grid, or responsive-family semantics. The fixed source layout is preserved; add explicit Penpot structure only when runtime adaptation is intended.`,
+      });
+    }
+    if (root.kind === "board" && root.flex === undefined && root.grid === undefined && root.children.length >= 20) {
+      diagnostics.push({
+        severity: "design-recommendation",
+        sourceId: root.sourceId,
+        code: "DESIGN_ABSOLUTE_LAYOUT_HEAVY",
+        message: `This design composition contains ${root.children.length} absolutely positioned children. Generated Flutter preserves them with Stack/Positioned; consider Penpot Flex or Grid when the structure represents rows, columns, or collections.`,
+      });
+    }
+    if (root.kind === "board" && root.children.some((child) => child.geometry.x < 0 || child.geometry.y < 0 || child.geometry.x + child.geometry.width > root.geometry.width || child.geometry.y + child.geometry.height > root.geometry.height)) {
+      diagnostics.push({
+        severity: "warning",
+        sourceId: root.sourceId,
+        code: "DESIGN_COMPOSITION_CONTENT_EXCEEDS_VIEWPORT",
+        message: "The generated design composition contains content beyond the source viewport. Penpot does not describe production scroll ownership; the application developer should choose page scrolling, an internal collection scroll, pagination, or another behavior.",
       });
     }
   }
@@ -69,8 +85,16 @@ export function analyzeDesignQuality(roots: readonly IrNode[], components: reado
     });
   }
 
-  // Components are intentionally excluded: their repeated use is already semantic source structure.
-  void components;
+  for (const component of components) {
+    if (/^(?:component|group|board|frame|shape|rectangle)(?:\s+\d+)?$/i.test(component.sourceName.trim())) {
+      diagnostics.push({
+        severity: "design-recommendation",
+        sourceId: component.sourceComponentId,
+        code: "COMPONENT_NAME_GENERIC",
+        message: `Component "${component.sourceName}" has a generic name. Use explicit code-generation metadata or a stable semantic Penpot name to improve the generated API.`,
+      });
+    }
+  }
   const summary: DesignQualitySummary = {
     errors: diagnostics.filter((diagnostic) => diagnostic.severity === "error").length,
     warnings: diagnostics.filter((diagnostic) => diagnostic.severity === "warning").length,

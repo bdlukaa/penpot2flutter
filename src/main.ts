@@ -1,6 +1,7 @@
-import { isPluginToUiMessage, type ConversionMessage, type PluginToUiMessage } from "./shared/messages.js";
+import { isPluginToUiMessage, type ConversionMessage, type HandoffBundle, type PluginToUiMessage } from "./shared/messages.js";
 import type { GeneratedFile } from "./shared/ir.js";
-import { APP_VERSION } from "./shared/version.js";
+declare const __PENPOT_TO_FLUTTER_VERSION__: string;
+
 import hljs from "highlight.js/lib/core";
 import dartLanguage from "highlight.js/lib/languages/dart";
 import "./style.css";
@@ -13,12 +14,13 @@ if (app === null) {
 }
 
 let latestDart = "";
+let latestHandoff: HandoffBundle | undefined;
 let cachedDesignSystemFiles: readonly GeneratedFile[] = [];
 
 app.innerHTML = `
   <header>
-    <p class="eyebrow">PENPOT TO FLUTTER <span class="version">v${APP_VERSION}</span></p>
-    <h1>Selection export</h1>
+    <p class="eyebrow">PENPOT TO FLUTTER <span class="version">v${__PENPOT_TO_FLUTTER_VERSION__}</span></p>
+    <h1>Design handoff export</h1>
     <p id="status" class="muted">Reading the current selection…</p>
     <p id="selection-progress" class="muted" aria-live="polite"></p>
   </header>
@@ -39,19 +41,21 @@ app.innerHTML = `
     <p id="token-catalog-status" class="muted"></p>
   </section>
   <section id="empty-state" class="empty-state" hidden>
-    <h2>Select a board, rectangle, or text layer</h2>
-    <p>Generated Flutter code will update whenever the selection changes.</p>
+    <h2>Select a board, component, or visual layer</h2>
+    <p>Reusable design-system code and design compositions update with the selection. Application behavior remains developer-owned.</p>
   </section>
   <section id="result" hidden>
     <div class="toolbar">
       <strong id="selection-summary"></strong>
       <div class="toolbar-actions">
-        <button id="copy" type="button" disabled>Copy Dart</button>
-        <button id="download" type="button" disabled>Download Dart</button>
+        <button id="copy" type="button" disabled>Copy current Dart</button>
+        <button id="download" type="button" disabled>Download current file</button>
+        <button id="download-handoff" type="button" disabled>Download complete handoff</button>
       </div>
     </div>
-    <section id="generated-files" hidden aria-label="Generated Dart files">
-      <h2>Generated files</h2>
+    <section id="generated-files" hidden aria-label="Generated handoff files">
+      <h2>Generated handoff</h2>
+      <p class="muted">Reusable generated code · Design compositions · Prototype metadata</p>
       <div id="generated-file-list" class="generated-file-list"></div>
     </section>
     <pre id="dart-preview" class="code-preview" aria-label="Generated Dart"><code></code></pre>
@@ -62,11 +66,11 @@ app.innerHTML = `
       <div id="asset-download-list" class="generated-file-list" aria-label="Exported assets"></div>
     </section>
     <section id="quality-summary" hidden aria-live="polite">
-      <h2>Generation quality</h2>
+      <h2>Handoff quality</h2>
       <p id="quality-summary-text" class="muted"></p>
     </section>
     <section id="diagnostics" hidden aria-live="polite">
-      <h2>Conversion diagnostics</h2>
+      <h2>Diagnostics and designer recommendations</h2>
       <ul id="diagnostic-list"></ul>
     </section>
   </section>
@@ -81,6 +85,7 @@ const dart = requiredElement<HTMLTextAreaElement>("dart");
 const dartPreview = requiredElement<HTMLElement>("dart-preview");
 const copy = requiredElement<HTMLButtonElement>("copy");
 const download = requiredElement<HTMLButtonElement>("download");
+const downloadHandoff = requiredElement<HTMLButtonElement>("download-handoff");
 const assets = requiredElement<HTMLElement>("assets");
 const pubspecAssets = requiredElement<HTMLTextAreaElement>("pubspec-assets");
 const assetDownloadList = requiredElement<HTMLElement>("asset-download-list");
@@ -119,13 +124,11 @@ refreshDesignSystem.addEventListener("click", () => {
   parent.postMessage({ source: "penpot-to-flutter", type: "refresh-design-system" }, "*");
 });
 
-download.addEventListener("click", () => {
-  const url = URL.createObjectURL(new Blob([latestDart], { type: "text/x-dart" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = selectedFileName();
-  link.click();
-  URL.revokeObjectURL(url);
+download.addEventListener("click", () => downloadBlob(latestDart, "text/x-dart", selectedFileName()));
+
+downloadHandoff.addEventListener("click", () => {
+  if (latestHandoff === undefined) return;
+  downloadBlob(`${JSON.stringify(latestHandoff, null, 2)}\n`, "application/json", "penpot_handoff.json");
 });
 
 window.addEventListener("message", (event) => {
@@ -161,6 +164,8 @@ function renderConversion(message: ConversionMessage): void {
   tokenOtherBindingCount.textContent = String(message.tokenBindings.other);
   const hasSelection = message.result !== undefined && message.dart !== undefined;
   if (message.pending) {
+    latestHandoff = undefined;
+    downloadHandoff.disabled = true;
     emptyState.hidden = message.selectionCount > 0;
     result.hidden = true;
     selectionProgress.textContent = selectionCountLabel(message.selectionCount);
@@ -171,13 +176,16 @@ function renderConversion(message: ConversionMessage): void {
   result.hidden = !hasSelection;
 
   if (!hasSelection) {
+    latestHandoff = undefined;
+    downloadHandoff.disabled = true;
     status.textContent = "No layers selected";
     return;
   }
 
-  status.textContent = "Generated from the current selection";
+  status.textContent = "Generated handoff from the current selection";
   selectionProgress.textContent = selectionCountLabel(message.selectionCount);
   summary.textContent = selectionCountLabel(message.selectionCount);
+  latestHandoff = message.handoff;
   renderGeneratedFiles(message.files, message.dart);
   assets.hidden = (message.pubspecAssets === undefined || message.pubspecAssets === "") && (message.exportedAssets?.length ?? 0) === 0;
   pubspecAssets.hidden = message.pubspecAssets === undefined || message.pubspecAssets === "";
@@ -190,10 +198,11 @@ function renderConversion(message: ConversionMessage): void {
     ? ""
     : `${quality.errors} errors, ${quality.warnings} warnings, ${quality.information} informational decisions, ${quality.recommendations} design recommendations.`;
   const hasGenerationErrors = conversionDiagnostics.some((diagnostic) => diagnostic.severity === "error");
-  status.textContent = hasGenerationErrors ? "Generation completed with errors; inspect diagnostics before export" : "Generated from the current selection";
+  status.textContent = hasGenerationErrors ? "Handoff generation completed with errors; inspect diagnostics before export" : "Generated handoff from the current selection";
   copy.disabled = hasGenerationErrors;
-  copy.textContent = hasGenerationErrors ? "Copy unavailable" : "Copy Dart";
+  copy.textContent = hasGenerationErrors ? "Copy unavailable" : "Copy current Dart";
   download.disabled = hasGenerationErrors;
+  downloadHandoff.disabled = hasGenerationErrors || latestHandoff === undefined;
   diagnostics.hidden = conversionDiagnostics.length === 0;
   const grouped = new Map<string, Map<string, { readonly code: string; readonly message: string; count: number }>>();
   for (const diagnostic of conversionDiagnostics) {
@@ -295,7 +304,8 @@ function renderGeneratedFiles(files: readonly GeneratedFile[] | undefined, fallb
       const button = document.createElement("button");
       button.type = "button";
       button.className = "generated-file";
-      button.textContent = file.path;
+      button.textContent = `${artifactAuthority(file.tier)} · ${file.path}`;
+      button.dataset.path = file.path;
       button.addEventListener("click", () => {
         for (const candidate of generatedFileList.querySelectorAll("button")) {
           candidate.classList.remove("selected");
@@ -323,8 +333,27 @@ function selectionCountLabel(count: number): string {
 }
 
 function selectedFileName(): string {
-  const selected = generatedFileList.querySelector<HTMLButtonElement>(".selected")?.textContent;
+  const selected = generatedFileList.querySelector<HTMLButtonElement>(".selected")?.dataset.path;
   return selected?.split("/").pop() || "generated_widget.dart";
+}
+
+function artifactAuthority(tier: GeneratedFile["tier"]): string {
+  switch (tier) {
+    case "design-system": return "Reusable generated code";
+    case "design-composition": return "Implementation reference";
+    case "prototype-metadata": return "Integration hint";
+    case "manifest": return "Handoff manifest";
+    default: return "Generated file";
+  }
+}
+
+function downloadBlob(content: BlobPart, type: string, filename: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function highlightDart(source: string): string {

@@ -28,6 +28,17 @@ export interface ExportedAsset {
   readonly encoding: "utf8" | "base64";
 }
 
+export interface HandoffBundle {
+  readonly formatVersion: 1;
+  readonly generatorVersion: string;
+  readonly files: readonly GeneratedFile[];
+  readonly assets: readonly ExportedAsset[];
+  readonly integration: {
+    readonly pubspecSnippet: string;
+    readonly fontRequirements: readonly string[];
+  };
+}
+
 export interface ConversionMessage {
   readonly source: "penpot-to-flutter";
   readonly type: "conversion";
@@ -42,8 +53,10 @@ export interface ConversionMessage {
   readonly pubspecAssets?: string;
   /** Exportable asset payloads. Binary payloads are base64 to keep the message serializable. */
   readonly exportedAssets?: readonly ExportedAsset[];
-  /** Selection-specific files plus the merged penpot.dart barrel. */
+  /** Complete generator-owned Dart tree, manifest, and prototype metadata. */
   readonly files?: readonly GeneratedFile[];
+  /** Serializable complete handoff payload for download and CLI installation. */
+  readonly handoff?: HandoffBundle;
   /** Stable catalog-derived files, sent once and cached by the iframe. */
   readonly designSystemFiles?: readonly GeneratedFile[];
 }

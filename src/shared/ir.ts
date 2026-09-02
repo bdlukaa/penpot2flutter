@@ -448,6 +448,7 @@ export interface IrVariantFamily {
   readonly members: readonly IrVariantMember[];
   readonly representation?: "axes" | "members";
   readonly enumName?: string;
+  readonly defaultMemberName?: string;
 }
 
 export interface IrComponentInstanceNode extends BaseNode {
@@ -489,7 +490,6 @@ export interface IrResponsiveScreen {
   readonly variants: readonly IrResponsiveVariant[];
 }
 
-export type IrRouterStrategy = "navigator" | "go-router" | "auto-route" | "none";
 export type IrInteractionKind = "navigate" | "back" | "open-overlay" | "toggle-overlay" | "close-overlay" | "open-url";
 export type IrInteractionTrigger = "click" | "mouse-enter" | "mouse-leave" | "after-delay";
 
@@ -524,41 +524,23 @@ export interface IrInteraction {
   readonly overlay?: IrOverlayOptions;
 }
 
-export interface IrScreen {
+export interface IrPrototypeDestination {
   readonly id: string;
   readonly name: string;
-  readonly root: IrNode;
-  readonly routeName?: string;
+}
+
+export interface IrPrototypeFlowEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly destinationId: string;
+}
+
+/** Low-authority Penpot flow hints. Application routing remains developer-owned. */
+export interface IrPrototypeMetadata {
+  readonly destinations: readonly IrPrototypeDestination[];
   readonly interactions: readonly IrInteraction[];
-}
-
-export interface IrNavigationEdge {
-  readonly id: string;
-  readonly fromScreenId: string;
-  readonly toScreenId?: string;
-  readonly interactionId: string;
-  readonly kind: IrInteractionKind;
-}
-
-export interface IrFlowEntry {
-  readonly id: string;
-  readonly name: string;
-  readonly screenId: string;
-}
-
-export interface IrOverlay {
-  readonly id: string;
-  readonly name: string;
-  readonly root: IrNode;
-  readonly interactions: readonly IrInteraction[];
-}
-
-export interface IrNavigationGraph {
-  readonly screens: readonly IrScreen[];
-  readonly edges: readonly IrNavigationEdge[];
-  readonly flowEntries: readonly IrFlowEntry[];
-  readonly overlays: readonly IrOverlay[];
-  readonly routerStrategy: IrRouterStrategy;
+  readonly flows: readonly IrPrototypeFlowEntry[];
+  readonly overlayDestinationIds: readonly string[];
 }
 
 export interface IrQualitySummary {
@@ -572,7 +554,7 @@ export interface ConversionResult {
   readonly root: IrNode;
   readonly qualitySummary?: IrQualitySummary;
   readonly responsiveScreen?: IrResponsiveScreen;
-  readonly navigationGraph?: IrNavigationGraph;
+  readonly prototypeMetadata?: IrPrototypeMetadata;
   /** Legacy metadata projection. Prefer `assetRegistry` for generated projects. */
   readonly assets: readonly AssetManifestEntry[];
   readonly assetRegistry: readonly IrAsset[];
@@ -587,7 +569,11 @@ export interface ConversionResult {
   readonly libraries: readonly IrLibrary[];
 }
 
+export type GeneratedArtifactTier = "design-system" | "design-composition" | "prototype-metadata" | "manifest";
+
 export interface GeneratedFile {
   readonly path: string;
   readonly source: string;
+  readonly tier?: GeneratedArtifactTier;
+  readonly sourceIds?: readonly string[];
 }

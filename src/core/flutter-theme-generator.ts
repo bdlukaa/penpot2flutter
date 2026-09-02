@@ -15,9 +15,9 @@ export function validateFlutterThemeGeneration(
   files: readonly GeneratedFile[],
 ): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
-  const hasTokenFields = files.some((file) => file.path === "theme/penpot_tokens.dart")
-    && files.some((file) => file.path === "theme/penpot_token_namespaces.dart");
-  const hasThemes = files.some((file) => file.path === "theme/penpot_themes.dart" && file.source.includes("ThemeData buildPenpotTheme"));
+  const hasTokenFields = files.some((file) => file.path.endsWith("/theme/penpot_tokens.dart") || file.path === "theme/penpot_tokens.dart")
+    && files.some((file) => file.path.endsWith("/theme/penpot_token_namespaces.dart") || file.path === "theme/penpot_token_namespaces.dart");
+  const hasThemes = files.some((file) => (file.path.endsWith("/theme/penpot_themes.dart") || file.path === "theme/penpot_themes.dart") && file.source.includes("ThemeData buildPenpotTheme"));
   if (tokens.length > 0 && !hasTokenFields) {
     diagnostics.push({ severity: "error", sourceId: "token-catalog", code: "TOKEN_GENERATION_MISMATCH", message: `The catalog contains ${tokens.length} token definitions, but no typed Flutter token fields were generated.` });
     diagnostics.push({ severity: "error", sourceId: "token-catalog", code: "THEME_EXTENSION_GENERATION_FAILED", message: "PenpotTokens ThemeExtension generation failed." });

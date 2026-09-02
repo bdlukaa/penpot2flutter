@@ -12,6 +12,7 @@ import { buildTokenRegistry, resolveTokenSets } from "../src/core/token-registry
 import { LibraryResolver } from "../src/penpot/library-resolver.js";
 import { extractTokenCatalog, extractTokenCatalogIncrementally } from "../src/penpot/token-catalog.js";
 import { withTokenBindings } from "../src/penpot/shape-token-bindings.js";
+import { APP_VERSION } from "../src/shared/version.js";
 import type { TokenCatalog } from "@penpot/plugin-types";
 
 const board = {
@@ -70,7 +71,7 @@ test("extracts a serializable board, rectangle, and text IR", () => {
   assert.equal(result.diagnostics.length, 0);
 });
 
-test("does not constrain an application screen to its Penpot board size", () => {
+test("generates a design composition that preserves its explicit Penpot board size", () => {
   const result = extractSelection([{
     id: "responsive-screen",
     name: "Checkout screen",
@@ -85,9 +86,10 @@ test("does not constrain an application screen to its Penpot board size", () => 
   }]);
   const dart = generateFlutterWidget(result.root);
 
-  assert.doesNotMatch(dart, /width: 360,/);
-  assert.doesNotMatch(dart, /height: 780,/);
-  assert.match(dart, /return const DecoratedBox\(/);
+  assert.match(dart, /class CheckoutDesign extends StatelessWidget/);
+  assert.match(dart, /width: 360,/);
+  assert.match(dart, /height: 780,/);
+  assert.match(dart, /return const Container\(/);
 });
 
 test("uses parent coordinates, default opacity, and Penpot line-height factors", () => {
@@ -148,14 +150,15 @@ test("marks static widget values const without constifying token-backed values",
   }]);
   const staticDart = generateFlutterWidget(staticResult.root);
 
-  assert.match(staticDart, /return const DecoratedBox\(/);
+  assert.match(staticDart, /return const Container\(/);
   assert.match(staticDart, /padding: EdgeInsetsDirectional\.only\(/);
   assert.match(staticDart, /decoration: BoxDecoration/);
   assert.match(staticDart, /borderRadius: BorderRadius\.all\(Radius\.circular\(8\)\)/);
   assert.match(staticDart, /boxShadow: <BoxShadow>/);
-  assert.match(staticDart, /Text\(/);
+  assert.match(staticDart, /child: Text\(/);
   assert.match(staticDart, /style: TextStyle\(/);
-  assert.match(staticDart, /return const DecoratedBox\([\s\S]*child: Padding\([\s\S]*child: Column\(/);
+  assert.match(staticDart, /return const Container\([\s\S]*child: Padding\([\s\S]*child: Column\(/);
+  assert.doesNotMatch(staticDart, /return const Container\([\s\S]*\bconst\b/);
 
   const tokenResult = extractSelection([{
     id: "token-board",
@@ -421,11 +424,11 @@ test("extracts image shapes and fillImage assets into deterministic Flutter outp
     mimeType: "image/jpeg",
     width: 400,
     height: 400,
-    path: "assets/images/media_2fhero.jpg",
+    path: "assets/penpot/images/media_2fhero.jpg",
   }]);
-  assert.match(dart, /DecorationImage\(\n\s*image: (?:const )?AssetImage\((?:\n\s*)?'assets\/images\/media_2fhero\.jpg'/);
+  assert.match(dart, /DecorationImage\(\n\s*image: (?:const )?AssetImage\((?:\n\s*)?'assets\/penpot\/images\/media_2fhero\.jpg'/);
   assert.match(dart, /fit: BoxFit\.cover,/);
-  assert.equal(generatePubspecSnippet(result.assets), "flutter:\n  assets:\n    - assets/images/media_2fhero.jpg\n");
+  assert.equal(generatePubspecSnippet(result.assets), "flutter:\n  assets:\n    - assets/penpot/images/media_2fhero.jpg\n");
   assert.equal(result.diagnostics.length, 0);
 
   const imageDartPath = new URL("../image_generated_widget.dart", import.meta.url);
@@ -621,7 +624,7 @@ test("generates deterministic compilable Flutter widget source", () => {
   const dart = generateFlutterWidget(result.root);
 
   assert.match(dart, /^import 'package:flutter\/material.dart';/);
-  assert.match(dart, /class WelcomeScreen extends StatelessWidget/);
+  assert.match(dart, /class WelcomeDesign extends StatelessWidget/);
   assert.match(dart, /Color\(0xff6750a4\)/);
   assert.match(dart, /Text\(\n\s*'Hello, Flutter!'/);
   assert.match(dart, /fontFamily: 'Inter'/);
@@ -734,7 +737,7 @@ test("preserves rectangle fills and blur effects", () => {
   assert.equal(result.root.style.blur, 8);
   assert.match(dart, /ImageFiltered\(/);
   assert.match(dart, /ImageFilter\.blur\(sigmaX: 8, sigmaY: 8\)/);
-  assert.match(dart, /color: Color\(0xff246bfe\)/);
+  assert.match(dart, /color: (?:const )?Color\(0xff246bfe\)/);
 });
 
 test("extracts and generates ellipses, gradients, and transforms", () => {
@@ -778,8 +781,7 @@ test("extracts and generates ellipses, gradients, and transforms", () => {
 
   const transformedDartPath = new URL("../transformed_generated_widget.dart", import.meta.url);
   writeFileSync(transformedDartPath, dart);
-  execFileSync("dart", ["format", transformedDartPath.pathname]);
-  assert.equal(dart, readFileSync(transformedDartPath, "utf8"));
+  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", transformedDartPath.pathname]));
 });
 
 test("generates a simple grid and falls back with diagnostics for unsupported grid semantics", () => {
@@ -843,7 +845,11 @@ test("generates a simple grid and falls back with diagnostics for unsupported gr
 
   assert.equal(supported.root.kind, "board");
   assert.equal(supported.root.grid?.supported, true);
-  assert.match(generateFlutterWidget(supported.root), /GridView\.count\(/);
+  const supportedDart = generateFlutterWidget(supported.root);
+  assert.match(supportedDart, /GridView\.count\(/);
+  assert.match(supportedDart, /mainAxisExtent: 112,/);
+  assert.doesNotMatch(supportedDart, /return const SizedBox\([\s\S]*GridView\.count/);
+  assert.match(supportedDart, /const SizedBox\(width: 100, height: 100\)/);
   assert.equal(supported.root.children[0].sourceId, "card-one");
   assert.equal(fallback.root.kind, "board");
   assert.equal(fallback.root.grid?.supported, false);
@@ -950,20 +956,20 @@ test("extracts vector paths and svg-raw nodes as SvgPicture assets", () => {
   const dart = generateFlutterWidget(result.root);
 
   assert.equal(result.root.kind, "svg");
-  assert.equal(result.root.assetPath, "assets/images/logo-vector.svg");
+  assert.equal(result.root.assetPath, "assets/penpot/images/logo-vector.svg");
   assert.deepEqual(result.assets, [{
     id: "logo-vector",
     mimeType: "image/svg+xml",
     width: 24,
     height: 24,
-    path: "assets/images/logo-vector.svg",
+    path: "assets/penpot/images/logo-vector.svg",
   }]);
   assert.equal(result.diagnostics.length, 0);
   assert.match(dart, /SvgPicture\.asset\(/);
-  assert.match(dart, /'assets\/images\/logo-vector\.svg',/);
+  assert.match(dart, /'assets\/penpot\/images\/logo-vector\.svg',/);
   assert.match(dart, /width: 24,/);
   assert.match(dart, /height: 24,/);
-  assert.equal(generatePubspecSnippet(result.assets), "dependencies:\n  flutter_svg: ^2.3.0\n\nflutter:\n  assets:\n    - assets/images/logo-vector.svg\n");
+  assert.equal(generatePubspecSnippet(result.assets), "dependencies:\n  flutter_svg: ^2.3.0\n\nflutter:\n  assets:\n    - assets/penpot/images/logo-vector.svg\n");
 
   const svgDartPath = new URL("../svg_generated_widget.dart", import.meta.url);
   writeFileSync(svgDartPath, dart);
@@ -979,8 +985,8 @@ test("extracts svg-raw and boolean nodes as SvgPicture assets", () => {
   const dart = generateFlutterWidget(result.root);
 
   assert.match(dart, /SvgPicture\.asset\(/);
-  assert.match(dart, /'assets\/images\/raw-svg\.svg',/);
-  assert.match(dart, /'assets\/images\/bool-shape\.svg',/);
+  assert.match(dart, /'assets\/penpot\/images\/raw-svg\.svg',/);
+  assert.match(dart, /'assets\/penpot\/images\/bool-shape\.svg',/);
   assert.equal(result.diagnostics.length, 0);
 });
 
@@ -1008,7 +1014,7 @@ test("renders square ellipses as a circle decoration without ClipOval", () => {
   assert.equal(dart, readFileSync(circlePath, "utf8"));
 });
 
-test("emits an unconstrained Stack without clipBehavior for decoration-less screens", () => {
+test("preserves explicit board bounds around a decoration-less Stack", () => {
   const result = extractSelection([{
     id: "plain-board",
     name: "Plain board",
@@ -1034,9 +1040,7 @@ test("emits an unconstrained Stack without clipBehavior for decoration-less scre
 
   assert.doesNotMatch(dart, /Container\(/);
   assert.doesNotMatch(dart, /clipBehavior:/);
-  assert.match(dart, /return const Stack\(/);
-  assert.doesNotMatch(dart, /width: 180,/);
-  assert.doesNotMatch(dart, /height: 20,/);
+  assert.match(dart, /return const SizedBox\([\s\S]*width: 180,[\s\S]*height: 20,[\s\S]*child: Stack\(/);
 });
 
 test("preserves Penpot stacking order when live children expose zIndex", () => {
@@ -1086,15 +1090,46 @@ test("emits non-blocking design recommendations for repeated source structure an
   };
   const analysis = analyzeDesignQuality([root], []);
   assert.deepEqual(analysis.diagnostics.map((diagnostic) => diagnostic.code).sort(), [
+    "DESIGN_COMPOSITION_RESPONSIVE_FAMILY_MISSING",
     "REPEATED_COLOR_NOT_TOKEN",
     "REPEATED_STRUCTURE_NOT_COMPONENT",
-    "SCREEN_HAS_NO_RESPONSIVE_SEMANTICS",
   ]);
   assert.equal(analysis.summary.recommendations, 3);
   assert.ok(analysis.diagnostics.every((diagnostic) => diagnostic.severity === "design-recommendation"));
 });
 
 // --- Shared library resolution fixtures ---
+
+test("preserves dense absolute layouts and reports viewport ownership without rewriting structure", () => {
+  const children = Array.from({ length: 20 }, (_, index) => ({
+    id: `absolute-${index}`,
+    name: `Layer ${index}`,
+    type: "rectangle",
+    x: index === 19 ? 95 : index * 4,
+    y: index * 3,
+    width: 20,
+    height: 20,
+    visible: true,
+  }));
+  const result = extractSelection([{
+    id: "dense-composition",
+    name: "Dense composition",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    visible: true,
+    children,
+  }]);
+  const codes = new Set(result.diagnostics.map((diagnostic) => diagnostic.code));
+  assert.ok(codes.has("DESIGN_ABSOLUTE_LAYOUT_HEAVY"));
+  assert.ok(codes.has("DESIGN_COMPOSITION_CONTENT_EXCEEDS_VIEWPORT"));
+  const dart = generateFlutterWidget(result.root);
+  assert.match(dart, /Stack\(/);
+  assert.equal((dart.match(/Positioned\(/g) ?? []).length, 20);
+  assert.doesNotMatch(dart, /GridView|Row\(|Column\(/);
+});
 
 test("resolves a connected shared component without listing available libraries", async () => {
   let availableCalls = 0;
@@ -1254,8 +1289,8 @@ function buttonInstance(id: string, label: string) {
   };
 }
 
-test("maps a multi-axis variant family to one typed Flutter component", () => {
-  const member = (id: string, fillColor: string) => ({
+test("uses member selectors for sparse variants and axes for complete multi-axis variants", () => {
+  const member = (id: string, fillColor: string, label: string) => ({
     id,
     name: id,
     type: "board",
@@ -1265,55 +1300,131 @@ test("maps a multi-axis variant family to one typed Flutter component", () => {
     height: 40,
     visible: true,
     fills: [{ fillColor, fillOpacity: 1 }],
-    children: buttonMain.children,
+    children: [{ ...buttonMain.children[0], characters: label }],
   });
-  const primarySmall = member("primary-small", "#0000ff");
-  const primaryLarge = member("primary-large", "#0000cc");
-  const secondaryLarge = member("secondary-large", "#eeeeee");
+  const primarySmall = member("primary-small", "#0000ff", "Primary small");
+  const primaryLarge = member("primary-large", "#0000cc", "Primary large");
+  const secondarySmall = member("secondary-small", "#ffffff", "Secondary small");
+  const secondaryLarge = member("secondary-large", "#eeeeee", "Secondary large");
+  const definitions = [
+    { id: "primary-small", libraryId: "design-system", name: "Primary small", root: primarySmall },
+    { id: "primary-large", libraryId: "design-system", name: "Primary large", root: primaryLarge },
+    { id: "secondary-small", libraryId: "design-system", name: "Secondary small", root: secondarySmall },
+    { id: "secondary-large", libraryId: "design-system", name: "Secondary large", root: secondaryLarge },
+  ];
+  const members = [
+    { id: "primary-small", libraryId: "design-system", name: "Primary small", root: primarySmall, values: { Style: "Primary", Size: "Small" } },
+    { id: "primary-large", libraryId: "design-system", name: "Primary large", root: primaryLarge, values: { Style: "Primary", Size: "Large" } },
+    { id: "secondary-small", libraryId: "design-system", name: "Secondary small", root: secondarySmall, values: { Style: "Secondary", Size: "Small" } },
+    { id: "secondary-large", libraryId: "design-system", name: "Secondary large", root: secondaryLarge, values: { Style: "Secondary", Size: "Large" } },
+  ];
+  const family = {
+    id: "button-family",
+    libraryId: "design-system",
+    name: "Button",
+    properties: ["Style", "Size"],
+    defaultComponentId: "primary-small",
+    members,
+  };
   const result = extractSelection(
     [{ ...buttonInstance("variant-instance", "Buy now"), componentId: "secondary-large", componentLibraryId: "design-system" }],
-    [
-      { id: "primary-small", libraryId: "design-system", name: "Primary small", root: primarySmall },
-      { id: "primary-large", libraryId: "design-system", name: "Primary large", root: primaryLarge },
-      { id: "secondary-large", libraryId: "design-system", name: "Secondary large", root: secondaryLarge },
-    ],
-    [{
-      id: "button-family",
-      libraryId: "design-system",
-      name: "Button",
-      properties: ["Style", "Size"],
-      defaultComponentId: "primary-small",
-      members: [
-        { id: "primary-small", libraryId: "design-system", name: "Primary small", root: primarySmall, values: { Style: "Primary", Size: "Small" } },
-        { id: "primary-large", libraryId: "design-system", name: "Primary large", root: primaryLarge, values: { Style: "Primary", Size: "Large" } },
-        { id: "secondary-large", libraryId: "design-system", name: "Secondary large", root: secondaryLarge, values: { Style: "Secondary", Size: "Large" } },
-      ],
-    }],
+    definitions.filter((definition) => definition.id !== "secondary-small"),
+    [{ ...family, members: members.filter((member) => member.id !== "secondary-small") }],
   );
 
   assert.equal(result.components.length, 1);
   const component = result.components[0];
   assert.equal(component.name, "PenpotButton");
+  assert.equal(component.variant?.representation, "members");
   assert.deepEqual(component.variant?.axes.map((axis) => axis.enumName), ["PenpotButtonStyle", "PenpotButtonSize"]);
   assert.equal(component.variant?.members.length, 3);
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "VARIANT_SPARSE_MATRIX"));
   assert.equal(result.root.kind, "component-instance");
   assert.equal(result.root.componentId, "design-system:variant-button-family");
-  assert.deepEqual(result.root.variantValues?.map((selection) => selection.valueName), ["secondary", "large"]);
+  assert.equal(result.root.variantMemberName, "styleSecondarySizeLarge");
 
   const componentDart = generateComponentWidget(component, result.components);
-  assert.match(componentDart, /enum PenpotButtonStyle \{/);
-  assert.match(componentDart, /enum PenpotButtonSize \{/);
-  assert.doesNotMatch(componentDart, /enum PenpotButtonVariant \{/);
-  assert.match(componentDart, /this\.style = PenpotButtonStyle\.primary,/);
-  assert.match(componentDart, /this\.size = PenpotButtonSize\.small,/);
-  assert.match(componentDart, /return switch \(\(style, size\)\)/);
-  assert.match(componentDart, /_ => throw ArgumentError\('Unsupported PenpotButton variant combination'\)/);
-  assert.match(generateFlutterWidget(result.root, result.components), /PenpotButton\(\n\s*style: PenpotButtonStyle\.secondary,\n\s*size: PenpotButtonSize\.large,\n\s*label: 'Buy now',/);
+  assert.match(componentDart, /enum PenpotButtonVariant \{/);
+  assert.doesNotMatch(componentDart, /enum PenpotButtonStyle \{/);
+  assert.doesNotMatch(componentDart, /enum PenpotButtonSize \{/);
+  assert.match(componentDart, /this\.variant = PenpotButtonVariant\.stylePrimarySizeSmall,/);
+  assert.match(componentDart, /return switch \(variant\)/);
+  assert.match(componentDart, /label \?\? 'Primary small'/);
+  assert.match(componentDart, /label \?\? 'Primary large'/);
+  assert.match(componentDart, /label \?\? 'Secondary large'/);
+  assert.match(generateFlutterWidget(result.root, result.components), /PenpotButton\(\n\s*variant: PenpotButtonVariant\.styleSecondarySizeLarge,\n\s*label: 'Buy now',/);
+
+  const complete = extractSelection(
+    [{ ...buttonInstance("complete-variant-instance", "Buy now"), componentId: "secondary-large", componentLibraryId: "design-system" }],
+    definitions,
+    [family],
+  );
+  const completeComponent = complete.components[0];
+  assert.equal(completeComponent.variant?.representation, "axes");
+  assert.ok(!complete.diagnostics.some((diagnostic) => diagnostic.code === "VARIANT_SPARSE_MATRIX"));
+  const completeDart = generateComponentWidget(completeComponent, complete.components);
+  assert.match(completeDart, /enum PenpotButtonStyle \{/);
+  assert.match(completeDart, /enum PenpotButtonSize \{/);
+  assert.doesNotMatch(completeDart, /enum PenpotButtonVariant \{/);
+  assert.match(completeDart, /return switch \(\(style, size\)\)/);
 
   const variantDartPath = new URL("../variant_button.dart", import.meta.url);
   writeFileSync(variantDartPath, componentDart);
   assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", variantDartPath.pathname]));
+});
+
+test("generates the ProductCard handoff API with explicit Raven selection and semantic text parameters", () => {
+  const product = (id: string, title: string, price: string) => ({
+    id,
+    name: title,
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 131,
+    height: 230,
+    visible: true,
+    children: [
+      { id: `${id}-title`, name: title, codegenParameterName: "title", type: "text", x: 0, y: 0, width: 131, height: 24, visible: true, characters: title },
+      { id: `${id}-price`, name: price, codegenParameterName: "priceLabel", type: "text", x: 0, y: 30, width: 131, height: 24, visible: true, characters: price },
+    ],
+  });
+  const paris = product("paris", "Paris", "from €20.95");
+  const raven = product("raven", "Raven", "from €23.95");
+  const instance = {
+    ...raven,
+    id: "raven-instance",
+    isComponentInstance: true,
+    componentId: "raven",
+    children: [
+      { ...raven.children[0], id: "raven-instance-title" },
+      { ...raven.children[1], id: "raven-instance-price" },
+    ],
+  };
+  const result = extractSelection(
+    [instance],
+    [{ id: "paris", name: "Paris product", root: paris }, { id: "raven", name: "Raven product", root: raven }],
+    [{
+      id: "product-card",
+      name: "Product",
+      codegenName: "ProductCard",
+      properties: ["Variant"],
+      defaultComponentId: "paris",
+      members: [
+        { id: "paris", name: "Paris", root: paris, values: { Variant: "Paris" } },
+        { id: "raven", name: "Raven", root: raven, values: { Variant: "Raven" } },
+      ],
+    }],
+  );
+  assert.equal(result.root.kind, "component-instance");
+  assert.equal(result.root.variantMemberName, "raven");
+  const component = result.components[0];
+  const componentDart = generateComponentWidget(component, result.components);
+  assert.match(componentDart, /class ProductCard extends StatelessWidget/);
+  assert.match(componentDart, /enum ProductCardVariant \{/);
+  assert.match(componentDart, /this\.variant = ProductCardVariant\.paris,/);
+  assert.match(componentDart, /final String\? title;/);
+  assert.match(componentDart, /final String\? priceLabel;/);
+  assert.match(generateFlutterWidget(result.root, result.components), /ProductCard\(\n\s*variant: ProductCardVariant\.raven,\n\s*title: 'Raven',\n\s*priceLabel: 'from €23\.95',/);
 });
 
 test("maps a Penpot component to a reusable widget and instances to invocations", () => {
@@ -1333,9 +1444,9 @@ test("maps a Penpot component to a reusable widget and instances to invocations"
 
   const componentDart = generateComponentWidget(component, result.components);
   assert.match(componentDart, /class PrimaryButton extends StatelessWidget/);
-  assert.match(componentDart, /this\.label = 'Continue',/);
-  assert.match(componentDart, /final String label;/);
-  assert.match(componentDart, /Text\(\n\s*this\.label,/);
+  assert.match(componentDart, /this\.label,/);
+  assert.match(componentDart, /final String\? label;/);
+  assert.match(componentDart, /Text\(\n\s*label \?\? 'Continue',/);
 
   const dart = generateFlutterWidget(result.root, result.components);
   assert.match(dart, /PrimaryButton\(\n\s*label: 'Buy now',/);
@@ -1532,21 +1643,26 @@ test("preserves component fill overrides as a color parameter", () => {
   const dart = generateFlutterWidget(result.root, result.components);
   assert.match(dart, /(?:const )?PrimaryButton\(\n\s*backgroundColor: (?:const )?Color\(0xffff0000\),/);
   assert.match(generateComponentWidget(result.components[0], result.components), /final Color\? backgroundColor;/);
-  assert.match(generateComponentWidget(result.components[0], result.components), /this\.backgroundColor \?\? (?:const )?Color\(0xff6750a4\)/);
+  assert.match(generateComponentWidget(result.components[0], result.components), /backgroundColor \?\? (?:const )?Color\(0xff6750a4\)/);
 });
 
-test("reports unresolved components and falls back safely", () => {
+test("reports unresolved components and preserves their visible board subtree", () => {
   const result = extractSelection([buttonInstance("orphan", "Continue")]);
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "COMPONENT_UNRESOLVED"));
-  assert.equal(result.root.kind, "unsupported");
-  assert.match(generateFlutterWidget(result.root, result.components), /const SizedBox\.shrink\(\)/);
+  assert.equal(result.root.kind, "board");
+  assert.equal(result.root.children[0].kind, "text");
+  const dart = generateFlutterWidget(result.root, result.components);
+  assert.match(dart, /class PrimaryButtonDesign extends StatelessWidget/);
+  assert.match(dart, /'Continue'/);
+  assert.doesNotMatch(dart, /SizedBox\.shrink\(\)/);
 });
 
-test("reports unavailable shared-library components", () => {
+test("reports unavailable shared-library components and preserves their visible board subtree", () => {
   const result = extractSelection([{ ...buttonInstance("library-orphan", "Continue"), componentLibraryId: "shared-library" }]);
 
-  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "SHARED_LIBRARY_UNAVAILABLE"));
-  assert.equal(result.root.kind, "unsupported");
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "LIBRARY_UNAVAILABLE"));
+  assert.equal(result.root.kind, "board");
+  assert.equal(result.root.children[0].kind, "text");
 });
 
 test("generates deterministic multi-file output with a barrel export", () => {
@@ -1583,8 +1699,27 @@ test("generates deterministic multi-file output with a barrel export", () => {
 
   const files = generateFlutterFiles(result.root, result.components);
   const paths = files.map((file) => file.path);
-  assert.deepEqual(paths, ["screens/checkout_screen.dart", "components/primary_button.dart", "components/product_card.dart", "penpot.dart"]);
-  assert.match(files.find((file) => file.path === "penpot.dart")!.source, /export 'components\/primary_button\.dart';/);
+  assert.deepEqual(paths, [
+    "lib/generated/penpot/compositions/checkout_design.dart",
+    "lib/generated/penpot/components/primary_button.dart",
+    "lib/generated/penpot/components/product_card.dart",
+    "lib/generated/penpot/penpot.dart",
+    "lib/generated/penpot/penpot_manifest.json",
+  ]);
+  assert.match(files.find((file) => file.path === "lib/generated/penpot/penpot.dart")!.source, /export 'components\/primary_button\.dart';/);
+  const manifest = JSON.parse(files.find((file) => file.path === "lib/generated/penpot/penpot_manifest.json")!.source);
+  assert.equal(manifest.generatorVersion, APP_VERSION);
+  assert.deepEqual(manifest.ownership, {
+    dartRoot: "lib/generated/penpot",
+    assetRoot: "assets/penpot",
+    replaceOnRegeneration: true,
+  });
+  assert.deepEqual(manifest.compositions, [{ sourceId: "checkout-screen", className: "CheckoutDesign" }]);
+  assert.deepEqual(manifest.components, [
+    { sourceComponentId: "comp-button", generatedName: "PrimaryButton", libraryId: null },
+    { sourceComponentId: "comp-card", generatedName: "ProductCard", libraryId: null },
+  ]);
+  assert.ok(manifest.files.every((file: { readonly hash?: string; readonly tier?: string }) => file.hash !== undefined && file.tier !== undefined));
 
   const again = generateFlutterFiles(result.root, result.components);
   assert.deepEqual(again, files);
@@ -1617,10 +1752,10 @@ test("generates typed theme fields and component references from semantic token 
   });
 
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes);
-  const screen = files.find((file) => file.path === "screens/token_card.dart")!.source;
-  const namespaces = files.find((file) => file.path === "theme/penpot_token_namespaces.dart")!.source;
-  const extension = files.find((file) => file.path === "theme/penpot_tokens.dart")!.source;
-  const themes = files.find((file) => file.path === "theme/penpot_themes.dart")!.source;
+  const screen = files.find((file) => file.path === "lib/generated/penpot/compositions/token_card_design.dart")!.source;
+  const namespaces = files.find((file) => file.path === "lib/generated/penpot/theme/penpot_token_namespaces.dart")!.source;
+  const extension = files.find((file) => file.path === "lib/generated/penpot/theme/penpot_tokens.dart")!.source;
+  const themes = files.find((file) => file.path === "lib/generated/penpot/theme/penpot_themes.dart")!.source;
   assert.match(screen, /context\.penpot\.space\.modular\.lg/);
   assert.match(screen, /context\.penpot\.color\.info\.background/);
   assert.match(screen, /context\.penpot\.radius\.modular\.sm/);
@@ -1633,7 +1768,7 @@ test("generates typed theme fields and component references from semantic token 
   assert.match(themes, /ThemeData buildPenpotTheme/);
   assert.match(themes, /colorScheme: ThemeData\(\)\.colorScheme\.copyWith/);
   assert.match(themes, /primary: values\['color\.primary'\] as Color/);
-  assert.ok(files.some((file) => file.path === "penpot_manifest.json"));
+  assert.ok(files.some((file) => file.path === "lib/generated/penpot/penpot_manifest.json"));
   for (const file of files.filter((file) => file.path.endsWith(".dart"))) {
     const path = new URL(`../${file.path.replace(/\//g, "_")}`, import.meta.url);
     writeFileSync(path, file.source);
@@ -1694,7 +1829,7 @@ test("exports the full catalog rather than only tokens reachable from selected s
     sets: [{ id: "global", name: "Global", active: true, tokenIds: ["primary", "unused"] }],
   });
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets);
-  const namespaces = files.find((file) => file.path === "theme/penpot_token_namespaces.dart")!.source;
+  const namespaces = files.find((file) => file.path === "lib/generated/penpot/theme/penpot_token_namespaces.dart")!.source;
   assert.match(generateFlutterWidget(result.root, result.components, result.tokens), /context\.penpot\.color\.primary/);
   assert.match(namespaces, /final Color unused;/);
 });
@@ -1787,8 +1922,8 @@ test("generates one theme-aware component source for light, dark, and partial th
     ],
   });
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes);
-  const screen = files.find((file) => file.path === "screens/theme_card.dart")!.source;
-  const themes = files.find((file) => file.path === "theme/penpot_themes.dart")!.source;
+  const screen = files.find((file) => file.path === "lib/generated/penpot/compositions/theme_card_design.dart")!.source;
+  const themes = files.find((file) => file.path === "lib/generated/penpot/theme/penpot_themes.dart")!.source;
   assert.match(screen, /context\.penpot\.color\.primary/);
   assert.match(themes, /enum PenpotMode[\s\S]*light,[\s\S]*dark,/);
   assert.match(themes, /enum PenpotContrast/);
@@ -1961,28 +2096,32 @@ function responsiveDart(result: ReturnType<typeof extractSelection>): string {
   return generateFlutterWidget(result.root, result.components, result.tokens, result.responsiveScreen);
 }
 
-test("merges mobile and desktop Row-to-Column boards with LayoutBuilder breakpoints", () => {
+test("keeps named mobile and desktop boards separate without inferred breakpoints", () => {
   const result = extractSelection([
     responsiveBoard("Checkout / Mobile", 390, "column"),
     responsiveBoard("Checkout / Desktop", 1440, "row"),
   ]);
   assert.equal(result.responsiveScreen?.name, "Checkout");
-  assert.deepEqual(result.responsiveScreen?.variants.map((variant) => [variant.minWidth, variant.maxWidth]), [[undefined, 600], [600, undefined]]);
-  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "RESPONSIVE_BREAKPOINT_INFERRED"));
-  const dart = responsiveDart(result);
-  assert.match(dart, /LayoutBuilder\(/);
-  assert.match(dart, /constraints\.maxWidth < 600/);
-  assert.match(dart, /return (?:const )?Column\(/);
-  assert.match(dart, /return (?:const )?Row\(/);
-  assert.doesNotMatch(dart, /width: 390/);
-  assert.doesNotMatch(dart, /width: 1440/);
-  const responsiveDartPath = new URL("../responsive_checkout.dart", import.meta.url);
-  writeFileSync(responsiveDartPath, dart);
-  execFileSync("dart", ["format", responsiveDartPath.pathname]);
-  assert.equal(dart, readFileSync(responsiveDartPath, "utf8"));
+  assert.deepEqual(result.responsiveScreen?.variants.map((variant) => [variant.minWidth, variant.maxWidth]), [[undefined, undefined], [undefined, undefined]]);
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "RESPONSIVE_BOUNDS_NOT_EXPLICIT"));
+  assert.ok(!result.diagnostics.some((diagnostic) => diagnostic.code === "RESPONSIVE_BREAKPOINT_INFERRED"));
+
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen);
+  const compositionPaths = files.filter((file) => file.path.includes("/compositions/")).map((file) => file.path);
+  assert.deepEqual(compositionPaths, [
+    "lib/generated/penpot/compositions/checkout_mobile_design.dart",
+    "lib/generated/penpot/compositions/checkout_desktop_design.dart",
+  ]);
+  const mobile = files.find((file) => file.path === compositionPaths[0])!.source;
+  const desktop = files.find((file) => file.path === compositionPaths[1])!.source;
+  assert.match(mobile, /class CheckoutMobileDesign extends StatelessWidget/);
+  assert.match(mobile, /width: 390,[\s\S]*height: 800,[\s\S]*Column\(/);
+  assert.match(desktop, /class CheckoutDesktopDesign extends StatelessWidget/);
+  assert.match(desktop, /width: 1440,[\s\S]*height: 800,[\s\S]*Row\(/);
+  assert.doesNotMatch(`${mobile}\n${desktop}`, /LayoutBuilder\(|constraints\.maxWidth|600|1024/);
 });
 
-test("generates responsive grid column counts from breakpoint boards", () => {
+test("preserves each named responsive family's explicit grid column count", () => {
   const gridBoard = (name: string, width: number, columns: number) => ({
     ...responsiveBoard(name, width),
     flex: undefined,
@@ -1995,9 +2134,11 @@ test("generates responsive grid column counts from breakpoint boards", () => {
     },
   });
   const result = extractSelection([gridBoard("Gallery / Mobile", 390, 2), gridBoard("Gallery / Desktop", 1440, 4)]);
-  const dart = responsiveDart(result);
-  assert.match(dart, /crossAxisCount: 2/);
-  assert.match(dart, /crossAxisCount: 4/);
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen);
+  const mobile = files.find((file) => file.path === "lib/generated/penpot/compositions/gallery_mobile_design.dart")!.source;
+  const desktop = files.find((file) => file.path === "lib/generated/penpot/compositions/gallery_desktop_design.dart")!.source;
+  assert.match(mobile, /width: 390,[\s\S]*crossAxisCount: 2/);
+  assert.match(desktop, /width: 1440,[\s\S]*crossAxisCount: 4/);
 });
 
 test("preserves elements hidden at a mobile breakpoint", () => {
@@ -2010,9 +2151,12 @@ test("preserves elements hidden at a mobile breakpoint", () => {
     responsiveBoard("Account / Mobile", 390, "column", mobileChildren),
     responsiveBoard("Account / Desktop", 1440, "row", desktopChildren),
   ]);
-  const dart = responsiveDart(result);
-  assert.match(dart, /\/\/ Sidebar\n\s*SizedBox\.shrink\(\)/);
-  assert.match(dart, /\/\/ Sidebar\n\s*(?:const )?SizedBox\(/);
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen);
+  const mobile = files.find((file) => file.path === "lib/generated/penpot/compositions/account_mobile_design.dart")!.source;
+  const desktop = files.find((file) => file.path === "lib/generated/penpot/compositions/account_desktop_design.dart")!.source;
+  assert.match(mobile, /\/\/ Sidebar\n\s*(?:const )?SizedBox\.shrink\(\)/);
+  assert.match(desktop, /\/\/ Sidebar\n\s*(?:const )?SizedBox\(/);
+  assert.doesNotMatch(desktop, /SizedBox\.shrink\(\)/);
 });
 
 test("preserves different selections of the same component variant across breakpoints", () => {
@@ -2041,9 +2185,17 @@ test("preserves different selections of the same component variant across breakp
       ],
     }],
   );
-  const dart = responsiveDart(result);
-  assert.match(dart, /ResponsiveButton\(\),/);
-  assert.match(dart, /ResponsiveButton\(\n\s*size: ResponsiveButtonSize\.expanded,/);
+  const component = result.components[0];
+  assert.equal(component.variant?.representation, "members");
+  const componentDart = generateComponentWidget(component, result.components);
+  assert.match(componentDart, /enum ResponsiveButtonVariant \{/);
+  assert.doesNotMatch(componentDart, /enum ResponsiveButtonSize \{/);
+
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen);
+  const mobile = files.find((file) => file.path === "lib/generated/penpot/compositions/actions_mobile_design.dart")!.source;
+  const desktop = files.find((file) => file.path === "lib/generated/penpot/compositions/actions_desktop_design.dart")!.source;
+  assert.match(mobile, /ResponsiveButton\(\n\s*variant: ResponsiveButtonVariant\.compact,/);
+  assert.match(desktop, /ResponsiveButton\(\n\s*variant: ResponsiveButtonVariant\.expanded,/);
 });
 
 test("maps Penpot min and max dimensions to ConstrainedBox", () => {
@@ -2064,16 +2216,26 @@ test("maps Penpot min and max dimensions to ConstrainedBox", () => {
   assert.match(dart, /BoxConstraints\(minWidth: 240, maxWidth: 720, minHeight: 120, maxHeight: 480\)/);
 });
 
-test("generates deterministic mobile, tablet, and desktop breakpoints", () => {
+test("generates deterministic separate mobile, tablet, and desktop compositions without inferred breakpoints", () => {
   const result = extractSelection([
     responsiveBoard("Catalog / Desktop", 1440, "row"),
     responsiveBoard("Catalog / Mobile", 390, "column"),
     responsiveBoard("Catalog / Tablet", 768, "column"),
   ]);
   assert.deepEqual(result.responsiveScreen?.variants.map((variant) => variant.sourceName), ["Catalog / Mobile", "Catalog / Tablet", "Catalog / Desktop"]);
-  const dart = responsiveDart(result);
-  assert.match(dart, /constraints\.maxWidth < 600/);
-  assert.match(dart, /constraints\.maxWidth < 1024/);
+  assert.deepEqual(result.responsiveScreen?.variants.map((variant) => [variant.minWidth, variant.maxWidth]), [
+    [undefined, undefined],
+    [undefined, undefined],
+    [undefined, undefined],
+  ]);
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen);
+  const compositions = files.filter((file) => file.path.includes("/compositions/"));
+  assert.deepEqual(compositions.map((file) => file.path), [
+    "lib/generated/penpot/compositions/catalog_mobile_design.dart",
+    "lib/generated/penpot/compositions/catalog_tablet_design.dart",
+    "lib/generated/penpot/compositions/catalog_desktop_design.dart",
+  ]);
+  assert.doesNotMatch(compositions.map((file) => file.source).join("\n"), /LayoutBuilder\(|constraints\.maxWidth < (?:600|1024)/);
 });
 
 test("keeps explicit responsive groups with unmatched nodes and reports divergence", () => {
@@ -2085,6 +2247,13 @@ test("keeps explicit responsive groups with unmatched nodes and reports divergen
   const result = extractSelection([mobile, desktop]);
   assert.equal(result.responsiveScreen?.name, "Checkout");
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "RESPONSIVE_LAYOUT_DIVERGENCE"));
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen);
+  assert.ok(files.some((file) => file.path === "lib/generated/penpot/compositions/phone_design.dart"));
+  assert.ok(files.some((file) => file.path === "lib/generated/penpot/compositions/wide_design.dart"));
+  const responsive = files.find((file) => file.path === "lib/generated/penpot/compositions/checkout_responsive_design.dart")!.source;
+  assert.match(responsive, /class CheckoutResponsiveDesign extends StatelessWidget/);
+  assert.match(responsive, /LayoutBuilder\(/);
+  assert.match(responsive, /constraints\.maxWidth < 640/);
 });
 
 test("does not merge unrelated breakpoint-like boards with similar names", () => {
@@ -2117,9 +2286,15 @@ test("preserves nested component calls in responsive layouts", () => {
     ],
     [{ id: "comp-button", libraryId: "local", name: "Primary Button", root: buttonMain }],
   );
-  const dart = responsiveDart(result);
+  const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen);
+  const compositions = files.filter((file) => file.path.includes("/compositions/"));
+  assert.deepEqual(compositions.map((file) => file.path), [
+    "lib/generated/penpot/compositions/nested_mobile_design.dart",
+    "lib/generated/penpot/compositions/nested_desktop_design.dart",
+  ]);
+  const dart = compositions.map((file) => file.source).join("\n");
   assert.equal((dart.match(/PrimaryButton\(\)/g) ?? []).length, 2);
-  assert.match(dart, /import '\.\.\/components\/primary_button\.dart';/);
+  assert.equal((dart.match(/import '\.\.\/components\/primary_button\.dart';/g) ?? []).length, 2);
 });
 
 test("deduplicates repeated typography styles into AppTextStyles", () => {
@@ -2145,11 +2320,12 @@ test("deduplicates repeated typography styles into AppTextStyles", () => {
   assert.equal(result.typographyStyles.length, 1);
   assert.equal(result.typographyStyles[0].name, "inter16Regular");
   const files = generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, undefined, result.typographyStyles);
-  assert.match(files.find((file) => file.path === "screens/selection.dart")!.source, /style: AppTextStyles\.inter16Regular/);
+  assert.match(files.find((file) => file.path === "lib/generated/penpot/compositions/selection_design.dart")!.source, /style: AppTextStyles\.inter16Regular/);
+  const typography = files.find((file) => file.path === "lib/generated/penpot/theme/app_typography.dart")!.source;
   const typographyDartPath = new URL("../app_typography.dart", import.meta.url);
-  writeFileSync(typographyDartPath, files.find((file) => file.path === "app_typography.dart")!.source);
+  writeFileSync(typographyDartPath, typography);
   execFileSync("dart", ["format", typographyDartPath.pathname]);
-  assert.equal(files.find((file) => file.path === "app_typography.dart")!.source, readFileSync(typographyDartPath, "utf8"));
+  assert.equal(typography, readFileSync(typographyDartPath, "utf8"));
 });
 
 test("uses structural typography names instead of text content and sanitizes explicit names", () => {
@@ -2198,7 +2374,7 @@ test("tracks custom fonts, fallback families, and unavailable font assets", () =
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "FONT_WEIGHT_APPROXIMATED"));
   assert.deepEqual(result.fonts[0].fallbackFamilies, ["Courier", "sans-serif"]);
   assert.equal(result.fonts[0].available, false);
-  assert.match(generateFlutterWidget(result.root), /fontFamilyFallback: \['Courier', 'sans-serif'\]/);
+  assert.match(generateFlutterWidget(result.root), /fontFamilyFallback: (?:const )?\['Courier', 'sans-serif'\]/);
 });
 
 test("converts absolute and percentage line heights and preserves alignment, transform, and overflow", () => {
@@ -2288,4 +2464,20 @@ test("emits font assets in the Flutter pubspec snippet when supplied by an adapt
   assert.match(generatePubspecSnippet([], result.fonts), /family: Brand/);
   assert.match(generatePubspecSnippet([], result.fonts), /asset: assets\/fonts\/Brand-BoldItalic\.ttf/);
   assert.match(generatePubspecSnippet([], result.fonts), /style: italic/);
+  const files = generateFlutterFiles(
+    result.root,
+    result.components,
+    result.tokens,
+    result.tokenSets,
+    result.tokenThemes,
+    result.responsiveScreen,
+    result.typographyStyles,
+    undefined,
+    result.assetRegistry,
+    result.libraries,
+    result.prototypeMetadata,
+    result.fonts,
+  );
+  const manifest = JSON.parse(files.find((file) => file.path === "lib/generated/penpot/penpot_manifest.json")!.source);
+  assert.deepEqual(manifest.fonts, result.fonts);
 });

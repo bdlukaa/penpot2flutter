@@ -1,7 +1,9 @@
-import type { AssetManifestEntry, BoardNode, ColorFill, Diagnostic, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrInteraction, IrLibrary, IrNavigationGraph, IrNode, IrResponsiveScreen, IrScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
+import type { AssetManifestEntry, BoardNode, ColorFill, Diagnostic, DropShadow, EdgeInsets, GeneratedFile, GradientFill, GridLayout, GroupNode, IrAsset, IrComponentDefinition, IrComponentInstanceNode, IrFontManifestEntry, IrInteraction, IrLibrary, IrNode, IrPrototypeMetadata, IrResponsiveScreen, IrTextTransform, IrToken, IrTokenReference, IrTokenSet, IrTokenTheme, IrTypographyStyle, IrVariantAxis, NodeStyle, SvgNode, TextNode, TextRun, TextStyle } from "../shared/ir.js";
 import { generateFlutterThemeFiles, tokenAccessPath } from "./flutter-theme-generator.js";
 import { libraryModuleName } from "./library-registry.js";
+import { hasExplicitResolverBounds } from "./responsive-analyzer.js";
 import { dartClassSegment, dartMemberName, DartSymbolAllocator, isDartIdentifier } from "./token-naming.js";
+import { APP_VERSION } from "../shared/version.js";
 export { dartMemberName } from "./token-naming.js";
 
 let componentNames: ReadonlyMap<string, string> = new Map();
@@ -12,16 +14,12 @@ let componentVariantEnums: ReadonlyMap<string, string> = new Map();
 let assetDefinitions: ReadonlyMap<string, IrAsset> = new Map();
 let assetConstants: ReadonlyMap<string, string> = new Map();
 let nodeInteractions: ReadonlyMap<string, readonly IrInteraction[]> = new Map();
-let prototypeTargets: ReadonlyMap<string, PrototypeTarget> = new Map();
-
-let prototypeOverlayActions: ReadonlyMap<string, IrInteraction> = new Map();
-let prototypeOverlayControllers: ReadonlyMap<string, string> = new Map();
 
 interface PrototypeTarget {
-  readonly className: string;
-  readonly path: string;
-  readonly routeName?: string;
+  readonly enumValue: string;
 }
+
+const generatedRoot = "lib/generated/penpot";
 
 type PubspecAsset = AssetManifestEntry | IrAsset;
 
@@ -138,7 +136,7 @@ export function generateFlutterWidget(
   sourcePath?: string,
   classNameOverride?: string,
   interactions: readonly IrInteraction[] = [],
-  targets: ReadonlyMap<string, PrototypeTarget> = new Map(),
+  _targets: ReadonlyMap<string, PrototypeTarget> = new Map(),
   prototypeImports: readonly string[] = [],
 ): string {
   componentNames = buildNameMap(components);
@@ -149,31 +147,29 @@ export function generateFlutterWidget(
   assetConstants = buildAssetConstants(assets);
   declaredParameters = new Set();
   nodeInteractions = interactionsByNode(interactions);
-  prototypeTargets = targets;
 
-  prototypeOverlayActions = new Map(interactions.filter((interaction) => (interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay") && interaction.targetId !== undefined).map((interaction) => [interaction.targetId!, interaction]));
-  prototypeOverlayControllers = overlayControllerNames(prototypeOverlayActions.keys(), targets);
   const roots = responsiveScreen?.variants.map((variant) => variant.root) ?? [root];
-  const className = classNameOverride ?? (toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedWidget");
-  return stripNestedConst([
+  const className = classNameOverride ?? compositionClassName(responsiveScreen?.name ?? root.name);
+  return compactDartAssetImages([
     ...(roots.some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     ...(roots.some(containsBlur) ? ["import 'dart:ui' show ImageFilter;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(roots.some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
     ...(assetImport !== undefined && roots.some(containsAssetReference) ? [`import '${assetImport}';`] : []),
     ...(roots.some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
-    ...(roots.some(containsTypography) ? ["import '../app_typography.dart';"] : []),
-    ...(interactions.some((interaction) => interaction.trigger === "after-delay") ? ["import '../prototype_interactions.dart';"] : []),
+    ...(roots.some(containsTypography) ? ["import '../theme/app_typography.dart';"] : []),
     ...prototypeImports,
     ...componentImports(roots.flatMap((variantRoot) => [...collectInstanceComponentIds(variantRoot)]), components, "../components/", componentPaths, sourcePath),
     "",
-    ...(interactions.some((interaction) => interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay")
-      ? [`class ${className} extends StatefulWidget {`, `  const ${className}({super.key});`, "", `  @override State<${className}> createState() => _${className}State();`, "}", "", `class _${className}State extends State<${className}> {`, ...[...prototypeOverlayControllers.values()].map((name) => `  final ${name} = OverlayPortalController();`), ""]
-      : [`class ${className} extends StatelessWidget {`, `  const ${className}({super.key});`, ""]),
+    "// Generated design composition. This is an implementation reference; application behavior remains developer-owned.",
+    `class ${className} extends StatelessWidget {`,
+    ...(interactions.length === 0
+      ? [`  const ${className}({super.key});`, ""]
+      : [`  const ${className}({super.key, this.onPrototypeInteraction});`, "", "  final ValueChanged<PenpotPrototypeInteraction>? onPrototypeInteraction;", ""]),
     "  @override",
     "  Widget build(BuildContext context) {",
     `    // ${commentText(responsiveScreen?.name ?? root.sourceName)}`,
-    ...(responsiveScreen === undefined
+    ...(responsiveScreen === undefined || !hasExplicitResolverBounds(responsiveScreen.variants)
       ? [`    return ${renderResponsiveRoot(root, 2)};`]
       : renderResponsiveScreen(responsiveScreen)),
     "  }",
@@ -182,27 +178,6 @@ export function generateFlutterWidget(
   ].join("\n"));
 }
 
-function stripNestedConst(source: string): string {
-  const ranges: Array<{ start: number; end: number }> = [];
-  for (let index = 0; index < source.length;) {
-    const token = nextDartToken(source, index, "const");
-    if (token === undefined) break;
-    const opening = constExpressionOpening(source, token + "const".length);
-    if (opening === undefined) {
-      index = token + "const".length;
-      continue;
-    }
-    const closing = matchingDelimiter(source, opening);
-    if (closing === undefined) {
-      index = token + "const".length;
-      continue;
-    }
-    ranges.push({ start: opening + 1, end: closing });
-    index = closing + 1;
-  }
-  const stripped = ranges.reverse().reduce((result, range) => `${result.slice(0, range.start)}${removeNestedConstKeywords(result.slice(range.start, range.end))}${result.slice(range.end)}`, source);
-  return compactDartAssetImages(stripped);
-}
 
 function compactDartAssetImages(source: string): string {
   return source.replace(/^(\s*)image: ((?:const )?)AssetImage\(\n\s*([^,\n]+),\n\s*\),$/gm, (line, indentation: string, constant: string, asset: string) => {
@@ -211,102 +186,6 @@ function compactDartAssetImages(source: string): string {
   });
 }
 
-function nextDartToken(source: string, start: number, value: string): number | undefined {
-  for (let index = start; index <= source.length - value.length;) {
-    const character = source[index];
-    if (character === "'" || character === '"') {
-      index = skipDartString(source, index);
-      continue;
-    }
-    if (source.startsWith("//", index)) {
-      const newline = source.indexOf("\n", index + 2);
-      index = newline < 0 ? source.length : newline + 1;
-      continue;
-    }
-    if (source.startsWith("/*", index)) {
-      const end = source.indexOf("*/", index + 2);
-      index = end < 0 ? source.length : end + 2;
-      continue;
-    }
-    if (source.startsWith(value, index) && !isDartWord(source[index - 1]) && !isDartWord(source[index + value.length])) return index;
-    index++;
-  }
-  return undefined;
-}
-
-function constExpressionOpening(source: string, start: number): number | undefined {
-  let index = start;
-  while (/\s/.test(source[index] ?? "")) index++;
-  if (source[index] === "[") return index;
-  if (source[index] === "<") {
-    const genericEnd = matchingDelimiter(source, index);
-    if (genericEnd === undefined) return undefined;
-    index = genericEnd + 1;
-    while (/\s/.test(source[index] ?? "")) index++;
-    if (source[index] === "[") return index;
-  }
-  while (/[A-Za-z0-9_.]/.test(source[index] ?? "")) index++;
-  while (/\s/.test(source[index] ?? "")) index++;
-  return source[index] === "(" || source[index] === "{" ? index : undefined;
-}
-
-function matchingDelimiter(source: string, opening: number): number | undefined {
-  const stack: string[] = [];
-  const pairs = new Map([["(", ")"], ["[", "]"], ["{", "}"], ["<", ">"]]);
-  for (let index = opening; index < source.length; index++) {
-    const character = source[index];
-    if (character === "'" || character === '"') {
-      index = skipDartString(source, index) - 1;
-      continue;
-    }
-    if (source.startsWith("//", index)) {
-      const newline = source.indexOf("\n", index + 2);
-      index = newline < 0 ? source.length : newline;
-      continue;
-    }
-    if (source.startsWith("/*", index)) {
-      const end = source.indexOf("*/", index + 2);
-      index = end < 0 ? source.length : end + 1;
-      continue;
-    }
-    const closing = pairs.get(character!);
-    if (closing !== undefined) stack.push(closing);
-    else if (stack[stack.length - 1] === character) {
-      stack.pop();
-      if (stack.length === 0) return index;
-    }
-  }
-  return undefined;
-}
-
-function skipDartString(source: string, start: number): number {
-  const quote = source[start];
-  for (let index = start + 1; index < source.length; index++) {
-    if (source[index] === "\\") {
-      index++;
-      continue;
-    }
-    if (source[index] === quote) return index + 1;
-  }
-  return source.length;
-}
-
-function removeNestedConstKeywords(source: string): string {
-  let result = "";
-  for (let index = 0; index < source.length;) {
-    const token = nextDartToken(source, index, "const");
-    if (token === undefined) return result + source.slice(index);
-    result += source.slice(index, token);
-    let end = token + "const".length;
-    while (source[end] === " ") end++;
-    index = end;
-  }
-  return result;
-}
-
-function isDartWord(value: string | undefined): boolean {
-  return value !== undefined && /[A-Za-z0-9_]/.test(value);
-}
 
 function renderResponsiveScreen(screen: IrResponsiveScreen): string[] {
   const variants = [...screen.variants].sort((left, right) => (left.minWidth ?? 0) - (right.minWidth ?? 0) || left.sourceBoardId.localeCompare(right.sourceBoardId));
@@ -329,25 +208,10 @@ function renderResponsiveScreen(screen: IrResponsiveScreen): string[] {
 }
 
 function renderResponsiveRoot(root: IrNode, depth: number): string {
-  if (root.kind !== "board") return renderNode(root, depth, false);
-  const clipBehavior = root.clipContent ? "Clip.hardEdge" : "Clip.none";
-  const decoration = renderDecoration(root, depth + 1);
-  const childDepth = decoration === undefined ? depth : depth + 1;
-  const child = root.flex !== undefined
-    ? renderFlex(root, childDepth, clipBehavior)
-    : root.grid?.supported === true
-      ? renderGrid(root, root.grid, root.children, childDepth)
-      : renderStack(root.children, childDepth, clipBehavior);
-  if (decoration === undefined) return child;
-  return constWidget([
-    "DecoratedBox(",
-    `${indent(depth + 1)}decoration: ${decoration},`,
-    `${indent(depth + 1)}child: ${root.clipContent ? constWidget(`ClipRect(\n${indent(depth + 2)}child: ${child},\n${indent(depth + 1)})`) : child},`,
-    `${indent(depth)})`,
-  ].join("\n"));
+  return renderNode(root, depth, false);
 }
 
-export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = [], assets: readonly IrAsset[] = [], assetImport?: string, componentPaths?: ReadonlyMap<string, string>, sourcePath?: string, interactions: readonly IrInteraction[] = [], targets: ReadonlyMap<string, PrototypeTarget> = new Map(), prototypeImports: readonly string[] = []): string {
+export function generateComponentWidget(component: IrComponentDefinition, components: readonly IrComponentDefinition[], tokens: readonly IrToken[] = [], typographyStyles: readonly IrTypographyStyle[] = [], assets: readonly IrAsset[] = [], assetImport?: string, componentPaths?: ReadonlyMap<string, string>, sourcePath?: string, interactions: readonly IrInteraction[] = [], _targets: ReadonlyMap<string, PrototypeTarget> = new Map(), prototypeImports: readonly string[] = []): string {
   componentNames = buildNameMap(components);
   componentVariantEnums = new Map(components.filter((candidate) => candidate.variant?.representation === "members").map((candidate) => [candidate.id, candidate.variant?.enumName ?? `${candidate.name}Variant`]));
   tokenDefinitions = tokenDefinitionMap(tokens);
@@ -355,53 +219,46 @@ export function generateComponentWidget(component: IrComponentDefinition, compon
   assetDefinitions = new Map(assets.map((asset) => [asset.id, asset]));
   assetConstants = buildAssetConstants(assets);
   nodeInteractions = interactionsByNode(interactions);
-  prototypeTargets = targets;
 
-  prototypeOverlayActions = new Map(interactions.filter((interaction) => (interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay") && interaction.targetId !== undefined).map((interaction) => [interaction.targetId!, interaction]));
-  prototypeOverlayControllers = overlayControllerNames(prototypeOverlayActions.keys(), targets);
   declaredParameters = new Set(component.parameters.map((parameter) => parameter.name));
   const axes = component.variant?.representation === "members" ? [] : component.variant?.axes ?? [];
-  const hasOverlayState = interactions.some((interaction) => interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay");
   const lines = [
     ...(componentRoots(component).some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(componentRoots(component).some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
     ...(assetImport !== undefined && componentRoots(component).some(containsAssetReference) ? [`import '${assetImport}';`] : []),
     ...(componentRoots(component).some(containsTokens) ? ["import '../theme/penpot_theme_extensions.dart';"] : []),
-    ...(componentRoots(component).some(containsTypography) ? ["import '../app_typography.dart';"] : []),
-    ...(interactions.some((interaction) => interaction.trigger === "after-delay") ? [`import '${relativeDartImport(sourcePath ?? "components/generated.dart", "prototype_interactions.dart")}';`] : []),
+    ...(componentRoots(component).some(containsTypography) ? ["import '../theme/app_typography.dart';"] : []),
     ...prototypeImports,
     ...componentImports(component.dependencies, components, "", componentPaths, sourcePath),
     "",
     ...(component.variant?.representation === "members"
       ? [`enum ${component.variant.enumName ?? `${component.name}Variant`} {`, ...component.variant.members.map((member) => `  ${member.dartName ?? "member"},`), "}", ""]
       : axes.flatMap((axis) => [`enum ${axis.enumName} {`, ...axis.values.map((value) => `  ${value.name},`), "}", ""])),
-    ...(hasOverlayState
-      ? [`class ${component.name} extends StatefulWidget {`]
-      : [`class ${component.name} extends StatelessWidget {`]),
+    "// Generated reusable design-system component. Regeneration may replace this file.",
+    `class ${component.name} extends StatelessWidget {`,
   ];
   const parameters = component.parameters;
   const memberVariant = component.variant?.representation === "members" ? component.variant.enumName ?? `${component.name}Variant` : undefined;
-  if (parameters.length === 0 && axes.length === 0 && memberVariant === undefined) {
+  if (parameters.length === 0 && axes.length === 0 && memberVariant === undefined && interactions.length === 0) {
     lines.push(`  const ${component.name}({super.key});`);
   } else {
     lines.push(`  const ${component.name}({`);
     lines.push("    super.key,");
-    if (memberVariant !== undefined) lines.push(`    this.variant = ${memberVariant}.${component.variant!.members.find((member) => member.componentId === component.id)?.dartName ?? component.variant!.members[0]?.dartName ?? "member"},`);
+    if (interactions.length > 0) lines.push("    this.onPrototypeInteraction,");
+    if (memberVariant !== undefined) lines.push(`    this.variant = ${memberVariant}.${component.variant!.defaultMemberName ?? component.variant!.members[0]?.dartName ?? "member"},`);
     for (const axis of axes) lines.push(`    this.${axis.name} = ${axis.enumName}.${variantDefaultName(axis)},`);
-    for (const parameter of parameters) {
-      lines.push(`    this.${parameter.name}${parameter.type === "Color" ? "" : parameter.defaultValue === undefined ? "" : ` = ${stringLiteral(parameter.defaultValue)}`},`);
-    }
+    for (const parameter of parameters) lines.push(`    this.${parameter.name},`);
     lines.push("  });");
     lines.push("");
+    if (interactions.length > 0) lines.push("  final ValueChanged<PenpotPrototypeInteraction>? onPrototypeInteraction;");
     if (memberVariant !== undefined) lines.push(`  final ${memberVariant} variant;`);
     for (const axis of axes) lines.push(`  final ${axis.enumName} ${axis.name};`);
-    for (const parameter of parameters) lines.push(`  final ${parameter.type === "Color" ? "Color?" : parameter.type} ${parameter.name};`);
+    for (const parameter of parameters) lines.push(`  final ${parameter.type === "Color" ? "Color?" : `${parameter.type}?`} ${parameter.name};`);
   }
-  if (hasOverlayState) lines.push("", `  @override State<${component.name}> createState() => _${component.name}State();`, "}", "", `class _${component.name}State extends State<${component.name}> {`, ...[...prototypeOverlayControllers.values()].map((name) => `  final ${name} = OverlayPortalController();`));
-  const body = renderVariantComponentBody(component, hasOverlayState).map((line) => hasOverlayState ? line.replace(/\bthis\./g, "widget.") : line);
+  const body = renderVariantComponentBody(component);
   lines.push("", "  @override", "  Widget build(BuildContext context) {", `    // ${commentText(component.sourceName)}`, ...body, "  }", "}", "");
-  return stripNestedConst(lines.join("\n"));
+  return compactDartAssetImages(lines.join("\n"));
 }
 
 function componentRoots(component: IrComponentDefinition): readonly IrNode[] {
@@ -412,13 +269,13 @@ function variantDefaultName(axis: IrVariantAxis): string {
   return axis.values.find((value) => value.sourceValue === axis.defaultValue)?.name ?? axis.values[0]?.name ?? "value";
 }
 
-function renderVariantComponentBody(component: IrComponentDefinition, _stateful = false): string[] {
+function renderVariantComponentBody(component: IrComponentDefinition): string[] {
   const variant = component.variant;
   if (variant === undefined || variant.members.length === 0) {
     return [`    return ${renderNode(component.root, 2, false)};`];
   }
   if (variant.representation === "members") {
-    const selector = _stateful ? "widget.variant" : "variant";
+    const selector = "variant";
     const enumName = variant.enumName ?? `${component.name}Variant`;
     const lines = [`    return switch (${selector}) {`];
     for (const member of variant.members) lines.push(`      ${enumName}.${member.dartName ?? "member"} => ${renderNode(member.root, 3, false)},`);
@@ -426,7 +283,7 @@ function renderVariantComponentBody(component: IrComponentDefinition, _stateful 
     return lines;
   }
   if (variant.axes.length === 0) return [`    return ${renderNode(component.root, 2, false)};`];
-  const axisNames = variant.axes.map((axis) => _stateful ? `widget.${axis.name}` : axis.name);
+  const axisNames = variant.axes.map((axis) => axis.name);
   const selector = variant.axes.length === 1 ? axisNames[0] : `(${axisNames.join(", ")})`;
   const lines = [`    return switch (${selector}) {`];
   for (const member of variant.members) {
@@ -450,177 +307,242 @@ export function generateFlutterFiles(
   cachedThemeFiles?: readonly GeneratedFile[],
   assets: readonly IrAsset[] = [],
   libraries: readonly IrLibrary[] = [],
-  navigationGraph?: IrNavigationGraph,
+  prototypeMetadata?: IrPrototypeMetadata,
+  fonts: readonly IrFontManifestEntry[] = [],
 ): GeneratedFile[] {
-  const screenName = toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedScreen";
   const sharedLibraries = libraries.filter((library) => library.scope === "shared");
   const libraryById = new Map(sharedLibraries.map((library) => [library.id, library]));
   const componentPaths = new Map(components.map((component) => [
     component.id,
     component.sourceLibraryScope === "shared" && component.sourceLibraryId !== undefined
-      ? `libraries/${libraryModuleName(libraryById.get(component.sourceLibraryId) ?? { id: component.sourceLibraryId, name: component.sourceLibraryId })}/components/${snakeCase(component.name)}.dart`
-      : `components/${snakeCase(component.name)}.dart`,
+      ? `${generatedRoot}/libraries/${libraryModuleName(libraryById.get(component.sourceLibraryId) ?? { id: component.sourceLibraryId, name: component.sourceLibraryId })}/components/${snakeCase(component.name)}.dart`
+      : `${generatedRoot}/components/${snakeCase(component.name)}.dart`,
   ]));
-  const screenPath = `screens/${snakeCase(screenName)}.dart`;
-  const targets: ReadonlyMap<string, PrototypeTarget> = navigationGraph === undefined ? new Map() : new Map<string, PrototypeTarget>([
-    ...navigationGraph.screens.map((screen) => [screen.id, { className: screenClassName(screen), path: `screens/${snakeCase(screenClassName(screen))}.dart`, routeName: screen.routeName }] as const),
-    ...navigationGraph.overlays.map((overlay) => [overlay.id, { className: overlayClassName(overlay.name), path: `overlays/${snakeCase(overlayClassName(overlay.name))}.dart` }] as const),
-  ]);
-  const prototypeImportsFor = (sourcePath: string, interactions: readonly IrInteraction[]): readonly string[] => [...new Set([
-    ...(interactions.some((interaction) => interaction.kind === "navigate") ? [`import '${relativeDartImport(sourcePath, "routes.dart")}';`] : []),
-    ...interactions.filter((interaction) => interaction.kind === "open-overlay" || interaction.kind === "toggle-overlay").flatMap((interaction) => {
-      const target = interaction.targetId === undefined ? undefined : targets.get(interaction.targetId);
-      return target === undefined || target.path === sourcePath ? [] : [`import '${relativeDartImport(sourcePath, target.path)}';`];
-    }),
-  ])].sort();
-  const files: GeneratedFile[] = navigationGraph === undefined
-    ? [{
-        path: screenPath,
-        source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles, assets, "../assets.dart", componentPaths, screenPath),
-      }]
-    : [
-        ...navigationGraph.screens.map((screen) => {
-          const path = `screens/${snakeCase(screenClassName(screen))}.dart`;
-          return { path, source: generateFlutterWidget(screen.root, components, tokens, undefined, typographyStyles, assets, "../assets.dart", componentPaths, path, screenClassName(screen), screen.interactions, targets, prototypeImportsFor(path, screen.interactions)) };
-        }),
-        ...navigationGraph.overlays.map((overlay) => {
-          const path = `overlays/${snakeCase(overlayClassName(overlay.name))}.dart`;
-          return { path, source: generateFlutterWidget(overlay.root, components, tokens, undefined, typographyStyles, assets, "../assets.dart", componentPaths, path, overlayClassName(overlay.name), overlay.interactions, targets, prototypeImportsFor(path, overlay.interactions)) };
-        }),
-      ];
-  if (navigationGraph !== undefined) {
-    files.push({ path: "routes.dart", source: generateRoutesFile(navigationGraph) });
-    files.push({ path: "navigation.dart", source: generateNavigatorFile(navigationGraph) });
-    if (navigationGraph.screens.some((screen) => screen.interactions.some((interaction) => interaction.trigger === "after-delay")) || navigationGraph.overlays.some((overlay) => overlay.interactions.some((interaction) => interaction.trigger === "after-delay")) || components.some((component) => component.interactions.some((interaction) => interaction.trigger === "after-delay"))) files.push({ path: "prototype_interactions.dart", source: generatePrototypeInteractions() });
+  const componentInteractions = components.flatMap((component) => component.interactions);
+  const allInteractions = dedupeGeneratedInteractions([...(prototypeMetadata?.interactions ?? []), ...componentInteractions]);
+  const destinationNames = new Map((prototypeMetadata?.destinations ?? []).map((destination) => [destination.id, destination.name]));
+  for (const interaction of allInteractions) if (interaction.targetId !== undefined && !destinationNames.has(interaction.targetId)) destinationNames.set(interaction.targetId, interaction.targetId);
+  const effectivePrototype: IrPrototypeMetadata | undefined = allInteractions.length === 0 && (prototypeMetadata?.flows.length ?? 0) === 0 ? undefined : {
+    destinations: [...destinationNames].map(([id, name]) => ({ id, name })).sort((left, right) => left.id.localeCompare(right.id)),
+    interactions: allInteractions,
+    flows: prototypeMetadata?.flows ?? [],
+    overlayDestinationIds: prototypeMetadata?.overlayDestinationIds ?? [],
+  };
+  const targets = prototypeTargetMap(effectivePrototype);
+  const prototypeImportsFor = (sourcePath: string, interactions: readonly IrInteraction[]): readonly string[] => interactions.length === 0 ? [] : [
+    `import '${relativeDartImport(sourcePath, `${generatedRoot}/prototype_destinations.dart`)}';`,
+  ];
+  const compositions = responsiveScreen === undefined
+    ? [{ root, className: compositionClassName(root.name), sourceId: root.sourceId }]
+    : responsiveScreen.variants.map((variant) => ({ root: variant.root, className: compositionClassName(variant.sourceName), sourceId: variant.sourceBoardId }));
+  const files: GeneratedFile[] = compositions.map((composition) => {
+    const path = `${generatedRoot}/compositions/${snakeCase(composition.className)}.dart`;
+    const interactions = allInteractions.filter((interaction) => containsSourceId(composition.root, interaction.sourceNodeId));
+    return {
+      path,
+      tier: "design-composition" as const,
+      sourceIds: [composition.sourceId],
+      source: generateFlutterWidget(composition.root, components, tokens, undefined, typographyStyles, assets, "../assets.dart", componentPaths, path, composition.className, interactions, targets, prototypeImportsFor(path, interactions)),
+    };
+  });
+  if (responsiveScreen !== undefined && hasExplicitResolverBounds(responsiveScreen.variants)) {
+    const className = `${compositionBaseName(responsiveScreen.name)}ResponsiveDesign`;
+    const path = `${generatedRoot}/compositions/${snakeCase(className)}.dart`;
+    files.push({
+      path,
+      tier: "design-composition",
+      sourceIds: responsiveScreen.variants.map((variant) => variant.sourceBoardId),
+      source: generateFlutterWidget(root, components, tokens, responsiveScreen, typographyStyles, assets, "../assets.dart", componentPaths, path, className),
+    });
   }
   for (const component of components) {
     const path = componentPaths.get(component.id)!;
-    files.push({ path, source: generateComponentWidget(component, components, tokens, typographyStyles, assets, assetImportFor(path), componentPaths, path, component.interactions, targets, prototypeImportsFor(path, component.interactions)) });
+    files.push({ path, tier: "design-system", sourceIds: [component.sourceComponentId], source: generateComponentWidget(component, components, tokens, typographyStyles, assets, assetImportFor(path), componentPaths, path, component.interactions, targets, prototypeImportsFor(path, component.interactions)) });
   }
-  if (assets.length > 0) files.push({ path: "assets.dart", source: generateFlutterAssets(assets) });
+  if (assets.length > 0) files.push({ path: `${generatedRoot}/assets.dart`, tier: "design-system", sourceIds: assets.map((asset) => asset.sourceNodeId), source: generateFlutterAssets(assets) });
+  if (effectivePrototype !== undefined) files.push({ path: `${generatedRoot}/prototype_destinations.dart`, tier: "prototype-metadata", sourceIds: effectivePrototype.interactions.map((interaction) => interaction.sourceNodeId), source: generatePrototypeMetadata(effectivePrototype, targets) });
 
   const localTokens = tokens.filter((token) => token.sourceLibraryScope !== "shared");
   const localSets = tokenSets.filter((set) => set.sourceLibraryScope !== "shared");
   const localThemes = tokenThemes.filter((theme) => theme.sourceLibraryScope !== "shared");
-  files.push(...(cachedThemeFiles ?? generateFlutterThemeFiles(localTokens, localSets, localThemes)));
+  for (const themeFile of cachedThemeFiles ?? generateFlutterThemeFiles(localTokens, localSets, localThemes)) {
+    if (themeFile.path.startsWith("theme/")) files.push({ ...themeFile, path: `${generatedRoot}/${themeFile.path}`, tier: "design-system" });
+  }
   for (const library of sharedLibraries) {
     const module = libraryModuleName(library);
-    const prefix = `libraries/${module}`;
+    const prefix = `${generatedRoot}/libraries/${module}`;
     const libraryTokens = tokens.filter((token) => token.sourceLibraryId === library.id);
     const librarySets = tokenSets.filter((set) => set.sourceLibraryId === library.id);
     const libraryThemes = tokenThemes.filter((theme) => theme.sourceLibraryId === library.id);
     for (const themeFile of generateFlutterThemeFiles(libraryTokens, librarySets, libraryThemes)) {
-      if (themeFile.path.startsWith("theme/")) files.push({ ...themeFile, path: `${prefix}/${themeFile.path}` });
+      if (themeFile.path.startsWith("theme/")) files.push({ ...themeFile, path: `${prefix}/${themeFile.path}`, tier: "design-system" });
     }
-    if (library.assets.length > 0) files.push({ path: `${prefix}/assets.dart`, source: "export '../../assets.dart';\n" });
+    if (library.assets.length > 0) files.push({ path: `${prefix}/assets.dart`, tier: "design-system", source: "export '../../assets.dart';\n" });
     const exports = [
       ...components.filter((component) => component.sourceLibraryId === library.id).map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
       ...(library.assets.length === 0 ? [] : ["export 'assets.dart';"]),
       ...(libraryTokens.length === 0 ? [] : ["export 'theme/penpot_theme_extensions.dart';", "export 'theme/penpot_token_namespaces.dart';", "export 'theme/penpot_tokens.dart';", "export 'theme/penpot_themes.dart';"]),
       "",
     ];
-    files.push({ path: `${prefix}/${module}.dart`, source: exports.join("\n") });
+    files.push({ path: `${prefix}/${module}.dart`, tier: "design-system", sourceIds: [library.id], source: exports.join("\n") });
   }
-  if (typographyStyles.length > 0) files.push({ path: "app_typography.dart", source: generateFlutterTypography(typographyStyles) });
-  const barrel = files.find((file) => file.path === "penpot.dart");
-  const exports = generateBarrelExport(components.filter((component) => component.sourceLibraryScope !== "shared"), navigationGraph === undefined ? [snakeCase(screenName)] : navigationGraph.screens.map((screen) => snakeCase(screenClassName(screen))), localTokens.length > 0, typographyStyles.length > 0, assets.length > 0)
-    + (navigationGraph === undefined ? "" : "export 'routes.dart';\nexport 'navigation.dart';\n")
-    + sharedLibraries.map((library) => `export 'libraries/${libraryModuleName(library)}/${libraryModuleName(library)}.dart';`).join("\n")
-    + (sharedLibraries.length === 0 ? "" : "\n");
-  if (barrel === undefined) files.push({ path: "penpot.dart", source: exports });
-  else files[files.indexOf(barrel)] = { ...barrel, source: barrel.source + exports };
-  const manifest = JSON.stringify({ libraries: libraries.map((library) => ({ libraryId: library.id, name: library.name, scope: library.scope, ...(library.sourceRevision === undefined ? {} : { sourceRevision: library.sourceRevision }) })), files: files.map((file) => file.path).sort() }, null, 2) + "\n";
-  const existingManifest = files.findIndex((file) => file.path === "penpot_manifest.json");
-  if (existingManifest >= 0) files[existingManifest] = { path: "penpot_manifest.json", source: manifest };
-  else if (libraries.length > 0) files.push({ path: "penpot_manifest.json", source: manifest });
+  if (typographyStyles.length > 0) files.push({ path: `${generatedRoot}/theme/app_typography.dart`, tier: "design-system", sourceIds: typographyStyles.map((style) => style.id), source: generateFlutterTypography(typographyStyles) });
+  const barrelSource = [
+    ...files.filter((file) => file.path.startsWith(`${generatedRoot}/compositions/`)).map((file) => `export '${file.path.slice(generatedRoot.length + 1)}';`),
+    ...components.filter((component) => component.sourceLibraryScope !== "shared").map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
+    ...(localTokens.length === 0 ? [] : ["export 'theme/penpot_theme_extensions.dart';", "export 'theme/penpot_token_namespaces.dart';", "export 'theme/penpot_tokens.dart';", "export 'theme/penpot_themes.dart';"]),
+    ...(typographyStyles.length === 0 ? [] : ["export 'theme/app_typography.dart';"]),
+    ...(assets.length === 0 ? [] : ["export 'assets.dart';"]),
+    ...(effectivePrototype === undefined ? [] : ["export 'prototype_destinations.dart';"]),
+    ...sharedLibraries.map((library) => `export 'libraries/${libraryModuleName(library)}/${libraryModuleName(library)}.dart';`),
+    "",
+  ].join("\n");
+  files.push({ path: `${generatedRoot}/penpot.dart`, tier: "design-system", source: barrelSource });
+  const manifestPath = `${generatedRoot}/penpot_manifest.json`;
+  const manifest = JSON.stringify({
+    generatorVersion: APP_VERSION,
+    ownership: { dartRoot: generatedRoot, assetRoot: "assets/penpot", replaceOnRegeneration: true },
+    files: files.map((file) => ({ path: file.path, tier: file.tier ?? "design-system", sourceIds: file.sourceIds ?? [], hash: sourceHash(file.source) })).sort((left, right) => left.path.localeCompare(right.path)),
+    components: components.map((component) => ({ sourceComponentId: component.sourceComponentId, generatedName: component.name, libraryId: component.sourceLibraryId ?? null })),
+    libraries: libraries.map((library) => ({ libraryId: library.id, name: library.name, scope: library.scope, ...(library.sourceRevision === undefined ? {} : { sourceRevision: library.sourceRevision }) })),
+    assets: assets.map((asset) => ({ id: asset.id, sourceNodeId: asset.sourceNodeId, path: asset.filename, hash: asset.contentHash ?? null })),
+    tokens: { definitions: tokens.map((token) => ({ id: token.id, setId: token.setId ?? null, path: token.path })), sets: tokenSets.map((set) => set.id), themes: tokenThemes.map((theme) => theme.id) },
+    fonts: fonts.map((font) => ({
+      family: font.family,
+      fallbackFamilies: font.fallbackFamilies,
+      weights: font.weights,
+      styles: font.styles,
+      available: font.available,
+      assets: font.assets,
+    })),
+    compositions: compositions.map((composition) => ({ sourceId: composition.sourceId, className: composition.className })),
+    prototype: effectivePrototype === undefined ? null : { destinations: effectivePrototype.destinations.map((destination) => destination.id), flows: effectivePrototype.flows.map((flow) => flow.id), interactions: effectivePrototype.interactions.map((interaction) => interaction.id) },
+  }, null, 2) + "\n";
+  files.push({ path: manifestPath, tier: "manifest", sourceIds: collectSourceIds(root), source: manifest });
   return files;
 }
 
-function overlayClassName(name: string): string {
-  const base = toPascalCase(name) || "Generated";
-  return base.endsWith("Overlay") ? base : `${base}Overlay`;
+function compositionBaseName(name: string): string {
+  const normalized = toPascalCase(name) || "Generated";
+  return normalized.replace(/(?:Screen|Board|Design)$/i, "") || "Generated";
 }
 
-function generatePrototypeInteractions(): string {
+function compositionClassName(name: string): string {
+  return `${compositionBaseName(name)}Design`;
+}
+
+function prototypeTargetMap(metadata: IrPrototypeMetadata | undefined): ReadonlyMap<string, PrototypeTarget> {
+  if (metadata === undefined) return new Map();
+  const allocator = new DartSymbolAllocator();
+  return new Map(metadata.destinations.map((destination) => [destination.id, { enumValue: allocator.allocate(destination.name || destination.id, "destination") }]));
+}
+
+function generatePrototypeMetadata(metadata: IrPrototypeMetadata, targets: ReadonlyMap<string, PrototypeTarget>): string {
+  const destinationValues = metadata.destinations.map((destination) => targets.get(destination.id)?.enumValue ?? "destination");
   return [
-    "import 'dart:async';",
-    "",
-    "import 'package:flutter/material.dart';",
-    "",
-    "class PenpotDelayedInteraction extends StatefulWidget {",
-    "  const PenpotDelayedInteraction({super.key, required this.delay, required this.onTriggered, required this.child});",
-    "  final Duration delay;",
-    "  final void Function(BuildContext context) onTriggered;",
-    "  final Widget child;",
-    "  @override State<PenpotDelayedInteraction> createState() => _PenpotDelayedInteractionState();",
+    "// Generated prototype metadata. This is an integration hint, not application routing architecture.",
+    "enum PenpotDestination {",
+    ...(destinationValues.length === 0 ? ["  unknown,"] : destinationValues.map((value) => `  ${value},`)),
     "}",
     "",
-    "class _PenpotDelayedInteractionState extends State<PenpotDelayedInteraction> {",
-    "  Timer? _timer;",
-    "  @override void initState() { super.initState(); _timer = Timer(widget.delay, () { if (mounted) widget.onTriggered(context); }); }",
-    "  @override void dispose() { _timer?.cancel(); super.dispose(); }",
-    "  @override Widget build(BuildContext context) => widget.child;",
+    "enum PenpotPrototypeAction { navigate, back, openOverlay, toggleOverlay, closeOverlay, openUrl }",
+    "enum PenpotPrototypeTrigger { click, mouseEnter, mouseLeave, afterDelay }",
+    "",
+    "class PenpotPrototypeInteraction {",
+    "  const PenpotPrototypeInteraction({required this.id, required this.sourceNodeId, required this.trigger, required this.action, this.destination, this.delayMs, this.url, this.preserveScrollPosition, this.animation, this.overlay});",
+    "  final String id;",
+    "  final String sourceNodeId;",
+    "  final PenpotPrototypeTrigger trigger;",
+    "  final PenpotPrototypeAction action;",
+    "  final PenpotDestination? destination;",
+    "  final int? delayMs;",
+    "  final String? url;",
+    "  final bool? preserveScrollPosition;",
+    "  final Map<String, Object?>? animation;",
+    "  final Map<String, Object?>? overlay;",
     "}",
+    "",
+    "class PenpotPrototypeFlow {",
+    "  const PenpotPrototypeFlow({required this.id, required this.name, required this.destination});",
+    "  final String id;",
+    "  final String name;",
+    "  final PenpotDestination destination;",
+    "}",
+    "",
+    "const penpotPrototypeInteractions = <String, PenpotPrototypeInteraction>{",
+    ...metadata.interactions.map((interaction) => `  ${stringLiteral(interaction.id)}: ${prototypeInteractionLiteral(interaction, targets)},`),
+    "};",
+    "",
+    "const penpotPrototypeFlows = <PenpotPrototypeFlow>[",
+    ...metadata.flows.flatMap((flow) => {
+      const destination = targets.get(flow.destinationId);
+      return destination === undefined ? [] : [`  PenpotPrototypeFlow(id: ${stringLiteral(flow.id)}, name: ${stringLiteral(flow.name)}, destination: PenpotDestination.${destination.enumValue}),`];
+    }),
+    "];",
     "",
   ].join("\n");
 }
 
-function screenClassName(screen: IrScreen): string {
-  const name = toPascalCase(screen.name) || "Generated";
-  return name.endsWith("Screen") ? name : `${name}Screen`;
-}
-
-function routeConstantName(route: string): string {
-  return dartMemberName(route.replace(/^\//, ""), "screen");
-}
-
-function generateRoutesFile(graph: IrNavigationGraph): string {
-  const screens = [...graph.screens].sort((left, right) => left.routeName!.localeCompare(right.routeName!));
+function prototypeInteractionLiteral(interaction: IrInteraction, targets: ReadonlyMap<string, PrototypeTarget>): string {
+  const target = interaction.targetId === undefined ? undefined : targets.get(interaction.targetId);
   return [
-    "abstract final class PenpotRoutes {",
-    ...screens.map((screen) => `  static const ${routeConstantName(screen.routeName!)} = '${escapeDart(screen.routeName!)}';`),
-    "}",
-    "",
+    "PenpotPrototypeInteraction(",
+    `    id: ${stringLiteral(interaction.id)},`,
+    `    sourceNodeId: ${stringLiteral(interaction.sourceNodeId)},`,
+    `    trigger: PenpotPrototypeTrigger.${dartMemberName(interaction.trigger, "trigger")},`,
+    `    action: PenpotPrototypeAction.${dartMemberName(interaction.kind, "action")},`,
+    ...(target === undefined ? [] : [`    destination: PenpotDestination.${target.enumValue},`]),
+    ...(interaction.delayMs === undefined ? [] : [`    delayMs: ${number(interaction.delayMs)},`]),
+    ...(interaction.url === undefined ? [] : [`    url: ${stringLiteral(interaction.url)},`]),
+    ...(interaction.preserveScrollPosition === undefined ? [] : [`    preserveScrollPosition: ${interaction.preserveScrollPosition},`]),
+    ...(interaction.animation === undefined ? [] : [`    animation: ${prototypeAnimationLiteral(interaction.animation)},`]),
+    ...(interaction.overlay === undefined ? [] : [`    overlay: ${prototypeOverlayLiteral(interaction.overlay)},`]),
+    "  )",
   ].join("\n");
 }
 
-function generateNavigatorFile(graph: IrNavigationGraph): string {
-  const screens = [...graph.screens].sort((left, right) => left.id.localeCompare(right.id));
-  const initialRoute = graph.flowEntries[0]?.screenId ?? screens[0]?.id;
-  const initialScreen = screens.find((screen) => screen.id === initialRoute) ?? screens[0];
-  if (initialScreen === undefined) return "";
-  return [
-    "import 'package:flutter/material.dart';",
-    "import 'routes.dart';",
-    ...screens.map((screen) => `import 'screens/${snakeCase(screenClassName(screen))}.dart';`),
-    "",
-    "class UnknownRouteScreen extends StatelessWidget {",
-    "  const UnknownRouteScreen({super.key, required this.routeName});",
-    "  final String? routeName;",
-    "  @override Widget build(BuildContext context) => const Scaffold(body: Center(child: Text('Unknown route')));",
-    "}",
-    "",
-    "abstract final class PenpotNavigation {",
-    `  static const initialRoute = PenpotRoutes.${routeConstantName(initialScreen.routeName!)};`,
-    "",
-    "  static Route<dynamic> onGenerateRoute(RouteSettings settings) => switch (settings.name) {",
-    ...screens.map((screen) => `    PenpotRoutes.${routeConstantName(screen.routeName!)} => MaterialPageRoute<void>(settings: settings, builder: (_) => const ${screenClassName(screen)}()),`),
-    "    _ => MaterialPageRoute<void>(settings: settings, builder: (_) => UnknownRouteScreen(routeName: settings.name)),",
-    "  };",
-    "}",
-    "",
-  ].join("\n");
+function prototypeAnimationLiteral(animation: NonNullable<IrInteraction["animation"]>): string {
+  return `<String, Object?>{${[
+    `'type': ${stringLiteral(animation.type)}`,
+    `'durationMs': ${number(animation.durationMs)}`,
+    ...(animation.easing === undefined ? [] : [`'easing': ${stringLiteral(animation.easing)}`]),
+    ...(animation.direction === undefined ? [] : [`'direction': ${stringLiteral(animation.direction)}`]),
+    ...(animation.way === undefined ? [] : [`'way': ${stringLiteral(animation.way)}`]),
+  ].join(", ")}}`;
 }
 
-function generateBarrelExport(components: readonly IrComponentDefinition[], screenFileNames: readonly string[], hasTokens: boolean, hasTypography: boolean, hasAssets: boolean): string {
-  return [
-    ...screenFileNames.map((screenFileName) => `export 'screens/${screenFileName}.dart';`),
-    ...(hasTokens ? [] : []),
-    ...(hasTypography ? ["export 'app_typography.dart';"] : []),
-    ...(hasAssets ? ["export 'assets.dart';"] : []),
-    ...components.map((component) => `export 'components/${snakeCase(component.name)}.dart';`),
-    "",
-  ].join("\n");
+function prototypeOverlayLiteral(overlay: NonNullable<IrInteraction["overlay"]>): string {
+  const manual = overlay.manualPosition === undefined ? undefined : `<String, Object?>{'x': ${number(overlay.manualPosition.x)}, 'y': ${number(overlay.manualPosition.y)}}`;
+  return `<String, Object?>{${[
+    ...(overlay.position === undefined ? [] : [`'position': ${stringLiteral(overlay.position)}`]),
+    ...(overlay.relativeToSourceId === undefined ? [] : [`'relativeToSourceId': ${stringLiteral(overlay.relativeToSourceId)}`]),
+    ...(manual === undefined ? [] : [`'manualPosition': ${manual}`]),
+    ...(overlay.closeWhenClickOutside === undefined ? [] : [`'closeWhenClickOutside': ${overlay.closeWhenClickOutside}`]),
+    ...(overlay.addBackgroundOverlay === undefined ? [] : [`'addBackgroundOverlay': ${overlay.addBackgroundOverlay}`]),
+  ].join(", ")}}`;
+}
+
+function dedupeGeneratedInteractions(interactions: readonly IrInteraction[]): readonly IrInteraction[] {
+  return [...new Map(interactions.map((interaction) => [interaction.id, interaction])).values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function containsSourceId(node: IrNode, sourceId: string): boolean {
+  return node.sourceId === sourceId || ("children" in node && node.children.some((child) => containsSourceId(child, sourceId)));
+}
+
+function collectSourceIds(node: IrNode): readonly string[] {
+  const ids = [node.sourceId];
+  if ("children" in node) for (const child of node.children) ids.push(...collectSourceIds(child));
+  return ids;
+}
+
+function sourceHash(source: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index++) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function buildNameMap(components: readonly IrComponentDefinition[]): ReadonlyMap<string, string> {
@@ -639,7 +561,7 @@ function componentImports(componentIds: Iterable<string>, components: readonly I
 }
 
 function assetImportFor(path: string): string {
-  return relativeDartImport(path, "assets.dart");
+  return relativeDartImport(path, `${generatedRoot}/assets.dart`);
 }
 
 function relativeDartImport(fromPath: string, toPath: string): string {
@@ -708,7 +630,8 @@ function runContainsTypography(run: TextRun): boolean {
 }
 
 function renderNode(node: IrNode, depth: number, positioned: boolean): string {
-  if (!node.visible || node.kind === "unsupported") return "const SizedBox.shrink()";
+  if (!node.visible) return "const SizedBox.shrink()";
+  if (node.kind === "unsupported") return `const SizedBox(width: ${number(node.geometry.width)}, height: ${number(node.geometry.height)})`;
 
   const contentDepth = positioned ? depth + 1 : depth;
   const transformDepth = transformWrapperCount(node);
@@ -742,13 +665,6 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
     ].join("\n");
   }
   content = renderPrototypeInteractions(node, content, contentDepth);
-  for (const interaction of prototypeOverlayActions.values()) {
-    if (interaction.sourceNodeId !== node.sourceId || interaction.targetId === undefined) continue;
-    const target = prototypeTargets.get(interaction.targetId);
-    const controller = prototypeOverlayControllers.get(interaction.targetId);
-    if (target === undefined || controller === undefined) continue;
-    content = renderRawOverlayPortal(interaction, target.className, controller, content, contentDepth);
-  }
   if (!positioned) return content;
   return constWidget([
     "Positioned(",
@@ -759,50 +675,6 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
   ].join("\n"));
 }
 
-function overlayControllerNames(ids: Iterable<string>, targets: ReadonlyMap<string, PrototypeTarget>): ReadonlyMap<string, string> {
-  const result = new Map<string, string>();
-  const used = new Set<string>();
-  for (const id of ids) {
-    const targetName = targets.get(id)?.className ?? "Overlay";
-    const base = `_${targetName.charAt(0).toLowerCase()}${targetName.slice(1)}Controller`;
-    let name = base;
-    if (used.has(name)) name = `${base}${shortIdentifier(id)}`;
-    used.add(name);
-    result.set(id, name);
-  }
-  return result;
-}
-
-function shortIdentifier(value: string): string {
-  const normalized = value.replace(/[^A-Za-z0-9]+/g, "");
-  return normalized.slice(-6) || "Id";
-}
-
-function renderRawOverlayPortal(interaction: IrInteraction, targetClassName: string, controller: string, child: string, depth: number): string {
-  const options = interaction.overlay;
-  const overlayChild = options?.manualPosition === undefined
-    ? `const Align(alignment: ${overlayAlignment(options?.position)}, child: const ${targetClassName}())`
-    : `const Positioned(left: ${number(options.manualPosition.x)}, top: ${number(options.manualPosition.y)}, child: const ${targetClassName}())`;
-  return [
-    "OverlayPortal(",
-    `${indent(depth + 1)}controller: ${controller},`,
-    `${indent(depth + 1)}overlayChildBuilder: (context) => ${constWidget(`Stack(children: [${options?.addBackgroundOverlay === true ? "const ModalBarrier(dismissible: true, color: Colors.black54), " : ""}${overlayChild}])`)},`,
-    `${indent(depth + 1)}child: ${nestedInteractionChild(child)},`,
-    `${indent(depth)})`,
-  ].join("\n");
-}
-
-function overlayAlignment(position: IrInteraction["overlay"] extends infer T ? T extends object ? T["position" & keyof T] : never : never): string {
-  switch (position) {
-    case "top-left": return "Alignment.topLeft";
-    case "top-center": return "Alignment.topCenter";
-    case "top-right": return "Alignment.topRight";
-    case "bottom-left": return "Alignment.bottomLeft";
-    case "bottom-center": return "Alignment.bottomCenter";
-    case "bottom-right": return "Alignment.bottomRight";
-    default: return "Alignment.center";
-  }
-}
 
 function interactionsByNode(interactions: readonly IrInteraction[]): ReadonlyMap<string, readonly IrInteraction[]> {
   const grouped = new Map<string, IrInteraction[]>();
@@ -811,40 +683,33 @@ function interactionsByNode(interactions: readonly IrInteraction[]): ReadonlyMap
 }
 
 function renderPrototypeInteractions(node: IrNode, child: string, depth: number): string {
-  const interactions = nodeInteractions.get(node.sourceId);
+  const interactions = nodeInteractions.get(node.sourceId)?.filter((interaction) => interaction.trigger !== "after-delay");
   if (interactions === undefined || interactions.length === 0) return child;
-  const urlInteraction = interactions.find((interaction) => interaction.kind === "open-url" && interaction.url !== undefined);
-  const callback = (interaction: IrInteraction, followLink?: string): string => {
-    switch (interaction.kind) {
-      case "navigate": {
-        const target = interaction.targetId === undefined ? undefined : prototypeTargets.get(interaction.targetId);
-        return target === undefined ? "assert(false, 'Unresolved Penpot navigation target')" : `Navigator.of(context).pushNamed(PenpotRoutes.${routeConstantName(target.routeName ?? `/${snakeCase(target.className)}`)})`;
-      }
-      case "open-overlay": {
-        const target = interaction.targetId === undefined ? undefined : prototypeTargets.get(interaction.targetId);
-        return target === undefined ? "assert(false, 'Unresolved Penpot overlay target')" : `${prototypeOverlayControllers.get(interaction.targetId!) ?? "assert(false, 'Unresolved Penpot overlay target')"}.show()`;
-      }
-      case "toggle-overlay": {
-        const target = interaction.targetId === undefined ? undefined : prototypeTargets.get(interaction.targetId);
-        return target === undefined ? "assert(false, 'Unresolved Penpot overlay target')" : `if (${prototypeOverlayControllers.get(interaction.targetId!) ?? "false"}.isShowing) ${prototypeOverlayControllers.get(interaction.targetId!) ?? "false"}.hide(); else ${prototypeOverlayControllers.get(interaction.targetId!) ?? "false"}.show()`;
-      }
-      case "close-overlay": return interaction.targetId === undefined ? "Navigator.of(context).maybePop()" : `${prototypeOverlayControllers.get(interaction.targetId) ?? "assert(false, 'Unresolved Penpot overlay target')"}.hide()`;
-      case "back": return "Navigator.of(context).maybePop()";
-      case "open-url": return followLink === undefined ? "assert(false, 'URL interaction requires a click or hover trigger')" : followLink;
-    }
-  };
-  const callbacks = (trigger: IrInteraction["trigger"], followLink?: string): readonly string[] => interactions.filter((interaction) => interaction.trigger === trigger).map((interaction) => callback(interaction, followLink));
-  const actionBlock = (actions: readonly string[], callbackDepth: number): string => ["{", ...actions.map((action) => `${indent(callbackDepth + 1)}${action};`), `${indent(callbackDepth)}}`].join("\n");
+  const invoke = (interaction: IrInteraction): string => `onPrototypeInteraction!(penpotPrototypeInteractions[${stringLiteral(interaction.id)}]!)`;
+  const actionBlock = (items: readonly IrInteraction[], callbackDepth: number): string => [
+    "{",
+    ...items.map((interaction) => `${indent(callbackDepth + 1)}${invoke(interaction)};`),
+    `${indent(callbackDepth)}}`,
+  ].join("\n");
   let rendered = child;
-  const click = callbacks("click", urlInteraction === undefined ? undefined : "followLink()");
-  if (click.length > 0) rendered = ["GestureDetector(", `${indent(depth + 1)}behavior: HitTestBehavior.opaque,`, `${indent(depth + 1)}onTap: () ${actionBlock(click, depth + 1)},`, `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
-  const enter = callbacks("mouse-enter", urlInteraction === undefined ? undefined : "followLink()");
-  const leave = callbacks("mouse-leave", urlInteraction === undefined ? undefined : "followLink()");
-  if (enter.length > 0 || leave.length > 0) rendered = ["MouseRegion(", ...(enter.length === 0 ? [] : [`${indent(depth + 1)}onEnter: (_) ${actionBlock(enter, depth + 1)},`]), ...(leave.length === 0 ? [] : [`${indent(depth + 1)}onExit: (_) ${actionBlock(leave, depth + 1)},`]), `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
-  for (const interaction of interactions.filter((item) => item.trigger === "after-delay")) {
-    rendered = ["PenpotDelayedInteraction(", `${indent(depth + 1)}delay: const Duration(milliseconds: ${number(interaction.delayMs ?? 0)}),`, `${indent(depth + 1)}onTriggered: (context) ${actionBlock([callback(interaction, urlInteraction === undefined ? undefined : "followLink()")], depth + 1)},`, `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
-  }
-  return urlInteraction === undefined ? rendered : ["Link(", `${indent(depth + 1)}uri: Uri.parse('${escapeDart(urlInteraction.url!)}'),`, `${indent(depth + 1)}builder: (context, followLink) => ${nestedInteractionChild(rendered)},`, `${indent(depth)})`].join("\n");
+  const click = interactions.filter((interaction) => interaction.trigger === "click");
+  if (click.length > 0) rendered = [
+    "GestureDetector(",
+    `${indent(depth + 1)}behavior: HitTestBehavior.opaque,`,
+    `${indent(depth + 1)}onTap: onPrototypeInteraction == null ? null : () ${actionBlock(click, depth + 1)},`,
+    `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`,
+    `${indent(depth)})`,
+  ].join("\n");
+  const enter = interactions.filter((interaction) => interaction.trigger === "mouse-enter");
+  const leave = interactions.filter((interaction) => interaction.trigger === "mouse-leave");
+  if (enter.length > 0 || leave.length > 0) rendered = [
+    "MouseRegion(",
+    ...(enter.length === 0 ? [] : [`${indent(depth + 1)}onEnter: onPrototypeInteraction == null ? null : (_) ${actionBlock(enter, depth + 1)},`]),
+    ...(leave.length === 0 ? [] : [`${indent(depth + 1)}onExit: onPrototypeInteraction == null ? null : (_) ${actionBlock(leave, depth + 1)},`]),
+    `${indent(depth + 1)}child: ${nestedInteractionChild(rendered)},`,
+    `${indent(depth)})`,
+  ].join("\n");
+  return rendered;
 }
 
 function nestedInteractionChild(child: string): string {
@@ -988,9 +853,12 @@ function isNoopNode(node: IrNode): boolean {
 }
 
 function renderGrid(node: BoardNode, grid: GridLayout, children: readonly IrNode[], depth: number): string {
+  const availableHeight = node.geometry.height - grid.padding.top - grid.padding.bottom - grid.rowGap * Math.max(grid.rows.length - 1, 0);
+  const mainAxisExtent = grid.rows.length === 0 ? undefined : Math.max(availableHeight / grid.rows.length, 0);
   return [
     "GridView.count(",
     `${indent(depth + 1)}crossAxisCount: ${grid.columns.length},`,
+    ...(mainAxisExtent === undefined ? [] : [`${indent(depth + 1)}mainAxisExtent: ${number(mainAxisExtent)},`]),
     ...(grid.rowGap === 0 && !hasToken(node, "rowGap") ? [] : [`${indent(depth + 1)}mainAxisSpacing: ${tokenValue(node, "rowGap", number(grid.rowGap))},`]),
     ...(grid.columnGap === 0 && !hasToken(node, "columnGap") ? [] : [`${indent(depth + 1)}crossAxisSpacing: ${tokenValue(node, "columnGap", number(grid.columnGap))},`]),
     ...(paddingIsZero(grid.padding) && !hasPaddingToken(node) ? [] : [`${indent(depth + 1)}padding: ${edgeInsetsDirectional(grid.padding, node)},`]),
@@ -1134,15 +1002,66 @@ function renderShape(node: IrNode, depth: number, ellipse: boolean): string {
 }
 
 const constWidgetConstructors = new Set([
-  "Align", "Alignment", "AspectRatio", "AssetImage", "Border.fromBorderSide", "BorderRadius", "BorderSide", "BoxConstraints", "BoxDecoration", "BoxShadow", "Center", "ClipOval", "ClipRect", "ClipRRect", "Column", "ConstrainedBox", "Container", "DecoratedBox", "DecorationImage", "Duration", "EdgeInsets", "EdgeInsetsDirectional", "Expanded", "Flexible", "LinearGradient", "ModalBarrier", "NeverScrollableScrollPhysics", "Offset", "Opacity", "Padding", "Positioned", "RadialGradient", "Radius", "RichText", "Row", "Scaffold", "SizedBox", "Stack", "Text", "TextSpan", "TextStyle",
+  "Align", "Alignment", "AspectRatio", "AssetImage", "Border.fromBorderSide", "BorderRadius", "BorderSide", "BoxConstraints", "BoxDecoration", "BoxShadow", "Center", "ClipOval", "ClipRect", "ClipRRect", "Color", "Column", "ConstrainedBox", "Container", "DecoratedBox", "DecorationImage", "Duration", "EdgeInsets", "EdgeInsetsDirectional", "Expanded", "Flexible", "LinearGradient", "ModalBarrier", "NeverScrollableScrollPhysics", "Offset", "Opacity", "Padding", "Positioned", "RadialGradient", "Radius", "RichText", "Row", "Scaffold", "SizedBox", "Stack", "Text", "TextSpan", "TextStyle", "Wrap",
 ]);
 
 function constWidget(expression: string): string {
   if (/^\s*const\b/.test(expression)) return expression;
   const constructor = /^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\(/.exec(expression.trim())?.[1];
-  if (constructor === undefined || (!constWidgetConstructors.has(constructor) && !constWidgetConstructors.has(constructor.split(".")[0]!))) return expression;
-  if (/\b(?:context|constraints|followLink|settings)\.|\b(?:this|widget)\.|Navigator\.|SvgPicture\b|Image\.asset\b|Matrix4\b|RegExp\(|Uri\.parse|on(?:Tap|Enter|Exit):/.test(expression)) return expression;
-  return `const ${expression}`;
+  if (constructor === undefined || !isConstConstructor(constructor)) return expression;
+  if (/\b(?:context|constraints|followLink|settings)\.|\b(?:this|widget)\.|\bonPrototypeInteraction\b|Navigator\.|SvgPicture\b|Image\.asset\b|GridView\b|Matrix4\b|RegExp\(|Uri\.parse|on(?:Tap|Enter|Exit):/.test(expression)) return expression;
+  if ([...declaredParameters].some((parameter) => new RegExp(`\\b${parameter}\\b`).test(expression))) return expression;
+  for (const match of expression.matchAll(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\(/g)) {
+    const nested = match[1];
+    if (nested === constructor || isConstConstructor(nested)) continue;
+    const prefix = expression.slice(Math.max(0, match.index! - 8), match.index);
+    if (!/const\s+$/.test(prefix)) return expression;
+  }
+  return `const ${removeConstKeywords(expression)}`;
+}
+
+function removeConstKeywords(source: string): string {
+  let result = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let lineComment = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (lineComment) {
+      result += character;
+      if (character === "\n") lineComment = false;
+      continue;
+    }
+    if (quote !== undefined) {
+      result += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "/" && source[index + 1] === "/") {
+      result += "//";
+      index += 1;
+      lineComment = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      result += character;
+      quote = character;
+      continue;
+    }
+    const previous = index === 0 ? undefined : source[index - 1];
+    if (source.startsWith("const ", index) && (previous === undefined || !/[A-Za-z0-9_]/.test(previous))) {
+      index += "const ".length - 1;
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
+function isConstConstructor(name: string): boolean {
+  return constWidgetConstructors.has(name) || constWidgetConstructors.has(name.split(".")[0]!);
 }
 
 function argumentTokenValue(argument: IrComponentInstanceNode["arguments"][number]): string | undefined {
@@ -1201,8 +1120,9 @@ function renderSvg(node: SvgNode, depth: number): string {
 function renderText(node: TextNode, depth: number): string {
   if (node.runs !== undefined) return renderRichText(node, depth);
   const style = node.textStyle;
-  const parameterText = node.parameterName !== undefined && declaredParameters.has(node.parameterName) ? `this.${node.parameterName}` : undefined;
-  const text = transformedText(parameterText ?? stringLiteral(transformedLiteral(node.text, node.textTransform)), node.textTransform, parameterText !== undefined);
+  const parameterText = node.parameterName !== undefined && declaredParameters.has(node.parameterName) ? node.parameterName : undefined;
+  const sourceText = stringLiteral(transformedLiteral(node.text, node.textTransform));
+  const text = transformedText(parameterText === undefined ? sourceText : `${parameterText} ?? ${sourceText}`, node.textTransform, parameterText !== undefined);
   const nestedText = node.verticalAlign !== undefined && node.verticalAlign !== "top";
   const textDepth = nestedText ? depth + 1 : depth;
   const textStyle = renderTextStyle(style, node.style.fill, textDepth + 2, node, node.typographyStyleId);
@@ -1305,7 +1225,7 @@ function renderDecoration(node: IrNode, depth: number, circle = false): string |
   if (style.fill === undefined && style.gradient === undefined && style.image === undefined && border === undefined && radius === undefined && shadows === undefined) return undefined;
   const properties = [
     ...(circle ? ["shape: BoxShape.circle"] : []),
-    ...(style.fill === undefined ? [] : [`color: ${node.fillParameterName === undefined || !declaredParameters.has(node.fillParameterName) ? tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity)) : `this.${node.fillParameterName} ?? ${tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity))}`}`]),
+    ...(style.fill === undefined ? [] : [`color: ${node.fillParameterName === undefined || !declaredParameters.has(node.fillParameterName) ? tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity)) : `${node.fillParameterName} ?? ${tokenValue(node, "fill", dartColor(style.fill.color, style.fill.opacity))}`}`]),
     ...(style.gradient === undefined ? [] : [`gradient: ${tokenValue(node, "gradient", renderGradient(style.gradient, depth + 1))}`]),
     ...(style.image === undefined ? [] : [`image: ${renderDecorationImage(style.image, depth)}`]),
     ...(border === undefined ? [] : [`border: ${renderBorder(border, node, depth)}`]),
@@ -1443,9 +1363,9 @@ function transformedLiteral(value: string, transform: IrTextTransform | undefine
 
 function transformedText(expression: string, transform: IrTextTransform | undefined, dynamic: boolean): string {
   if (!dynamic || transform === undefined) return expression;
-  if (transform === "uppercase") return `${expression}.toUpperCase()`;
-  if (transform === "lowercase") return `${expression}.toLowerCase()`;
-  return `${expression}.replaceAllMapped(RegExp(r'\\b\\w'), (match) => match[0]!.toUpperCase())`;
+  if (transform === "uppercase") return `(${expression}).toUpperCase()`;
+  if (transform === "lowercase") return `(${expression}).toLowerCase()`;
+  return `(${expression}).replaceAllMapped(RegExp(r'\\b\\w'), (match) => match[0]!.toUpperCase())`;
 }
 
 function verticalTextAlignment(vertical: "center" | "bottom", horizontal: TextStyle["align"]): string {

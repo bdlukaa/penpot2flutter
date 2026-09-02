@@ -4,7 +4,7 @@ import { assetForId, assetTypeForMimeType, contentHashOf, createAssetRegistry, t
 import { analyzeResponsiveCandidates, type ResponsiveMetadata } from "./responsive-analyzer.js";
 import { buildTokenRegistry, type PenpotTokenSetSource, type PenpotTokenSource, type PenpotTokenThemeSource, type TokenRegistryResult } from "./token-registry.js";
 import { buildIrLibraries, libraryModuleName } from "./library-registry.js";
-import { analyzeScreenNavigation, irInteractionFromSource, type PenpotPrototypeSource, type PenpotSourceInteraction, type PenpotSourceScreenMetadata } from "./screen-navigation-analyzer.js";
+import { analyzePrototypeMetadata, irInteractionFromSource, type PenpotPrototypeSource, type PenpotSourceInteraction, type PenpotSourceScreenMetadata } from "./screen-navigation-analyzer.js";
 import { analyzeDesignQuality } from "./design-quality-analyzer.js";
 
 import type {
@@ -185,6 +185,8 @@ export interface PenpotComponentSource {
   readonly libraryId?: string | null;
   readonly libraryScope?: IrLibraryScope;
   readonly name: string;
+  /** Explicit exporter metadata takes precedence over the display name. */
+  readonly codegenName?: string;
   readonly root: PenpotSourceShape;
   readonly interactions?: readonly PenpotSourceInteraction[];
 }
@@ -198,6 +200,8 @@ export interface PenpotVariantFamilySource {
   readonly libraryId?: string | null;
   readonly libraryScope?: IrLibraryScope;
   readonly name: string;
+  /** Explicit exporter metadata takes precedence over the family display name. */
+  readonly codegenName?: string;
   readonly properties: readonly string[];
   readonly members: readonly PenpotVariantMemberSource[];
   readonly defaultComponentId: string;
@@ -249,6 +253,8 @@ export interface PenpotSourceShape {
   readonly blur?: PenpotSourceBlur | null;
   readonly backgroundBlur?: PenpotSourceBlur | null;
   readonly children?: readonly PenpotSourceShape[] | null;
+  /** Explicit exporter metadata takes precedence over the semantic layer name. */
+  readonly codegenParameterName?: string | null;
   readonly clipContent?: boolean | null;
   readonly flex?: PenpotSourceFlexLayout | null;
   readonly grid?: PenpotSourceGridLayout | null;
@@ -277,9 +283,9 @@ export interface PenpotSourceShape {
   readonly runs?: readonly PenpotSourceTextRun[] | null;
   /** Penpot TokenProperty -> semantic token name, copied from Shape.tokens. */
   readonly tokenBindings?: Readonly<Record<string, string>> | null;
-  /** Optional explicit grouping; name-based inference is used when absent. */
+  /** Optional explicit responsive family and breakpoint bounds. */
   readonly responsive?: ResponsiveMetadata | null;
-  /** Explicit plugin metadata; labels alone never classify a board as an app screen. */
+  /** Explicit plugin metadata; labels never grant production-screen authority. */
   readonly screen?: PenpotSourceScreenMetadata | null;
 }
 
@@ -432,7 +438,7 @@ export function extractSelection(
       })))
     : { diagnostics: [] };
   context.diagnostics.push(...responsive.diagnostics);
-  const navigation = analyzeScreenNavigation(
+  const prototypeMetadata = analyzePrototypeMetadata(
     selection
       .map((shape, index) => ({
         id: sourceIdOf(shape.id),
@@ -443,7 +449,7 @@ export function extractSelection(
       .filter((candidate) => candidate.root.kind === "board"),
     prototype,
   );
-  context.diagnostics.push(...navigation.diagnostics);
+  context.diagnostics.push(...prototypeMetadata.diagnostics);
   const root = responsive.screen?.variants[0]?.root ?? (extractedSelection.length === 1 ? extractedSelection[0] : extractSyntheticSelection(extractedSelection));
   const finalizedComponents = finalizeComponents(context);
   const designQuality = analyzeDesignQuality(extractedSelection, finalizedComponents);
@@ -458,9 +464,14 @@ export function extractSelection(
   context.diagnostics.push(...libraryRegistry.diagnostics);
   return {
     root,
-    qualitySummary: designQuality.summary,
+    qualitySummary: {
+      errors: context.diagnostics.filter((diagnostic) => diagnostic.severity === "error").length,
+      warnings: context.diagnostics.filter((diagnostic) => diagnostic.severity === "warning").length,
+      information: context.diagnostics.filter((diagnostic) => diagnostic.severity === "info").length,
+      recommendations: context.diagnostics.filter((diagnostic) => diagnostic.severity === "design-recommendation").length,
+    },
     ...(responsive.screen === undefined ? {} : { responsiveScreen: responsive.screen }),
-    ...(navigation.graph === undefined ? {} : { navigationGraph: navigation.graph }),
+    ...(prototypeMetadata.metadata === undefined ? {} : { prototypeMetadata: prototypeMetadata.metadata }),
     assets: [...context.assets.values()],
     assetRegistry: context.assetRegistry.assets,
     diagnostics: context.diagnostics,
@@ -712,7 +723,7 @@ function registerVariants(variants: readonly PenpotVariantFamilySource[], contex
     if (structures.size > 1) {
       context.diagnostics.push({ severity: "warning", sourceId: variant.id, code: "VARIANT_STRUCTURE_DIVERGENCE", message: `Variant family "${sourceName}" has structurally different members; generated code switches between private member subtrees.` });
     }
-    const dartName = dartNameFor(sourceName, id, context, "VARIANT_FAMILY_NAME_COLLISION");
+    const dartName = dartNameFor(variant.codegenName?.trim() || sourceName, id, context, "VARIANT_FAMILY_NAME_COLLISION");
     const variantAxes = variantAxesOf(variant, dartName, context);
     context.components.set(id, {
       id,
@@ -758,7 +769,8 @@ function registerComponents(components: readonly PenpotComponentSource[], contex
     // It is the canonical definition here, so only its root must not become a self-call.
     context.componentSources.set(id, canonicalComponentRoot(withLibraryOwnership(component.root, libraryId, component.libraryScope)));
     const sourceName = typeof component.name === "string" && component.name.trim() !== "" ? component.name : `Component ${component.id}`;
-    const dartName = dartNameFor(sourceName, id, context);
+    const publicName = component.codegenName?.trim() || sourceName;
+    const dartName = dartNameFor(publicName, id, context);
     context.components.set(id, {
       id,
       sourceComponentId: component.id,
@@ -789,12 +801,12 @@ function collectSlots(shape: PenpotSourceShape, componentId: string, context: Ex
   if (isComponentRootInstance(shape)) return;
   const builder = context.components.get(componentId)!;
   if (fillColorKey(shape) !== undefined && !builder.slots.has(path + ":fill")) {
-    const parameterName = dedupeParameterName(path === "" ? "backgroundColor" : `${parameterNameFor(shape.name)}Color`, builder);
+    const parameterName = dedupeParameterName(path === "" ? "backgroundColor" : `${parameterNameFor(shape.codegenParameterName ?? shape.name)}Color`, builder);
     builder.slots.set(path + ":fill", { parameterName, defaultText: fillColorKey(shape)!, type: "Color" });
   }
   if (shape.type === "text") {
     if (builder.slots.has(path)) return;
-    const parameterName = dedupeParameterName(parameterNameFor(shape.name), builder);
+    const parameterName = dedupeParameterName(parameterNameFor(shape.codegenParameterName ?? shape.name), builder);
     builder.slots.set(path, { parameterName, defaultText: shape.characters ?? "" });
     return;
   }
@@ -811,20 +823,9 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
       severity: "warning",
       sourceId: sourceIdOf(shape.id),
       code: shape.componentResolutionIssue?.code ?? "SHARED_COMPONENT_RESOLUTION_FAILED",
-      message: shape.componentResolutionIssue?.message ?? `Component identity is unavailable for component instance "${sourceNameOf(shape.name, sourceIdOf(shape.id))}" (${sourceIdOf(shape.id)}).`,
+      message: shape.componentResolutionIssue?.message ?? `Component identity is unavailable for component instance "${sourceNameOf(shape.name, sourceIdOf(shape.id))}" (${sourceIdOf(shape.id)}). Its visible instance tree was preserved as ordinary Flutter structure.`,
     });
-    const node: UnsupportedNode = {
-      kind: "unsupported",
-      sourceId: sourceIdOf(shape.id),
-      sourceName: sourceNameOf(shape.name, sourceIdOf(shape.id)),
-      name: normalizeName(shape.name, sourceIdOf(shape.id)),
-      geometry: geometryOf(shape, diagnostics),
-      visible: shape.visible !== false,
-      style: { opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics) },
-      diagnostics,
-      sourceType: "component-instance",
-    };
-    return { node, diagnostics };
+    return { node: unresolvedComponentFallback(shape, context, diagnostics), diagnostics };
   }
   const sourceComponentIdentity = componentKey(
     typeof shape.componentLibraryId === "string" && shape.componentLibraryId !== "" ? shape.componentLibraryId : undefined,
@@ -840,27 +841,10 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
     diagnostics.push({
       severity: "warning",
       sourceId: sourceIdOf(shape.id),
-      code: shape.componentResolutionIssue?.code ?? (sharedLibraryId === undefined ? "COMPONENT_UNRESOLVED" : "SHARED_LIBRARY_UNAVAILABLE"),
+      code: shape.componentResolutionIssue?.code ?? (sharedLibraryId === undefined ? "COMPONENT_UNRESOLVED" : "LIBRARY_UNAVAILABLE"),
       message,
     });
-    diagnostics.push({
-      severity: "warning",
-      sourceId: sourceIdOf(shape.id),
-      code: sharedLibraryId === undefined ? "LIBRARY_COMPONENT_UNRESOLVED" : "LIBRARY_UNAVAILABLE",
-      message,
-    });
-    const node: UnsupportedNode = {
-      kind: "unsupported",
-      sourceId: sourceIdOf(shape.id),
-      sourceName: sourceNameOf(shape.name, sourceIdOf(shape.id)),
-      name: normalizeName(shape.name, sourceIdOf(shape.id)),
-      geometry: geometryOf(shape, diagnostics),
-      visible: shape.visible !== false,
-      style: { opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics) },
-      diagnostics,
-      sourceType: "component-instance",
-    };
-    return { node, diagnostics };
+    return { node: unresolvedComponentFallback(shape, context, diagnostics), diagnostics };
   }
 
   if (context.currentComponent !== undefined) {
@@ -892,12 +876,24 @@ function componentInstanceNode(shape: PenpotSourceShape, context: ExtractionCont
   return { node, diagnostics };
 }
 
+function unresolvedComponentFallback(shape: PenpotSourceShape, context: ExtractionContext, diagnostics: readonly Diagnostic[]): IrNode {
+  const fallback = extractNode({
+    ...shape,
+    isComponentInstance: false,
+    isComponentMainInstance: false,
+    isComponentRoot: false,
+    componentId: null,
+    componentLibraryId: null,
+  }, context, "");
+  return { ...fallback, diagnostics: [...fallback.diagnostics, ...diagnostics] };
+}
+
 function walkOverrides(main: PenpotSourceShape, instance: PenpotSourceShape, path: string, componentId: string, context: ExtractionContext, args: IrArgument[]): void {
   const builder = context.components.get(componentId);
   if (builder === undefined) return;
   if (main.type === "text" || instance.type === "text") {
     const slot = builder.slots.get(path);
-    if (slot !== undefined && (main.characters ?? "") !== (instance.characters ?? "")) {
+    if (slot !== undefined && ((main.characters ?? "") !== (instance.characters ?? "") || builder.variant !== undefined)) {
       args.push({ name: slot.parameterName, value: instance.characters ?? "" });
       builder.overridden.add(slot.parameterName);
     }
@@ -978,15 +974,16 @@ function variantAxesOf(variant: PenpotVariantFamilySource, dartName: string, con
   return axes;
 }
 
-function variantRepresentationOf(_variant: PenpotVariantFamilySource): "axes" {
-  // Variant members remain an internal validity matrix; public APIs always preserve independent axes.
-  return "axes";
+function variantRepresentationOf(variant: PenpotVariantFamilySource): "axes" | "members" {
+  const valuesByAxis = variant.properties.map((property) => new Set(variant.members.map((member) => member.values[property]).filter((value): value is string => typeof value === "string")));
+  const possibleCombinations = valuesByAxis.reduce((count, values) => count * Math.max(values.size, 1), 1);
+  return variant.properties.length > 1 && possibleCombinations === variant.members.length ? "axes" : "members";
 }
 
 function variantMemberDartName(member: PenpotVariantMemberSource, axes: readonly IrVariantAxis[], used: Set<string>): string {
   const parts = axes.map((axis) => {
     const value = axis.values.find((candidate) => candidate.sourceValue === member.values[axis.sourceName])?.name ?? dartEnumValue(member.values[axis.sourceName] ?? axis.defaultValue, axis.name);
-    return `${pascalCase(axis.name)}${pascalCase(value)}`;
+    return axes.length === 1 ? pascalCase(value) : `${pascalCase(axis.name)}${pascalCase(value)}`;
   });
   const base = parts.join("") || "Member";
   let candidate = base.charAt(0).toLowerCase() + base.slice(1);
@@ -1098,7 +1095,7 @@ function finalizeComponents(context: ExtractionContext): IrComponentDefinition[]
   return context.componentOrder.map((componentId) => {
     const builder = context.components.get(componentId)!;
     const parameters: IrComponentParameter[] = [...builder.slots.values()]
-      .filter((slot) => builder.overridden.has(slot.parameterName))
+      .filter((slot) => slot.type !== "Color" || builder.overridden.has(slot.parameterName))
       .filter((slot, index, all) => all.findIndex((other) => other.parameterName === slot.parameterName) === index)
       .map((slot) => ({ name: slot.parameterName, type: slot.type ?? "String", defaultValue: slot.defaultText }));
     return {
@@ -1118,6 +1115,7 @@ function finalizeComponents(context: ExtractionContext): IrComponentDefinition[]
           members: builder.variantMembers,
           ...(builder.variantRepresentation === undefined ? {} : { representation: builder.variantRepresentation }),
           ...(builder.variantEnumName === undefined ? {} : { enumName: builder.variantEnumName }),
+          ...(builder.variantMembers.find((member) => member.componentId === componentKey(builder.libraryId, builder.variant!.defaultComponentId))?.dartName === undefined ? {} : { defaultMemberName: builder.variantMembers.find((member) => member.componentId === componentKey(builder.libraryId, builder.variant!.defaultComponentId))!.dartName }),
         } satisfies IrVariantFamily,
       }),
       parameters,
@@ -1197,18 +1195,19 @@ function flexOf(flex: PenpotSourceFlexLayout): FlexLayout {
 function gridOf(grid: PenpotSourceGridLayout, shape: PenpotSourceShape, diagnostics: Diagnostic[]): GridLayout {
   const rows = gridTracksOf(grid.rows);
   const columns = gridTracksOf(grid.columns);
-  const hasUnsupportedTrack = [...rows, ...columns].some((track) => track.type !== "flex");
+  const flexWeights = [...rows, ...columns].map((track) => track.value ?? 1);
+  const hasUnsupportedTrack = [...rows, ...columns].some((track) => track.type !== "flex") || flexWeights.some((weight) => weight !== flexWeights[0]);
   const hasUnsupportedCell = (shape.children ?? []).some((child) => {
     const cell = child.layoutCell;
     return cell?.position === "area" || (cell?.rowSpan ?? 1) !== 1 || (cell?.columnSpan ?? 1) !== 1;
   });
-  const supported = rows.length > 0 && columns.length > 0 && !hasUnsupportedTrack && !hasUnsupportedCell;
+  const supported = grid.dir !== "column" && rows.length > 0 && columns.length > 0 && !hasUnsupportedTrack && !hasUnsupportedCell;
   if (!supported) {
     diagnostics.push({
       severity: "warning",
       sourceId: sourceIdOf(shape.id),
       code: "unsupported-grid",
-      message: "Only simple flex-track grids without spanning or named-area children are generated as GridView; a Stack fallback was used.",
+      message: "Only row-major grids with equal flex tracks and unspanned cells are generated as GridView; explicit source geometry falls back to Stack/Positioned otherwise.",
     });
   }
   return {
@@ -1439,7 +1438,7 @@ function imageFillOf(fills: PenpotSourceShape["fills"], isImageShape: boolean, s
 function assetPathFor(id: string, mimeType: string | undefined): string {
   const encodedId = [...id].map((character) => /[A-Za-z0-9_-]/.test(character) ? character : `_${character.codePointAt(0)!.toString(16)}`).join("");
   const extension = mimeType === "image/jpeg" ? ".jpg" : mimeType === "image/png" ? ".png" : mimeType === "image/webp" ? ".webp" : mimeType === "image/gif" ? ".gif" : mimeType === "image/svg+xml" ? ".svg" : "";
-  return `assets/images/${encodedId}${extension}`;
+  return `assets/penpot/images/${encodedId}${extension}`;
 }
 
 function isVectorType(type: string): boolean {

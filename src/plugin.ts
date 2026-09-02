@@ -11,6 +11,7 @@ import { DesignSystemIndexManager, type DesignSystemIndexSnapshot, type DesignSy
 import { componentKey } from "./shared/component-key.js";
 import type { Diagnostic, GeneratedFile, IrAsset, IrNode } from "./shared/ir.js";
 import type { ExportedAsset, PluginToUiMessage, TokenBindingStats } from "./shared/messages.js";
+import { APP_VERSION } from "./shared/version.js";
 import type { Shape } from "@penpot/plugin-types";
 
 interface LiveTextRange {
@@ -61,7 +62,6 @@ interface CachedDesignSystem {
   readonly typography: ReturnType<typeof typographyInput>;
 }
 
-let designSystemFilesSent = false;
 let conversionRequest = 0;
 let indexStatusTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingIndexState: DesignSystemIndexState | undefined;
@@ -97,10 +97,8 @@ async function sendConversion(): Promise<void> {
   const request = ++conversionRequest;
   const rawSelection = penpot.selection as unknown as readonly PenpotSourceShape[];
   const prototype = prototypeSource();
-  const preservesSelection = rawSelection.some(isReusableComponentBoundary);
-  const rawConversionShapes = prototype === undefined || preservesSelection ? rawSelection : prototypeBoards(rawSelection, prototype);
   sendPendingSelection(rawSelection.length);
-  const selection = await Promise.all(rawConversionShapes.map((shape) => enrichAssetTree(enrichShape(shape), shape)));
+  const selection = await Promise.all(rawSelection.map((shape) => enrichAssetTree(enrichShape(shape), shape)));
   const requiredTokens = tokenReferenceNames(selection);
   const designSystem = designSystemIndex.index;
   if (designSystem === undefined && requiredTokens.length > 0 && designSystemIndex.state.status !== "error") {
@@ -116,20 +114,17 @@ async function sendConversion(): Promise<void> {
   if (request !== conversionRequest) return;
   const resolvedSelection = selection.map((shape) => withResolutionIssues(shape, resolution.issues, resolution.identities));
   const extracted = resolvedSelection.length === 0 ? undefined : extractSelection(resolvedSelection, resolution.components, resolution.variants, tokenInput, effectiveDesignSystem.typography, prototype);
-  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, effectiveDesignSystem.themeFiles, extracted.assetRegistry, extracted.libraries, extracted.navigationGraph);
-  const files = generatedFiles?.filter((file) => !isStableDesignSystemFile(file));
+  const generatedFiles = extracted === undefined ? undefined : generateFlutterFiles(extracted.root, extracted.components, extracted.tokens, extracted.tokenSets, extracted.tokenThemes, extracted.responsiveScreen, extracted.typographyStyles, effectiveDesignSystem.themeFiles, extracted.assetRegistry, extracted.libraries, extracted.prototypeMetadata, extracted.fonts);
   const exportedAssets = extracted === undefined
     ? { assets: [] as readonly ExportedAsset[], diagnostics: [] as readonly Diagnostic[] }
     : exportAssets(extracted.assetRegistry, [...selection, ...resolution.components.map((component) => component.root), ...resolution.variants.flatMap((variant) => variant.members.map((member) => member.root))]);
-  const result = extracted === undefined ? undefined : {
-    ...extracted,
-    diagnostics: [...catalogDiagnostics, ...extracted.diagnostics, ...exportedAssets.diagnostics, ...validateFlutterThemeGeneration(extracted.tokens, extracted.tokenThemes, generatedFiles!), ...validateGeneratedDartFiles(generatedFiles!)],
-  };
+  const result = extracted === undefined ? undefined : (() => {
+    const diagnostics = [...catalogDiagnostics, ...extracted.diagnostics, ...exportedAssets.diagnostics, ...validateFlutterThemeGeneration(extracted.tokens, extracted.tokenThemes, generatedFiles!), ...validateGeneratedDartFiles(generatedFiles!)];
+    return { ...extracted, diagnostics, qualitySummary: diagnosticSummary(diagnostics) };
+  })();
   const bindingStart = now();
   const tokenBindings = tokenBindingStats(result);
   measurePerformance("penpot-index:binding-classification", bindingStart);
-  const sendDesignSystemFiles = designSystem !== undefined && !designSystemFilesSent;
-  if (sendDesignSystemFiles) designSystemFilesSent = true;
   const message: PluginToUiMessage = {
     source: "penpot-to-flutter",
     type: "conversion",
@@ -137,15 +132,24 @@ async function sendConversion(): Promise<void> {
     tokenCatalog: catalog.stats,
     tokenCatalogDiagnostics: catalogDiagnostics,
     tokenBindings,
-    ...(sendDesignSystemFiles && designSystem !== undefined ? { designSystemFiles: effectiveDesignSystem.themeFiles.filter(isStableDesignSystemFile) } : {}),
     ...(result === undefined
       ? {}
       : {
-          result: { diagnostics: result.diagnostics },
+          result: { diagnostics: result.diagnostics, qualitySummary: result.qualitySummary },
           dart: generatedFiles![0].source,
           pubspecAssets: generatePubspecSnippet(result.assetRegistry, result.fonts),
           exportedAssets: exportedAssets.assets,
-          files,
+          files: generatedFiles,
+          handoff: {
+            formatVersion: 1,
+            generatorVersion: APP_VERSION,
+            files: generatedFiles!,
+            assets: exportedAssets.assets,
+            integration: {
+              pubspecSnippet: generatePubspecSnippet(result.assetRegistry, result.fonts),
+              fontRequirements: result.fonts.filter((font) => !font.available).map((font) => `${font.family}: weights ${font.weights.join(", ")}; styles ${font.styles.join(", ")}`),
+            },
+          },
         }),
   };
   const transferStart = now();
@@ -153,15 +157,6 @@ async function sendConversion(): Promise<void> {
   measurePerformance("penpot-index:message-transfer", transferStart);
 }
 
-function isReusableComponentBoundary(shape: PenpotSourceShape): boolean {
-  const live = shape as unknown as LiveComponentShape;
-  try {
-    const isBoundary = live.isComponentRoot?.() === true || live.isComponentHead?.() === true;
-    return isBoundary && (live.isComponentInstance?.() === true || live.isComponentCopyInstance?.() === true || live.isComponentMainInstance?.() === true);
-  } catch {
-    return shape.isComponentRoot === true && (shape.isComponentInstance === true || shape.isComponentMainInstance === true);
-  }
-}
 
 function prototypeSource(): PenpotPrototypeSource | undefined {
   const page = penpot.currentPage;
@@ -174,19 +169,9 @@ function prototypeSource(): PenpotPrototypeSource | undefined {
     startingBoardId: flow.startingBoard.id,
   }));
   if (flows.length === 0 && interactions.length === 0) return undefined;
-  return { flows, interactions };
+  return { destinations: boards.map((board) => ({ id: board.id, name: board.name })).sort((left, right) => left.id.localeCompare(right.id)), flows, interactions };
 }
 
-function prototypeBoards(selection: readonly PenpotSourceShape[], prototype: PenpotPrototypeSource): readonly PenpotSourceShape[] {
-  const page = penpot.currentPage;
-  if (page === null) return selection;
-  const required = new Set(selection.map((shape) => shape.id));
-  prototype.flows.forEach((flow) => required.add(flow.startingBoardId));
-  prototype.interactions.forEach((interaction) => {
-    if (interaction.action.destinationBoardId !== undefined) required.add(interaction.action.destinationBoardId);
-  });
-  return (page.findShapes({ type: "board" }) as unknown as readonly PenpotSourceShape[]).filter((board) => required.has(board.id));
-}
 
 function prototypeInteractions(root: PenpotSourceShape): readonly PenpotSourceInteraction[] {
   const result: PenpotSourceInteraction[] = [];
@@ -289,9 +274,6 @@ function tokenReferenceNames(selection: readonly PenpotSourceShape[]): readonly 
   return [...names];
 }
 
-function isStableDesignSystemFile(file: GeneratedFile): boolean {
-  return file.path.startsWith("theme/") || file.path === "penpot_manifest.json";
-}
 
 function exportAssets(assets: readonly IrAsset[], roots: readonly PenpotSourceShape[]): { readonly assets: readonly ExportedAsset[]; readonly diagnostics: readonly Diagnostic[] } {
   const bytesById = new Map<string, readonly number[]>();
@@ -327,6 +309,15 @@ function encodeBase64(bytes: readonly number[]): string {
   let binary = "";
   for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.slice(index, index + 0x8000));
   return btoa(binary);
+}
+
+function diagnosticSummary(diagnostics: readonly Diagnostic[]) {
+  return {
+    errors: diagnostics.filter((diagnostic) => diagnostic.severity === "error").length,
+    warnings: diagnostics.filter((diagnostic) => diagnostic.severity === "warning").length,
+    information: diagnostics.filter((diagnostic) => diagnostic.severity === "info").length,
+    recommendations: diagnostics.filter((diagnostic) => diagnostic.severity === "design-recommendation").length,
+  };
 }
 
 function tokenBindingStats(result: ReturnType<typeof extractSelection> | undefined): TokenBindingStats {
@@ -783,7 +774,6 @@ function flushIndexState(): void {
 penpot.ui.onMessage<unknown>((message) => {
   if (!isUiToPluginMessage(message)) return;
   if (message.type === "refresh-design-system") {
-    designSystemFilesSent = false;
     void designSystemIndex.refresh("manual-refresh");
     return;
   }
@@ -796,7 +786,6 @@ penpot.on("selectionchange", () => {
 });
 
 penpot.on("filechange", () => {
-  designSystemFilesSent = false;
   void designSystemIndex.refresh("library-changed");
   void sendConversion();
 });

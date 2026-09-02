@@ -1,6 +1,6 @@
 interface:
   display_name: Penpot to Flutter
-  short_description: Build and evolve a Penpot-to-Flutter codegen plugin
+  short_description: Evolve a deterministic Penpot-to-Flutter design-handoff compiler
 policy:
   products:
   - chatgpt

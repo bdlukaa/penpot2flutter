@@ -1,6 +1,6 @@
 ---
 name: penpot-to-flutter
-description: Design, implement, review, test, or evolve a Penpot plugin that converts Penpot designs into maintainable Flutter/Dart UI code. Use for Penpot-to-Flutter architecture, Penpot Plugin API extraction, shape/layout normalization, intermediate representation (IR) design, Flutter widget generation, design-token mapping, asset export, responsive layout heuristics, plugin UI/message protocols, test fixtures, codegen quality, debugging, and implementation planning for a Penpot Flutter exporter.
+description: Design, implement, review, test, or evolve the Penpot to Flutter design-handoff compiler. Use for Penpot Plugin API extraction, serializable IR, components, variants, tokens/themes, shared libraries, typography, assets, explicit layout/responsiveness, prototype metadata/callbacks, deterministic Flutter generation, JSON handoff bundles, diagnostics, and codegen validation. Do not use it to invent application architecture or semantics absent from Penpot.
 disable-model-invocation: false
 ---
 
@@ -8,241 +8,177 @@ disable-model-invocation: false
 
 ## Goal
 
-Build a reliable Penpot plugin that turns selected Penpot design nodes into readable, reusable Flutter code. Optimize for maintainability and visual fidelity rather than a one-off screenshot-to-code dump.
+Build a deterministic design-handoff compiler, not an application generator.
 
-Treat conversion as a compiler pipeline:
+Use this product rule for every decision:
 
-`Penpot API -> extractor -> normalized IR -> Flutter code generator -> formatter/validator -> preview/export`
+> Compile what Penpot knows. Preserve what Penpot says. Do not infer what Penpot cannot know.
 
-Never couple Dart generation directly to raw Penpot objects when an IR can isolate the two systems.
+The output accelerates Flutter implementation by handing off reusable design-system code, visual compositions, assets, and prototype integration hints. Flutter developers retain ownership of application behavior and architecture.
 
-## Start every implementation task this way
+## Start every task this way
 
-1. Inspect any existing repository or files before proposing replacements.
-2. Verify the current official Penpot plugin documentation and `@penpot/plugin-types` API before relying on an API detail that may have changed.
-3. Verify current Flutter/Dart APIs when generated code depends on version-sensitive framework behavior.
-4. State the supported conversion scope and unsupported cases.
-5. Implement the smallest end-to-end vertical slice before broadening coverage.
+1. Inspect the existing repository and trace the affected pipeline end to end.
+2. Classify the requested output as reusable design-system code, a design composition, prototype metadata, or developer-owned application logic.
+3. Reject scope that asks Penpot data to define business logic, state, application routing, localization architecture, accessibility policy, or other absent semantics.
+4. Verify current `@penpot/plugin-types` and Flutter APIs before relying on version-sensitive behavior.
+5. Extend the existing source snapshot, IR, registries, generators, export, and diagnostics rather than creating a parallel system.
+6. State supported behavior, explicit fallbacks, and limitations.
 
-For architecture details, read `references/architecture.md`.
-For Penpot-to-Flutter mappings, read `references/flutter-mapping.md`.
-For validation and acceptance criteria, read `references/quality-gates.md`.
-For a ready-to-run build prompt, read `references/master-prompt.md`.
+Read:
 
-## Default product scope
+- `references/architecture.md` for ownership and pipeline boundaries.
+- `references/flutter-mapping.md` for explicit Penpot-to-Flutter mappings.
+- `references/quality-gates.md` for validation and acceptance criteria.
+- `references/master-prompt.md` for a reusable implementation brief.
 
-Unless the user specifies otherwise, target this progression.
+## Product boundary
 
-### MVP
+### Designer-owned source
 
-Support:
-- selected Penpot board/group/shape tree
-- board and group hierarchy
-- flex layouts
-- basic grid layouts
-- absolute positioning fallback
-- rectangles and ellipses
-- text and common typography
-- solid fills and opacity
-- gradients where Flutter has a close equivalent
-- strokes/borders
-- corner radii
-- shadows
-- transforms where practical
-- image fills/assets
-- visibility
-- generated Dart preview in the plugin UI
-- copy-to-clipboard
-- export of generated source/assets when supported safely
+Penpot is authoritative for tokens, themes, typography, assets, components, variants, libraries, explicit overrides, explicit Flex/Grid/absolute layout, styling, board compositions, and explicit prototype data.
 
-Prefer a single selected root. If multiple shapes are selected, wrap them in a synthetic root rather than silently dropping nodes.
+### Generated handoff
 
-### Later phases
+The compiler owns deterministic Flutter representation, source traceability, generated assets, manifests, diagnostics, and these three authority tiers:
 
-Add only after the MVP pipeline is stable:
-- reusable Penpot components -> reusable Flutter widgets
-- variants -> typed widget parameters or enums
-- Penpot tokens -> Flutter `ThemeExtension`, `ColorScheme`, `TextTheme`, constants, or generated token classes
-- responsive breakpoint inference
-- reusable asset manifest generation
-- Material/Cupertino modes
-- project-wide export
-- incremental regeneration and stable node IDs
+1. **Reusable design-system code** — components, variants, tokens, themes, typography, assets, and shared-library modules.
+2. **Design compositions** — board-based implementation references or helpers, not complete production screens.
+3. **Prototype metadata** — destinations, flows, interactions, and callbacks, not application routing.
 
-## Plugin architecture rules
+### Developer-owned application
 
-Use the official Penpot plugin starter approach unless an existing repository dictates otherwise. Prefer TypeScript + Vite.
+Do not generate or infer:
 
-Keep these boundaries:
+- application/feature architecture
+- domain models or business logic
+- state management, async loading, persistence, authentication, or authorization
+- routing policy, route guards, deep links, or app shells
+- form validation or undesigned runtime states
+- localization architecture
+- accessibility decisions not explicitly represented
+- runtime responsiveness beyond explicit design information
+- analytics or platform adaptation
 
-- `plugin.ts`: code that accesses the global Penpot API.
-- iframe/plugin UI: settings, code preview, warnings, export controls.
-- message contracts: typed messages between `plugin.ts` and UI.
-- extractor: transforms Penpot nodes into serializable source data or directly into the normalized IR.
-- IR: framework-neutral normalized tree.
-- Flutter generator: pure functions from IR to Dart source.
-- asset pipeline: produces deterministic asset names and references.
+## Compiler pipeline
 
-Do not access the Penpot global from UI code running in the iframe.
+```text
+Penpot Plugin API
+-> serializable source snapshot
+-> normalized JSON-serializable IR
+-> component / variant / token / library registries
+-> Flutter generators
+-> deterministic files + assets + diagnostics
+```
 
-Use the minimum manifest permissions needed. Read-only conversion should normally begin with `content:read`; add other permissions only for a feature that demonstrably needs them.
+Keep all live `penpot` access in `src/plugin.ts`. The iframe receives typed serializable messages only. The Flutter generator must consume IR, never live Penpot objects.
 
 ## IR requirements
 
-Define a serializable TypeScript IR. It must not contain Penpot class instances, browser DOM nodes, functions, or circular references.
+The IR must be deterministic, JSON-serializable, and free of Penpot classes, DOM nodes, functions, circular references, and application-level assumptions.
 
-Every node should include, when applicable:
+Preserve explicit identity where available:
 
-- stable source ID
-- sanitized name
-- node kind
-- width/height
-- layout mode
-- child order
-- positioning mode
-- padding, gap, margins
-- alignment and sizing behavior
-- fill/background
-- border/stroke
-- radius
-- opacity
-- shadows
-- rotation/transform metadata
-- clipping
-- text runs/style data
-- image/asset reference
-- warnings or unsupported properties
+- source node ID and path
+- component and variant identity
+- library ID and scope
+- token ID, set ID, theme identity, and semantic binding
+- asset source ID and content hash
+- prototype interaction, flow, and destination IDs
 
-Keep geometry in source units and centralize any conversion policy. Do not scatter magic multipliers throughout generators.
+Represent explicit layout, sizing, position, style, text runs, assets, transforms, clipping, interactions, unsupported semantics, and diagnostics.
 
-## Layout decision tree
+## Generation rules
 
-For every container:
+Prefer direct Flutter widgets over a proprietary runtime:
 
-1. If Penpot exposes a flex layout, generate Flutter flex-oriented composition first.
-2. If Penpot exposes a grid layout, map simple grids structurally; use a documented fallback for unsupported track behavior.
-3. If children are intentionally absolute, use `Stack` + `Positioned`.
-4. If no explicit layout exists, infer only conservatively from geometry. Prefer a faithful `Stack` fallback over aggressive, brittle inference.
-5. Preserve z-order.
-
-Do not generate `Stack` for everything. The generated output must remain editable by Flutter developers.
-
-## Flutter generation rules
-
-Prefer idiomatic widgets and readable nesting.
-
-Typical mappings:
-- horizontal flex -> `Row`
-- vertical flex -> `Column`
-- spacing -> `Padding`, `SizedBox`, flex gap helpers/patterns, or generated wrapper logic
-- alignment -> `mainAxisAlignment`, `crossAxisAlignment`, `Align`
-- fill sizing -> `Expanded` / `Flexible` when semantically valid
-- fixed geometry -> `SizedBox` / `ConstrainedBox`
-- styled rectangle -> `Container` or `DecoratedBox`
-- text -> `Text` / `RichText`
-- ellipse -> decorated box with circular/elliptical shape when equivalent
-- arbitrary paths/SVG -> asset/SVG strategy rather than hand-written `CustomPainter` unless explicitly requested
+- horizontal Flex -> `Row`
+- vertical Flex -> `Column`
+- supported Grid -> structural Flutter grid
 - absolute layout -> `Stack` + `Positioned`
-- clipping -> Flutter clip widgets only when source semantics require it
+- explicit fill sizing -> `Expanded`/`Flexible` where valid
+- fixed sizing -> `SizedBox`/constraints
+- padding -> `Padding`
+- rotation -> `Transform.rotate`
+- clipping -> corresponding clip widget only when explicit
+- vector/path -> deterministic SVG or raster asset strategy
 
-Avoid unnecessary wrappers. Deduplicate repeated decoration/style expressions when doing so improves readability.
+When no explicit Flex or supported Grid semantics exist, preserve fixed/absolute source structure. Never infer Row/Column/Grid from geometry.
 
-Run or emulate `dart format` on emitted code where execution is available. Generated code must be deterministic for identical IR input.
+Generated source must be deterministic, readable, valid Dart, and traceable to source IDs. Do not silently drop visible content.
 
-## Names and components
+## Components, variants, tokens, and libraries
 
-Sanitize Penpot names into valid Dart identifiers.
+Generate one public Flutter widget per canonical Penpot component. Instances should invoke it rather than duplicate its internals. Expose conservative typed parameters only when source semantics support them.
 
-Prefer semantic names from the design. Fall back to deterministic source-derived names rather than random suffixes.
+Variant membership and selected values must remain explicit. Never derive variants from text, visual differences, or naming patterns when Penpot has not declared a variant relationship.
 
-When component generation is enabled:
-- generate one Dart widget per reusable component/root
-- expose obvious variant/content differences as typed parameters
-- avoid embedding instance-specific coordinates inside reusable widgets unless the source demands them
+Preserve token identity separately from resolved literals. Do not create tokens from repeated values. Preserve complete token catalogs and map Material roles only from explicit semantic names.
 
-## Asset policy
+Key shared libraries by stable Penpot library ID. Generate reachable shared modules once. Keep the plugin read-only; do not connect libraries automatically.
 
-Never embed large binary assets directly in Dart source.
+## Explicit-only responsiveness
 
-Create deterministic asset filenames. Track an asset manifest in the conversion result. Generate the `pubspec.yaml` asset stanza or an explicit snippet when exporting a standalone bundle.
+Responsive behavior requires explicit evidence:
 
-For unsupported vector shapes, prefer SVG export when licensing and platform support permit it; otherwise document the chosen raster fallback.
+- explicit responsive metadata, including bounds when a runtime resolver is wanted; or
+- exact semantic board-family naming used to group separate Mobile/Tablet/Desktop design compositions.
 
-## Error and warning behavior
+Never derive breakpoints from canvas width, geometry, orientation, or device assumptions. Never merge structurally different boards into an invented adaptive tree.
 
-Never silently discard unsupported design properties.
+Generate separate compositions when bounds are absent. Generate a convenience `LayoutBuilder` resolver only when explicit min/max bounds are complete.
 
-Attach warnings at node level and summarize them in the plugin UI, for example:
-- unsupported blend mode
-- complex vector converted to SVG asset
-- grid track approximated
-- unavailable font substituted
-- effect ignored
+## Prototype policy
 
-A conversion that succeeds with warnings is different from a conversion that failed.
+Preserve Penpot destinations, flows, triggers, actions, overlays, animation metadata, URLs, and stable IDs. Generated components/compositions may expose `onPrototypeInteraction`.
+
+Do not select or generate an application router, navigation architecture, deep-link strategy, route guards, or app shell. Prototype output is integration metadata and callbacks only.
+
+## Generated ownership and export
+
+Generator-owned roots are:
+
+```text
+lib/generated/penpot/
+assets/penpot/
+```
+
+Regeneration may replace both trees. Never merge developer edits into them.
+
+The current complete export is `penpot_handoff.json`, not a ZIP. It contains generated files, text/base64 assets, `pubspec.yaml` integration metadata, and font requirements. `bin/install-handoff.mjs` validates paths, replaces the two generator-owned trees, writes files/assets, and prints manual integration steps. It must not modify developer-owned application files or `pubspec.yaml` automatically.
+
+## Diagnostics and recommendations
+
+Use:
+
+- `error` for invalid or unsafe generated output;
+- `warning` for unsupported, missing, or lossy semantics;
+- `info` for deterministic implementation decisions;
+- `design-recommendation` for non-blocking source improvements.
+
+Recommendations must never block export or alter generated semantics. Prefer a diagnostic over guessing.
 
 ## Testing workflow
 
-Build conversion logic as pure modules wherever possible.
+Test the compiler layers independently:
 
-Maintain fixtures covering:
-- nested Row/Column
-- flex fill/auto/fixed sizing
-- padding and gaps
-- absolute child in flex container
-- text alignment and line height
-- border radius/stroke/shadow
-- image asset
-- clipping
-- simple grid
-- unsupported feature warning
+1. Penpot-like serializable source -> normalized IR.
+2. IR/registries -> deterministic files and assets.
+3. JSON handoff -> safe installation into generator-owned roots.
+4. Representative generated Dart -> format/analyze/widget tests when Flutter tooling is available.
 
-Test three layers independently:
-1. Penpot shape -> IR
-2. IR -> Dart string
-3. representative generated Dart -> static analysis/compile when Flutter tooling exists
+Cover components, variants, tokens/themes, shared libraries, typography, assets, explicit Flex/Grid/absolute layout, explicit responsive metadata, design compositions, prototype callbacks/metadata, diagnostics, deterministic regeneration, and path traversal rejection.
 
-Use golden/snapshot tests for deterministic codegen, but keep at least a few structural assertions so snapshots do not become blind approvals.
+Do not test or require invented application behavior.
 
-## Execution order for building the actual plugin
+## Required task output
 
-1. Bootstrap or inspect the Penpot plugin project.
-2. Establish manifest and typed Penpot/UI message protocol.
-3. Read current selection and show basic metadata in the UI.
-4. Implement IR types.
-5. Convert one Board/Rectangle/Text vertical slice.
-6. Generate a minimal compilable Flutter widget.
-7. Add code preview and copy.
-8. Add flex layout conversion.
-9. Add decoration/typography.
-10. Add images/assets and export bundle.
-11. Add grid/absolute fallbacks.
-12. Add warnings/diagnostics.
-13. Add fixtures and codegen tests.
-14. Validate Penpot build and Flutter output.
-15. Only then add components, tokens, variants, and responsive inference.
+When modifying the project, report:
 
-## Required implementation output
+- changed files;
+- the authority tier affected;
+- supported behavior and limitations;
+- commands actually run and their results;
+- any target-project integration step.
 
-When asked to create or modify the plugin, return concrete code rather than only prose. Include:
-
-- changed file tree
-- complete contents for new core files
-- focused diffs or complete files for modifications, depending on repository context
-- commands to install, build, test, and run
-- manifest permissions with rationale
-- known limitations
-- next test case to verify inside Penpot
-
-Do not claim code was tested unless the relevant command actually ran successfully.
-
-## Product-quality principles
-
-Prioritize, in order:
-1. generated Dart compiles
-2. layout semantics are correct
-3. output is readable and editable
-4. visual fidelity is high
-5. code is compact
-
-Do not optimize code size at the expense of maintainability or semantics.
+Do not claim validation that was not run.

@@ -1,6 +1,6 @@
 {
   "name": "Penpot to Flutter",
-  "description": "Generate readable Flutter widgets from the current Penpot selection.",
+  "description": "Export deterministic Flutter design-system code, design compositions, assets, and prototype metadata from explicit Penpot semantics.",
   "version": 2,
   "code": "plugin.js",
   "icon": "icon.svg",
