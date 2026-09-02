@@ -70,6 +70,26 @@ test("extracts a serializable board, rectangle, and text IR", () => {
   assert.equal(result.diagnostics.length, 0);
 });
 
+test("does not constrain an application screen to its Penpot board size", () => {
+  const result = extractSelection([{
+    id: "responsive-screen",
+    name: "Checkout screen",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 360,
+    height: 780,
+    visible: true,
+    fills: [{ fillColor: "#ffffff", fillOpacity: 1 }],
+    children: [],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.doesNotMatch(dart, /width: 360,/);
+  assert.doesNotMatch(dart, /height: 780,/);
+  assert.match(dart, /return const DecoratedBox\(/);
+});
+
 test("uses parent coordinates, default opacity, and Penpot line-height factors", () => {
   const result = extractSelection([
     {
@@ -128,14 +148,14 @@ test("marks static widget values const without constifying token-backed values",
   }]);
   const staticDart = generateFlutterWidget(staticResult.root);
 
-  assert.match(staticDart, /return const Container\(/);
+  assert.match(staticDart, /return const DecoratedBox\(/);
   assert.match(staticDart, /padding: EdgeInsetsDirectional\.only\(/);
   assert.match(staticDart, /decoration: BoxDecoration/);
   assert.match(staticDart, /borderRadius: BorderRadius\.all\(Radius\.circular\(8\)\)/);
   assert.match(staticDart, /boxShadow: <BoxShadow>/);
   assert.match(staticDart, /Text\(/);
   assert.match(staticDart, /style: TextStyle\(/);
-  assert.match(staticDart, /return const Container\([\s\S]*child: Padding\([\s\S]*child: Column\(/);
+  assert.match(staticDart, /return const DecoratedBox\([\s\S]*child: Padding\([\s\S]*child: Column\(/);
 
   const tokenResult = extractSelection([{
     id: "token-board",
@@ -695,6 +715,28 @@ test("extracts and generates solid strokes, per-corner radii, and drop shadows",
   assert.equal(dart, readFileSync(styledDartPath, "utf8"));
 });
 
+test("preserves rectangle fills and blur effects", () => {
+  const result = extractSelection([{
+    id: "blurred-rectangle",
+    name: "Blurred rectangle",
+    type: "rectangle",
+    x: 0,
+    y: 0,
+    width: 179,
+    height: 355,
+    visible: true,
+    fills: [{ fillColor: "#246bfe", fillOpacity: 1, fillImage: null }],
+    blur: { intensity: 8, hidden: false },
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.deepEqual(result.root.style.fill, { color: "#246bfe", opacity: 1 });
+  assert.equal(result.root.style.blur, 8);
+  assert.match(dart, /ImageFiltered\(/);
+  assert.match(dart, /ImageFilter\.blur\(sigmaX: 8, sigmaY: 8\)/);
+  assert.match(dart, /color: Color\(0xff246bfe\)/);
+});
+
 test("extracts and generates ellipses, gradients, and transforms", () => {
   const result = extractSelection([{
     id: "gradient-orb",
@@ -966,7 +1008,7 @@ test("renders square ellipses as a circle decoration without ClipOval", () => {
   assert.equal(dart, readFileSync(circlePath, "utf8"));
 });
 
-test("emits SizedBox without clipBehavior for decoration-less boards", () => {
+test("emits an unconstrained Stack without clipBehavior for decoration-less screens", () => {
   const result = extractSelection([{
     id: "plain-board",
     name: "Plain board",
@@ -992,7 +1034,9 @@ test("emits SizedBox without clipBehavior for decoration-less boards", () => {
 
   assert.doesNotMatch(dart, /Container\(/);
   assert.doesNotMatch(dart, /clipBehavior:/);
-  assert.match(dart, /SizedBox\(\n\s*width: 180,\n\s*height: 20,/);
+  assert.match(dart, /return const Stack\(/);
+  assert.doesNotMatch(dart, /width: 180,/);
+  assert.doesNotMatch(dart, /height: 20,/);
 });
 
 test("preserves Penpot stacking order when live children expose zIndex", () => {

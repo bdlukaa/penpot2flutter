@@ -209,6 +209,8 @@ export interface NodeStyle {
   readonly border?: Border;
   readonly radius?: CornerRadii;
   readonly shadows?: readonly DropShadow[];
+  readonly blur?: number;
+  readonly backgroundBlur?: number;
   readonly opacity: number;
 }
 

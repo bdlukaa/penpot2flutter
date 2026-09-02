@@ -100,6 +100,11 @@ export interface PenpotSourceStroke {
   readonly strokeWidth?: number | null;
 }
 
+export interface PenpotSourceBlur {
+  readonly intensity?: number | null;
+  readonly hidden?: boolean | null;
+}
+
 export interface PenpotSourceShadow {
   readonly style?: "drop-shadow" | "inner-shadow" | null;
   readonly offsetX?: number | null;
@@ -241,6 +246,8 @@ export interface PenpotSourceShape {
   readonly borderRadiusBottomRight?: number | null;
   readonly borderRadiusBottomLeft?: number | null;
   readonly shadows?: readonly PenpotSourceShadow[] | null;
+  readonly blur?: PenpotSourceBlur | null;
+  readonly backgroundBlur?: PenpotSourceBlur | null;
   readonly children?: readonly PenpotSourceShape[] | null;
   readonly clipContent?: boolean | null;
   readonly flex?: PenpotSourceFlexLayout | null;
@@ -392,7 +399,9 @@ export function extractSelection(
   context.assetRegistry = assetRegistry;
   context.diagnostics.push(...assetRegistry.diagnostics);
   for (const componentId of context.componentOrder) {
+    const builder = context.components.get(componentId)!;
     collectSlots(context.componentSources.get(componentId)!, componentId, context, "");
+    for (const member of builder.variant?.members ?? []) collectSlots(canonicalComponentRoot(member.root), componentId, context, "");
   }
   for (const componentId of context.componentOrder) {
     const builder = context.components.get(componentId)!;
@@ -779,11 +788,12 @@ function withLibraryOwnership(root: PenpotSourceShape, libraryId: string | undef
 function collectSlots(shape: PenpotSourceShape, componentId: string, context: ExtractionContext, path: string): void {
   if (isComponentRootInstance(shape)) return;
   const builder = context.components.get(componentId)!;
-  if (fillColorKey(shape) !== undefined) {
+  if (fillColorKey(shape) !== undefined && !builder.slots.has(path + ":fill")) {
     const parameterName = dedupeParameterName(path === "" ? "backgroundColor" : `${parameterNameFor(shape.name)}Color`, builder);
-    builder.slots.set(path + ":fill", { parameterName, defaultText: fillColorKey(shape)! , type: "Color" });
+    builder.slots.set(path + ":fill", { parameterName, defaultText: fillColorKey(shape)!, type: "Color" });
   }
   if (shape.type === "text") {
+    if (builder.slots.has(path)) return;
     const parameterName = dedupeParameterName(parameterNameFor(shape.name), builder);
     builder.slots.set(path, { parameterName, defaultText: shape.characters ?? "" });
     return;
@@ -1326,6 +1336,8 @@ function styleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], context: E
   const border = solidBorderOf(shape.strokes, sourceIdOf(shape.id), diagnostics);
   const radius = cornerRadiiOf(shape);
   const shadows = dropShadowsOf(shape.shadows, sourceIdOf(shape.id), diagnostics);
+  const blur = blurOf(shape.blur, sourceIdOf(shape.id), diagnostics);
+  const backgroundBlur = blurOf(shape.backgroundBlur, sourceIdOf(shape.id), diagnostics);
   return {
     ...(fill === undefined ? {} : { fill }),
     ...(gradient === undefined ? {} : { gradient }),
@@ -1333,6 +1345,8 @@ function styleOf(shape: PenpotSourceShape, diagnostics: Diagnostic[], context: E
     ...(border === undefined ? {} : { border }),
     ...(radius === undefined ? {} : { radius }),
     ...(shadows.length === 0 ? {} : { shadows }),
+    ...(blur === undefined ? {} : { blur }),
+    ...(backgroundBlur === undefined ? {} : { backgroundBlur }),
     opacity: normalizedOpacity(shape.opacity, sourceIdOf(shape.id), diagnostics),
   };
 }
@@ -1362,6 +1376,15 @@ function cornerRadiiOf(shape: PenpotSourceShape): CornerRadii | undefined {
     bottomRight: nonNegativeDimension(shape.borderRadiusBottomRight ?? fallback),
     bottomLeft: nonNegativeDimension(shape.borderRadiusBottomLeft ?? fallback),
   };
+}
+
+function blurOf(blur: PenpotSourceBlur | null | undefined, sourceId: string, diagnostics: Diagnostic[]): number | undefined {
+  if (blur == null || blur.hidden === true) return undefined;
+  if (blur.intensity == null || !Number.isFinite(blur.intensity) || blur.intensity < 0) {
+    diagnostics.push({ severity: "warning", sourceId, code: "unsupported-blur", message: "Blur intensity must be a non-negative finite number." });
+    return undefined;
+  }
+  return blur.intensity;
 }
 
 function dropShadowsOf(shadows: PenpotSourceShape["shadows"], sourceId: string, diagnostics: Diagnostic[]): readonly DropShadow[] {
@@ -1505,8 +1528,8 @@ function svgAssetPathOf(shape: PenpotSourceShape, context: ExtractionContext, di
 function solidFillOf(fills: PenpotSourceShape["fills"], sourceId: string, diagnostics: Diagnostic[]): ColorFill | undefined {
   if (fills == null || fills === "mixed" || fills.length === 0) return undefined;
   const fill = fills[0];
-  if (fill.fillImage !== undefined || fill.fillColorGradient !== undefined) return undefined;
   if (fill.fillColor == null) {
+    if (fill.fillImage !== undefined || fill.fillColorGradient !== undefined) return undefined;
     diagnostics.push({ severity: "warning", sourceId, code: "unsupported-fill", message: "The fill has no supported solid color, gradient, or image data." });
     return undefined;
   }

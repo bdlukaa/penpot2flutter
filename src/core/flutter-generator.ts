@@ -157,6 +157,7 @@ export function generateFlutterWidget(
   const className = classNameOverride ?? (toPascalCase(responsiveScreen?.name ?? root.name) || "GeneratedWidget");
   return stripNestedConst([
     ...(roots.some(containsRotation) ? ["import 'dart:math' as math;", ""] : []),
+    ...(roots.some(containsBlur) ? ["import 'dart:ui' show ImageFilter;", ""] : []),
     "import 'package:flutter/material.dart';",
     ...(roots.some(containsSvg) ? ["import 'package:flutter_svg/flutter_svg.dart';"] : []),
     ...(assetImport !== undefined && roots.some(containsAssetReference) ? [`import '${assetImport}';`] : []),
@@ -173,7 +174,7 @@ export function generateFlutterWidget(
     "  Widget build(BuildContext context) {",
     `    // ${commentText(responsiveScreen?.name ?? root.sourceName)}`,
     ...(responsiveScreen === undefined
-      ? [`    return ${renderNode(root, 2, false)};`]
+      ? [`    return ${renderResponsiveRoot(root, 2)};`]
       : renderResponsiveScreen(responsiveScreen)),
     "  }",
     "}",
@@ -330,12 +331,13 @@ function renderResponsiveScreen(screen: IrResponsiveScreen): string[] {
 function renderResponsiveRoot(root: IrNode, depth: number): string {
   if (root.kind !== "board") return renderNode(root, depth, false);
   const clipBehavior = root.clipContent ? "Clip.hardEdge" : "Clip.none";
-  const child = root.flex !== undefined
-    ? renderFlex(root, depth, clipBehavior)
-    : root.grid?.supported === true
-      ? renderGrid(root, root.grid, root.children, depth)
-      : renderStack(root.children, depth, clipBehavior);
   const decoration = renderDecoration(root, depth + 1);
+  const childDepth = decoration === undefined ? depth : depth + 1;
+  const child = root.flex !== undefined
+    ? renderFlex(root, childDepth, clipBehavior)
+    : root.grid?.supported === true
+      ? renderGrid(root, root.grid, root.children, childDepth)
+      : renderStack(root.children, childDepth, clipBehavior);
   if (decoration === undefined) return child;
   return constWidget([
     "DecoratedBox(",
@@ -689,6 +691,10 @@ function containsTokens(node: IrNode): boolean {
   return (node.tokenReferences?.length ?? 0) > 0 || ("children" in node && node.children.some(containsTokens));
 }
 
+function containsBlur(node: IrNode): boolean {
+  return node.style.blur !== undefined || node.style.backgroundBlur !== undefined || ("children" in node && node.children.some(containsBlur));
+}
+
 function containsTypography(node: IrNode): boolean {
   if (node.kind === "text") {
     if (node.typographyStyleId !== undefined && typographyDefinitions.has(node.typographyStyleId)) return true;
@@ -718,6 +724,22 @@ function renderNode(node: IrNode, depth: number, positioned: boolean): string {
       `${indent(contentDepth + 1)}child: ${content},`,
       `${indent(contentDepth)})`,
     ].join("\n"));
+  }
+  if (node.style.blur !== undefined) {
+    content = [
+      "ImageFiltered(",
+      `${indent(contentDepth + 1)}imageFilter: ImageFilter.blur(sigmaX: ${number(node.style.blur)}, sigmaY: ${number(node.style.blur)}),`,
+      `${indent(contentDepth + 1)}child: ${content},`,
+      `${indent(contentDepth)})`,
+    ].join("\n");
+  }
+  if (node.style.backgroundBlur !== undefined) {
+    content = [
+      "BackdropFilter(",
+      `${indent(contentDepth + 1)}filter: ImageFilter.blur(sigmaX: ${number(node.style.backgroundBlur)}, sigmaY: ${number(node.style.backgroundBlur)}),`,
+      `${indent(contentDepth + 1)}child: ${content},`,
+      `${indent(contentDepth)})`,
+    ].join("\n");
   }
   content = renderPrototypeInteractions(node, content, contentDepth);
   for (const interaction of prototypeOverlayActions.values()) {
