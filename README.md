@@ -45,6 +45,8 @@ The generator never consumes Penpot objects directly. `src/plugin.ts` is the onl
 
 ## Idiomatic Flutter output
 
+Generated code intentionally favors direct Flutter widgets over exporter-specific intermediate widgets. Prefer raw `OverlayPortal`, `StatefulWidget`, named routes, and standard Flutter APIs in generated code; add an abstraction only when the application developer explicitly chooses one. This keeps generated output editable and gives developers maximum freedom to replace or extend behavior.
+
 Generated code follows Flutter conventions rather than pixel-positioning every node:
 
 - Flex gaps use `Row.spacing`/`Column.spacing` instead of interleaved `SizedBox` spacers.

@@ -76,12 +76,11 @@ test("emits Penpot triggers, actions, and animations around their source nodes",
   assert.match(login, /MouseRegion\(/);
   assert.match(login, /PenpotDelayedInteraction\(/);
   assert.match(login, /Link\(/);
-  assert.match(login, /PenpotPrototype\.navigate\(context, \(\) => const HomeScreen\(\), duration: Duration\(milliseconds: 250\)/);
-  assert.equal((login.match(/PenpotPrototype\.navigate\(/g) ?? []).length, 1);
-  assert.match(login, /PenpotPrototype\.openOverlay\(context, 'dialog'\)/);
-  assert.match(login, /PenpotAnchor\(/);
-  assert.match(login, /relativeTo: 'trigger'/);
-  assert.match(login, /manualPosition: Offset\(13, 14\)/);
+  assert.match(login, /Navigator\.of\(context\)\.pushNamed\('\/home'/);
+  assert.equal((login.match(/Navigator\.of\(context\)\.pushNamed\('\/home'/g) ?? []).length, 1);
+  assert.match(login, /OverlayPortal\(/);
+  assert.match(login, /controller: _dialogOverlayController/);
+  assert.match(login, /Positioned\(left: 13, top: 14/);
   assert.match(login, /Uri\.parse\('https:\/\/example\.com'\)/);
   assert.ok(files.some((file) => file.path === "overlays/dialog_overlay.dart"));
   assert.ok(files.some((file) => file.path === "prototype_interactions.dart"));
