@@ -1008,7 +1008,16 @@ function renderFlexFlow(node: BoardNode, children: readonly IrNode[], depth: num
   const gap = isRow ? flex.columnGap : flex.rowGap;
   const main = mainAxisAlignment(flex.justifyContent);
   const cross = crossAxisAlignment(flex.alignItems);
-  const flow = [
+  const flow = flex.wrap === true ? [
+    "Wrap(",
+    ...(isRow ? [] : [`${indent(depth + 1)}direction: Axis.vertical,`]),
+    ...(gap === 0 && !hasToken(node, isRow ? "columnGap" : "rowGap") ? [] : [`${indent(depth + 1)}spacing: ${tokenValue(node, isRow ? "columnGap" : "rowGap", number(gap))},`]),
+    ...(flex.rowGap === flex.columnGap || (flex.rowGap === 0 && flex.columnGap === 0) ? [] : [`${indent(depth + 1)}runSpacing: ${tokenValue(node, isRow ? "rowGap" : "columnGap", number(isRow ? flex.rowGap : flex.columnGap))},`]),
+    `${indent(depth + 1)}children: [`,
+    ...children.map((child) => `${commentFor(child, depth + 2, renderNode(child, depth + 2, false))},`),
+    `${indent(depth + 1)}],`,
+    `${indent(depth)})`,
+  ] : [
     `${isRow ? "Row" : "Column"}(`,
     ...(flex.direction === "row-reverse" ? [`${indent(depth + 1)}textDirection: TextDirection.rtl,`] : []),
     ...(flex.direction === "column-reverse" ? [`${indent(depth + 1)}verticalDirection: VerticalDirection.up,`] : []),

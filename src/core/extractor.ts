@@ -119,6 +119,7 @@ export interface PenpotSourceFlexLayout {
   readonly leftPadding?: number | null;
   readonly justifyContent?: FlexJustification | null;
   readonly alignItems?: FlexAlignment | null;
+  readonly wrap?: boolean | null;
 }
 
 export interface PenpotSourceGridTrack {
@@ -513,7 +514,7 @@ function extractNode(shape: PenpotSourceShape, context: ExtractionContext, path:
         clipContent: shape.clipContent === true,
         ...(shape.flex == null ? {} : { flex: flexOf(shape.flex) }),
         ...(grid === undefined ? {} : { grid }),
-        children: extractChildren(shape, context, path),
+        children: extractChildren(shape, context, path, grid),
       } satisfies BoardNode;
       break;
     case "group":
@@ -583,10 +584,13 @@ function isComponentRootInstance(shape: PenpotSourceShape): boolean {
   return shape.isComponentRoot !== false && (shape.isComponentInstance === true || shape.isComponentMainInstance === true);
 }
 
-function extractChildren(shape: PenpotSourceShape, context: ExtractionContext, path: string): readonly IrNode[] {
+function extractChildren(shape: PenpotSourceShape, context: ExtractionContext, path: string, grid?: GridLayout): readonly IrNode[] {
   const children = shape.children ?? [];
   const hasStackOrder = children.length > 1 && children.every((child) => typeof child.zIndex === "number" && Number.isFinite(child.zIndex));
-  const ordered = hasStackOrder ? [...children].sort((left, right) => right.zIndex! - left.zIndex!) : children;
+  const gridCells = grid?.supported === true && children.every((child) => child.layoutCell?.row != null && child.layoutCell?.column != null);
+  const ordered = gridCells
+    ? [...children].sort((left, right) => left.layoutCell!.row! - right.layoutCell!.row! || left.layoutCell!.column! - right.layoutCell!.column!)
+    : hasStackOrder ? [...children].sort((left, right) => right.zIndex! - left.zIndex!) : children;
   return ordered.map((child, index) => extractNode(child, context, pathKey(path, index)));
 }
 
@@ -1172,6 +1176,7 @@ function flexOf(flex: PenpotSourceFlexLayout): FlexLayout {
     padding: paddingOf(flex),
     ...(flex.justifyContent == null ? {} : { justifyContent: flex.justifyContent }),
     ...(flex.alignItems == null ? {} : { alignItems: flex.alignItems }),
+    ...(flex.wrap === true ? { wrap: true } : {}),
   };
 }
 
@@ -1181,7 +1186,7 @@ function gridOf(grid: PenpotSourceGridLayout, shape: PenpotSourceShape, diagnost
   const hasUnsupportedTrack = [...rows, ...columns].some((track) => track.type !== "flex");
   const hasUnsupportedCell = (shape.children ?? []).some((child) => {
     const cell = child.layoutCell;
-    return cell?.position === "manual" || cell?.position === "area" || (cell?.rowSpan ?? 1) !== 1 || (cell?.columnSpan ?? 1) !== 1;
+    return cell?.position === "area" || (cell?.rowSpan ?? 1) !== 1 || (cell?.columnSpan ?? 1) !== 1;
   });
   const supported = rows.length > 0 && columns.length > 0 && !hasUnsupportedTrack && !hasUnsupportedCell;
   if (!supported) {
@@ -1189,7 +1194,7 @@ function gridOf(grid: PenpotSourceGridLayout, shape: PenpotSourceShape, diagnost
       severity: "warning",
       sourceId: sourceIdOf(shape.id),
       code: "unsupported-grid",
-      message: "Only simple flex-track grids without manually placed or spanning children are generated as GridView; a Stack fallback was used.",
+      message: "Only simple flex-track grids without spanning or named-area children are generated as GridView; a Stack fallback was used.",
     });
   }
   return {

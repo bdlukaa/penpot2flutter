@@ -514,6 +514,39 @@ test("simplifies a stack containing only a no-op layer and one positioned child"
   assert.match(dart, /SvgPicture\.asset/);
 });
 
+test("maps explicit wrapped flex layouts to Wrap", () => {
+  const result = extractSelection([{
+    id: "wrapped-tags",
+    name: "Tags",
+    type: "board",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 100,
+    visible: true,
+    flex: {
+      dir: "row",
+      wrap: true,
+      rowGap: 12,
+      columnGap: 8,
+      topPadding: 0,
+      rightPadding: 0,
+      bottomPadding: 0,
+      leftPadding: 0,
+    },
+    children: [
+      { id: "tag-a", name: "A", type: "rectangle", x: 0, y: 0, width: 80, height: 24, visible: true },
+      { id: "tag-b", name: "B", type: "rectangle", x: 88, y: 0, width: 80, height: 24, visible: true },
+    ],
+  }]);
+  const dart = generateFlutterWidget(result.root);
+
+  assert.match(dart, /Wrap\(/);
+  assert.match(dart, /spacing: 8,/);
+  assert.match(dart, /runSpacing: 12,/);
+  assert.doesNotMatch(dart, /Row\(/);
+});
+
 test("normalizes long floating-point values in generated Dart", () => {
   const result = extractSelection([{
     id: "fractional-card",
@@ -728,8 +761,8 @@ test("generates a simple grid and falls back with diagnostics for unsupported gr
       leftPadding: 4,
     },
     children: [
-      { id: "card-one", name: "Card one", type: "rectangle", x: 0, y: 0, width: 100, height: 100, visible: true },
-      { id: "card-two", name: "Card two", type: "rectangle", x: 120, y: 0, width: 100, height: 100, visible: true },
+      { id: "card-two", name: "Card two", type: "rectangle", x: 120, y: 0, width: 100, height: 100, visible: true, layoutCell: { row: 0, column: 1, position: "manual" } },
+      { id: "card-one", name: "Card one", type: "rectangle", x: 0, y: 0, width: 100, height: 100, visible: true, layoutCell: { row: 0, column: 0, position: "manual" } },
     ],
   }]);
   const fallback = extractSelection([{
@@ -768,6 +801,7 @@ test("generates a simple grid and falls back with diagnostics for unsupported gr
   assert.equal(supported.root.kind, "board");
   assert.equal(supported.root.grid?.supported, true);
   assert.match(generateFlutterWidget(supported.root), /GridView\.count\(/);
+  assert.equal(supported.root.children[0].sourceId, "card-one");
   assert.equal(fallback.root.kind, "board");
   assert.equal(fallback.root.grid?.supported, false);
   assert.match(fallback.diagnostics.map((diagnostic) => diagnostic.code).join(","), /unsupported-grid/);

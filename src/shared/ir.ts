@@ -299,6 +299,7 @@ export interface FlexLayout {
   readonly padding: EdgeInsets;
   readonly justifyContent?: FlexJustification;
   readonly alignItems?: FlexAlignment;
+  readonly wrap?: boolean;
 }
 
 export interface GridTrack {
