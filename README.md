@@ -4,6 +4,10 @@ A read-only design-handoff compiler that converts explicit Penpot design semanti
 
 Penpot to Flutter is not an application generator, no-code platform, or replacement for developer-owned Flutter architecture. It compiles what Penpot knows, preserves what Penpot says, and reports what cannot be represented without guessing.
 
+## Support the project
+
+If Penpot to Flutter helps your design handoff workflow, you can support its continued development through [GitHub Sponsors](https://github.com/sponsors/bdlukaa).
+
 ## Quick start
 
 ### Use the published plugin
