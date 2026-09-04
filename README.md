@@ -4,6 +4,51 @@ A read-only design-handoff compiler that converts explicit Penpot design semanti
 
 Penpot to Flutter is not an application generator, no-code platform, or replacement for developer-owned Flutter architecture. It compiles what Penpot knows, preserves what Penpot says, and reports what cannot be represented without guessing.
 
+## Quick start
+
+### Use the published plugin
+
+1. Open Penpot and open the **Plugin Manager**.
+2. Install **Penpot to Flutter** from its published listing, or add the manifest URL supplied with the release.
+3. Open a Penpot file, select a board, component, or visual layer, and launch the plugin.
+4. Review the generated files by authority tier:
+   - **Reusable code** — tokens, themes, typography, assets, components, variants, and libraries.
+   - **Composition** — board-based implementation references.
+   - **Prototype hint** — destinations, flows, and interaction callbacks.
+5. Use **Download handoff** to export the complete `penpot_handoff.json` bundle.
+
+The plugin requests only `content:read` and `library:read`. It does not modify the Penpot document.
+
+### Requirements
+
+- A Penpot workspace with access to the plugin.
+- A Flutter project for integrating generated output.
+- Node.js 22+ and npm when using the handoff installer or developing the plugin.
+- Dart stable is recommended for generated-source validation. Flutter is recommended when running representative widget validation.
+
+### Install a downloaded handoff
+
+Keep the `bin/install-handoff.mjs` installer from the release checkout, then run it against the downloaded bundle and your Flutter project:
+
+```sh
+node bin/install-handoff.mjs /path/to/penpot_handoff.json /path/to/my_flutter_app
+```
+
+Or, from the repository root:
+
+```sh
+npm run install-handoff -- /path/to/penpot_handoff.json /path/to/my_flutter_app
+```
+
+The installer replaces only `lib/generated/penpot/` and `assets/penpot/`. It preserves application code and does not edit `pubspec.yaml`. Copy the printed dependency, asset, and font requirements into the Flutter project, then run:
+
+```sh
+flutter pub get
+flutter analyze
+```
+
+For a first integration, install into a disposable branch or working copy so the generated diff is easy to review.
+
 ## Product boundary
 
 ### Penpot is authoritative for
@@ -161,14 +206,14 @@ Everything under `lib/generated/penpot` and `assets/penpot` is generator-owned a
 
 ## JSON handoff bundle and installer
 
-**Download complete handoff** creates `penpot_handoff.json` with format version `1`:
+**Download handoff** creates `penpot_handoff.json` with format version `1`:
 
 - generated files with project-relative paths and authority tiers
 - exported text/base64 assets
 - generated `pubspec.yaml` integration metadata
 - external font requirements
 
-Install it into a Flutter project from this repository:
+Install it into a Flutter project using the installer included in this repository or release package:
 
 ```sh
 node bin/install-handoff.mjs /path/to/penpot_handoff.json /path/to/flutter-project
@@ -230,22 +275,71 @@ The manifest requests only:
 
 ## Development
 
+### Set up the repository
+
 ```sh
-npm install
+git clone https://github.com/bdlukaa/penpot2flutter.git
+cd penpot2flutter
+npm ci
+```
+
+Run the checks and build:
+
+```sh
 npm run typecheck
 npm run lint
 npm test
 npm run build
-npm run dev
 ```
+
+The commands do the following:
 
 - `npm run typecheck` runs strict TypeScript checking without emitting files.
 - `npm run lint` runs ESLint.
 - `npm test` validates extraction, IR, registries, deterministic generation, diagnostics, and handoff behavior through source-like fixtures.
 - `npm run build` runs TypeScript and creates the plugin build in `dist/`.
-- `npm run dev` rebuilds in watch mode; reopen or refresh the plugin after changes.
 
-Install the built manifest URL in Penpot’s Plugin Manager. For local development, serve `dist/` over a URL reachable by the Penpot browser session.
+### Run a local plugin build
+
+Use two terminals. In the first, rebuild the plugin whenever source files change:
+
+```sh
+npm run dev
+```
+
+In the second, serve the generated `dist/` directory:
+
+```sh
+npx vite preview --host 0.0.0.0 --port 4400
+```
+
+Open the local manifest at `http://localhost:4400/manifest.json` in Penpot’s Plugin Manager. If Penpot is running in a hosted browser session and cannot reach your machine, expose the server through an HTTPS tunnel and use that tunnel URL instead. Reopen or refresh the plugin after a rebuild.
+
+`npm run dev` is a build watcher; it does not itself start a web server.
+
+### Validate a generated handoff
+
+For representative generated Dart, run:
+
+```sh
+dart format lib/generated/penpot
+flutter analyze
+flutter test
+```
+
+These checks validate generated source and integration into a target Flutter project. They do not mean a design composition is a complete production screen; application behavior remains developer-owned.
+
+## Release checklist
+
+Before publishing a plugin release:
+
+1. Run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build`.
+2. Confirm `dist/plugin.js` is a standalone plugin bundle and `dist/manifest.json` points to `plugin.js`.
+3. Serve `dist/` from the final public HTTPS URL.
+4. Test installing that manifest in Penpot with a board, component, shared-library asset, token, and prototype selection.
+5. Download a complete handoff and install it into a disposable Flutter project.
+6. Copy the printed `pubspec.yaml` requirements and verify `flutter analyze`.
+7. Publish the manifest URL or listing together with the matching installer and release version.
 
 ## Manual handoff check
 
@@ -255,7 +349,7 @@ Install the built manifest URL in Penpot’s Plugin Manager. For local developme
 4. Confirm component instances call generated widgets and token-bound properties use generated token APIs.
 5. If prototype interactions exist, confirm affected widgets expose `onPrototypeInteraction` and no application routing is generated.
 6. Download `penpot_handoff.json` and install it with `bin/install-handoff.mjs` into a disposable Flutter project.
-7. Merge the printed `pubspec.yaml` metadata, then run:
+7. Copy the printed `pubspec.yaml` metadata and font requirements, then run:
 
 ```sh
 dart format lib/generated/penpot
