@@ -8,6 +8,7 @@ export default defineConfig({
   define: {
     __PENPOT_TO_FLUTTER_VERSION__: JSON.stringify(packageVersion),
   },
+  base: '/penpot2flutter/',
   // A preview reload recreates Penpot's plugin execution context and drops its
   // session index. Refresh the plugin deliberately after source changes instead.
   plugins: [livePreview({ reload: false, config: { build: { sourcemap: true } } })],
