@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
@@ -14,6 +14,12 @@ import { extractTokenCatalog, extractTokenCatalogIncrementally } from "../src/pe
 import { withTokenBindings } from "../src/penpot/shape-token-bindings.js";
 import { APP_VERSION } from "../src/shared/version.js";
 import type { TokenCatalog } from "@penpot/plugin-types";
+
+const dartAvailable = spawnSync("dart", ["--version"], { stdio: "ignore" }).status === 0;
+
+function formatDart(path: string, options: readonly string[] = ["format", "-o", "none"]): void {
+  if (dartAvailable) execFileSync("dart", [...options, path]);
+}
 
 const board = {
   id: "board-1",
@@ -374,7 +380,7 @@ test("extracts and generates flex board layouts", () => {
 
   const flexDartPath = new URL("../flex_generated_widget.dart", import.meta.url);
   writeFileSync(flexDartPath, dart);
-  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", flexDartPath.pathname]));
+  assert.doesNotThrow(() => formatDart(flexDartPath.pathname));
 });
 
 test("extracts image shapes and fillImage assets into deterministic Flutter output", () => {
@@ -433,7 +439,7 @@ test("extracts image shapes and fillImage assets into deterministic Flutter outp
 
   const imageDartPath = new URL("../image_generated_widget.dart", import.meta.url);
   writeFileSync(imageDartPath, dart);
-  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", imageDartPath.pathname]));
+  assert.doesNotThrow(() => formatDart(imageDartPath.pathname));
 });
 
 test("warns instead of throwing when an image fill is null", () => {
@@ -616,7 +622,7 @@ test("keeps multiline Penpot titles inside single-line Dart comments", () => {
   assert.doesNotMatch(dart, /\n#808080|\nlinear|\n45deg/);
   const dartPath = new URL("../multiline_title.dart", import.meta.url);
   writeFileSync(dartPath, dart);
-  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", dartPath.pathname]));
+  assert.doesNotThrow(() => formatDart(dartPath.pathname));
 });
 
 test("generates deterministic compilable Flutter widget source", () => {
@@ -633,14 +639,14 @@ test("generates deterministic compilable Flutter widget source", () => {
 
   const generatedDartPath = new URL("../generated_widget.dart", import.meta.url);
   writeFileSync(generatedDartPath, dart);
-  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", generatedDartPath.pathname]));
+  assert.doesNotThrow(() => formatDart(generatedDartPath.pathname));
 });
 
 test("emits code that already matches dart format", () => {
   const dart = generateFlutterWidget(extractSelection([board]).root);
   const dartPath = new URL("../dart_format_golden.dart", import.meta.url);
   writeFileSync(dartPath, dart);
-  execFileSync("dart", ["format", dartPath.pathname]);
+  formatDart(dartPath.pathname, ["format"]);
   assert.equal(dart, readFileSync(dartPath, "utf8"));
 });
 
@@ -714,7 +720,7 @@ test("extracts and generates solid strokes, per-corner radii, and drop shadows",
 
   const styledDartPath = new URL("../styled_generated_widget.dart", import.meta.url);
   writeFileSync(styledDartPath, dart);
-  execFileSync("dart", ["format", styledDartPath.pathname]);
+  formatDart(styledDartPath.pathname, ["format"]);
   assert.equal(dart, readFileSync(styledDartPath, "utf8"));
 });
 
@@ -781,7 +787,7 @@ test("extracts and generates ellipses, gradients, and transforms", () => {
 
   const transformedDartPath = new URL("../transformed_generated_widget.dart", import.meta.url);
   writeFileSync(transformedDartPath, dart);
-  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", transformedDartPath.pathname]));
+  assert.doesNotThrow(() => formatDart(transformedDartPath.pathname));
 });
 
 test("generates a simple grid and falls back with diagnostics for unsupported grid semantics", () => {
@@ -914,7 +920,7 @@ test("extracts and generates rich text runs as RichText spans", () => {
 
   const richTextPath = new URL("../rich_text_generated_widget.dart", import.meta.url);
   writeFileSync(richTextPath, dart);
-  execFileSync("dart", ["format", richTextPath.pathname]);
+  formatDart(richTextPath.pathname, ["format"]);
   assert.equal(dart, readFileSync(richTextPath, "utf8"));
 });
 
@@ -973,7 +979,7 @@ test("extracts vector paths and svg-raw nodes as SvgPicture assets", () => {
 
   const svgDartPath = new URL("../svg_generated_widget.dart", import.meta.url);
   writeFileSync(svgDartPath, dart);
-  execFileSync("dart", ["format", svgDartPath.pathname]);
+  formatDart(svgDartPath.pathname, ["format"]);
   assert.equal(dart, readFileSync(svgDartPath, "utf8"));
 });
 
@@ -1010,7 +1016,7 @@ test("renders square ellipses as a circle decoration without ClipOval", () => {
 
   const circlePath = new URL("../circle_generated_widget.dart", import.meta.url);
   writeFileSync(circlePath, dart);
-  execFileSync("dart", ["format", circlePath.pathname]);
+  formatDart(circlePath.pathname, ["format"]);
   assert.equal(dart, readFileSync(circlePath, "utf8"));
 });
 
@@ -1370,7 +1376,7 @@ test("uses member selectors for sparse variants and axes for complete multi-axis
 
   const variantDartPath = new URL("../variant_button.dart", import.meta.url);
   writeFileSync(variantDartPath, componentDart);
-  assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", variantDartPath.pathname]));
+  assert.doesNotThrow(() => formatDart(variantDartPath.pathname));
 });
 
 test("generates the ProductCard handoff API with explicit Raven selection and semantic text parameters", () => {
@@ -1772,7 +1778,7 @@ test("generates typed theme fields and component references from semantic token 
   for (const file of files.filter((file) => file.path.endsWith(".dart"))) {
     const path = new URL(`../${file.path.replace(/\//g, "_")}`, import.meta.url);
     writeFileSync(path, file.source);
-    assert.doesNotThrow(() => execFileSync("dart", ["format", "-o", "none", path.pathname]));
+    assert.doesNotThrow(() => formatDart(path.pathname));
   }
 });
 
@@ -2324,7 +2330,7 @@ test("deduplicates repeated typography styles into AppTextStyles", () => {
   const typography = files.find((file) => file.path === "lib/generated/penpot/theme/app_typography.dart")!.source;
   const typographyDartPath = new URL("../app_typography.dart", import.meta.url);
   writeFileSync(typographyDartPath, typography);
-  execFileSync("dart", ["format", typographyDartPath.pathname]);
+  formatDart(typographyDartPath.pathname, ["format"]);
   assert.equal(typography, readFileSync(typographyDartPath, "utf8"));
 });
 
@@ -2412,7 +2418,7 @@ test("converts absolute and percentage line heights and preserves alignment, tra
   assert.match(dart, /TextDecoration\.lineThrough/);
   const semanticDartPath = new URL("../semantic_text.dart", import.meta.url);
   writeFileSync(semanticDartPath, dart);
-  execFileSync("dart", ["format", semanticDartPath.pathname]);
+  formatDart(semanticDartPath.pathname, ["format"]);
   assert.equal(dart, readFileSync(semanticDartPath, "utf8"));
 });
 

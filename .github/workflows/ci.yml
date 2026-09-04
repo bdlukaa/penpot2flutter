@@ -30,6 +30,12 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Set up Dart
+        if: matrix.check == 'test'
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
       - name: Install dependencies
         run: npm ci
 

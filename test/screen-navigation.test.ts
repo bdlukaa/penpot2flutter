@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +21,10 @@ function flutterFiles(result: ReturnType<typeof extractSelection>) {
   return generateFlutterFiles(result.root, result.components, result.tokens, result.tokenSets, result.tokenThemes, result.responsiveScreen, result.typographyStyles, undefined, result.assetRegistry, result.libraries, result.prototypeMetadata);
 }
 
+const dartAvailable = spawnSync("dart", ["--version"], { stdio: "ignore" }).status === 0;
+
 function assertDartParses(source: string): void {
+  if (!dartAvailable) return;
   const directory = mkdtempSync(join(tmpdir(), "penpot-to-flutter-"));
   const path = join(directory, "generated.dart");
   try {
