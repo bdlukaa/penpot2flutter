@@ -394,11 +394,14 @@ function emptyDesignSystem(): CachedDesignSystem {
 
 /** Serializes connected-library token catalogs before the compiler boundary. */
 function libraryTokenInput(localInput: PenpotTokenInput): PenpotTokenInput {
+  // Some Penpot builds list the current file among its connected libraries;
+  // treating it as shared duplicates every local token set.
+  const connected = penpot.library.connected.filter((library) => library.id !== penpot.library.local.id);
   const libraries = [
     { id: penpot.library.local.id, name: penpot.library.local.name, scope: "local" as const },
-    ...penpot.library.connected.map((library) => ({ id: library.id, name: library.name, scope: "shared" as const })),
+    ...connected.map((library) => ({ id: library.id, name: library.name, scope: "shared" as const })),
   ];
-  const shared = penpot.library.connected.flatMap((library) => {
+  const shared = connected.flatMap((library) => {
     try {
       const input = extractTokenCatalog(library.tokens).input;
       return [{

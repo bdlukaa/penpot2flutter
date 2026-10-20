@@ -169,11 +169,11 @@ export interface PenpotSourceTextRun {
   readonly fontId?: string | null;
   readonly fontFamily?: string | null;
   readonly fallbackFamilies?: readonly string[] | null;
-  readonly fontSize?: string | null;
-  readonly fontWeight?: string | null;
+  readonly fontSize?: string | number | null;
+  readonly fontWeight?: string | number | null;
   readonly fontStyle?: "normal" | "italic" | "mixed" | null;
-  readonly lineHeight?: string | null;
-  readonly letterSpacing?: string | null;
+  readonly lineHeight?: string | number | null;
+  readonly letterSpacing?: string | number | null;
   readonly textDecoration?: "underline" | "line-through" | "none" | "mixed" | null;
   readonly textTransform?: "uppercase" | "capitalize" | "lowercase" | "none" | "mixed" | null;
   readonly fills?: readonly PenpotSourceFill[] | "mixed" | null;
@@ -268,11 +268,11 @@ export interface PenpotSourceShape {
   readonly textStyleName?: string | null;
   readonly fontFamily?: string | null;
   readonly fontFamilyFallbacks?: readonly string[] | null;
-  readonly fontSize?: string | null;
-  readonly fontWeight?: string | null;
+  readonly fontSize?: string | number | null;
+  readonly fontWeight?: string | number | null;
   readonly fontStyle?: "normal" | "italic" | "mixed" | null;
-  readonly lineHeight?: string | null;
-  readonly letterSpacing?: string | null;
+  readonly lineHeight?: string | number | null;
+  readonly letterSpacing?: string | number | null;
   readonly textDecoration?: "underline" | "line-through" | "none" | "mixed" | null;
   readonly textTransform?: "uppercase" | "capitalize" | "lowercase" | "mixed" | null;
   readonly align?: "left" | "center" | "right" | "justify" | "mixed" | null;
@@ -634,7 +634,8 @@ function tokenReferencesOf(
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([property, tokenName]): IrTokenReference => {
       const normalizedProperty = canonicalTokenProperty(property);
-      const libraryId = shape.sourceLibraryId == null || shape.sourceLibraryId === "" ? undefined : shape.sourceLibraryId;
+      // Shapes from local components carry the current file's id; their tokens live in the local catalog.
+      const libraryId = shape.sourceLibraryId == null || shape.sourceLibraryId === "" || shape.sourceLibraryScope === "local" ? undefined : shape.sourceLibraryId;
       const token = context.tokenRegistry.get(tokenRegistryKey(libraryId, tokenName)) ?? (libraryId === undefined ? context.tokenRegistry.get(tokenName) : undefined);
       if (token === undefined) {
         diagnostics.push({
@@ -1459,6 +1460,7 @@ function assetCandidates(
     ...(shape.sourceLibraryScope === undefined ? {} : { sourceLibraryScope: shape.sourceLibraryScope }),
     ...(shape.sourceLibraryId == null || shape.sourceLibraryId === "" ? {} : { sourceLibraryModule: libraryModules.get(shape.sourceLibraryId) }),
   });
+  const visitRoot = (root: PenpotSourceShape): void => visit({ ...root, isComponentInstance: false });
   const visit = (shape: PenpotSourceShape): void => {
     const sourceNodeId = sourceIdOf(shape.id);
     const image = shape.fills === "mixed" || shape.fills == null ? undefined : shape.fills.find((fill) => fill.fillImage != null)?.fillImage;
@@ -1485,10 +1487,15 @@ function assetCandidates(
         dimensions: { width: nonNegativeDimension(shape.width), height: nonNegativeDimension(shape.height) },
       });
     }
+    // A resolved component instance renders through its component widget, whose
+    // canonical root is visited below; exporting its subtree again would emit one
+    // duplicate asset per instance.
+    if (isComponentRootInstance(shape) && shape.componentId != null && componentIds.has(shape.componentId)) return;
     (shape.children ?? []).forEach(visit);
   };
+  const componentIds = new Set(components.map((component) => component.id));
   selection.forEach(visit);
-  components.forEach((component) => visit(component.root));
+  components.forEach((component) => visitRoot(component.root));
   variants.forEach((variant) => variant.members.forEach((member) => visit(member.root)));
   for (const font of typographyInput.fonts ?? []) {
     for (const variant of font.variants) {
@@ -1632,13 +1639,13 @@ function runStyleOf(run: PenpotSourceTextRun, sourceId: string, diagnostics: Dia
   return style;
 }
 
-function finiteNumber(value: string | null | undefined): number | undefined {
+function finiteNumber(value: string | number | null | undefined): number | undefined {
   if (value == null || value === "mixed") return undefined;
   const result = Number(value);
   return Number.isFinite(result) ? result : undefined;
 }
 
-function normalizedFontWeight(value: string | null | undefined, sourceId: string, diagnostics: Diagnostic[]): number | undefined {
+function normalizedFontWeight(value: string | number | null | undefined, sourceId: string, diagnostics: Diagnostic[]): number | undefined {
   const numeric = finiteNumber(value);
   if (numeric === undefined) return undefined;
   const supported = [100, 200, 300, 400, 500, 600, 700, 800, 900];
@@ -1649,9 +1656,10 @@ function normalizedFontWeight(value: string | null | undefined, sourceId: string
   return normalized;
 }
 
-function lineHeightMultiplier(value: string | null | undefined, fontSize: number | undefined, sourceId: string, diagnostics: Diagnostic[]): number | undefined {
+function lineHeightMultiplier(value: string | number | null | undefined, fontSize: number | undefined, sourceId: string, diagnostics: Diagnostic[]): number | undefined {
   if (value == null || value === "mixed") return undefined;
-  const trimmed = value.trim().toLowerCase();
+  // Penpot reports typography-token line heights as numbers (e.g. 1.3), not strings.
+  const trimmed = String(value).trim().toLowerCase();
   let result: number | undefined;
   if (trimmed.endsWith("%")) {
     const percentage = Number(trimmed.slice(0, -1));
@@ -1670,9 +1678,10 @@ function lineHeightMultiplier(value: string | null | undefined, fontSize: number
   return result;
 }
 
-function fontFamilies(value: string | null | undefined, explicitFallbacks: readonly string[] | null | undefined, defaults: readonly string[]): { family?: string; fallbacks: readonly string[] } {
+function fontFamilies(value: string | readonly string[] | null | undefined, explicitFallbacks: readonly string[] | null | undefined, defaults: readonly string[]): { family?: string; fallbacks: readonly string[] } {
   if (value == null || value === "mixed") return { fallbacks: [] };
-  const parsed = splitFontFamilyStack(value).map(cleanFontFamily).filter(Boolean);
+  const stack = Array.isArray(value) ? value.join(",") : String(value);
+  const parsed = splitFontFamilyStack(stack).map(cleanFontFamily).filter(Boolean);
   const family = parsed[0];
   const fallbacks = [...new Set([...parsed.slice(1), ...(explicitFallbacks ?? []).map(cleanFontFamily), ...defaults.map(cleanFontFamily)])].filter((item) => item !== "" && item !== family);
   return { ...(family === undefined ? {} : { family }), fallbacks };

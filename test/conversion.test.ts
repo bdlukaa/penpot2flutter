@@ -2487,3 +2487,39 @@ test("emits font assets in the Flutter pubspec snippet when supplied by an adapt
   const manifest = JSON.parse(files.find((file) => file.path === "lib/generated/penpot/penpot_manifest.json")!.source);
   assert.deepEqual(manifest.fonts, result.fonts);
 });
+
+test("accepts numeric line heights and font metrics from typography-token-bound text", () => {
+  const text = {
+    id: "token-text",
+    name: "Token text",
+    type: "text",
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 24,
+    visible: true,
+    characters: "Tokenised",
+    fontFamily: "IBM Plex Mono",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 1.3,
+    letterSpacing: 0,
+  } as unknown as PenpotSourceShape;
+  const result = extractSelection([text]);
+  assert.match(JSON.stringify(result.root), /"lineHeight":1\.3/);
+  assert.match(JSON.stringify(result.root), /"fontFamily":"IBM Plex Mono"/);
+  assert.equal(result.diagnostics.filter((item) => item.code === "TEXT_LINE_HEIGHT_INVALID").length, 0);
+});
+
+test("checks token set order within each library instead of across merged libraries", () => {
+  const set = (id: string, index: number, sourceLibraryId?: string) => ({
+    id,
+    name: id,
+    index,
+    active: true,
+    tokenIds: [],
+    ...(sourceLibraryId === undefined ? {} : { sourceLibraryId, sourceLibraryScope: "shared" as const }),
+  });
+  const registry = buildTokenRegistry([], [set("core", 0), set("light", 1), set("dark", 2), set("core-shared", 0, "lib"), set("light-shared", 1, "lib")], []);
+  assert.equal(registry.diagnostics.filter((item) => item.code === "TOKEN_SET_ORDER_INVALID").length, 0);
+});

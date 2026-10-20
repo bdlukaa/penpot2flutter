@@ -347,12 +347,18 @@ export function buildTokenRegistry(
   options.reportTiming?.("alias-cycle-detection", now() - aliasCycleStart);
 
   const setsStart = now();
+  // Penpot set indexes are per library catalog; compare against the position
+  // within the same library, not within the merged local + shared list.
+  const setPositionByLibrary = new Map<string, number>();
   const sets = setSources.map((set, sourceIndex): IrTokenSet => {
+    const libraryKey = set.sourceLibraryId ?? "local";
+    const libraryIndex = setPositionByLibrary.get(libraryKey) ?? 0;
+    setPositionByLibrary.set(libraryKey, libraryIndex + 1);
     for (const tokenId of set.tokenIds) {
       const tokenExists = sourceByIdentity.has(`${set.sourceLibraryId ?? "local"}:${set.id}:${tokenId}`) || sourceById.has(tokenId);
       if (!tokenExists) diagnostics.push({ severity: "warning", sourceId: set.id, code: "TOKEN_SET_EXTRACTION_FAILED", message: `Token set "${set.name}" references unavailable token ${tokenId}.` });
     }
-    if (set.index !== undefined && set.index !== sourceIndex) diagnostics.push({ severity: "error", sourceId: set.id, code: "TOKEN_SET_ORDER_INVALID", message: `Token set "${set.name}" has index ${set.index}, expected ${sourceIndex}.` });
+    if (set.index !== undefined && set.index !== libraryIndex) diagnostics.push({ severity: "error", sourceId: set.id, code: "TOKEN_SET_ORDER_INVALID", message: `Token set "${set.name}" has index ${set.index}, expected ${libraryIndex}.` });
     return {
       id: set.id,
       ...(set.sourceLibraryId === undefined ? {} : { sourceLibraryId: set.sourceLibraryId }),

@@ -167,3 +167,31 @@ test("keeps library assets and unresolved shared tokens attributable to their li
   assert.ok(files.some((file) => file.path === "lib/generated/penpot/assets.dart"));
   assert.ok(files.some((file) => file.path === "lib/generated/penpot/libraries/assets/assets.dart"));
 });
+
+test("resolves tokens on local component shapes from the local catalog", () => {
+  const localRoot = { ...buttonRoot, tokenBindings: { fill: "color.brand" } } as unknown as PenpotSourceShape;
+  const instance = { ...sharedInstance("local-one", "this-file"), tokenBindings: { fill: "color.brand" } } as PenpotSourceShape;
+  const result = extractSelection(
+    [{ id: "screen", name: "Screen", type: "board", x: 0, y: 0, width: 160, height: 80, visible: true, children: [instance] }],
+    [{ id: "button", libraryId: "this-file", libraryScope: "local", name: "Button", root: localRoot }],
+    [],
+    {
+      libraries: [{ id: "this-file", name: "This file", scope: "local" }],
+      tokens: [{ id: "brand", name: "color.brand", type: "color", value: "#123456", setId: "global" }],
+      sets: [{ id: "global", name: "Global", active: true, tokenIds: ["brand"] }],
+    },
+  );
+  assert.equal(result.diagnostics.filter((item) => item.code === "LIBRARY_TOKEN_UNRESOLVED").length, 0);
+});
+
+test("exports a component's vector once instead of once per instance", () => {
+  const vector = (id: string) => ({ id, name: "chevron", type: "path", x: 0, y: 0, width: 18, height: 18, visible: true, svgContent: `<svg><path data-id="${id}" d="M0 0L9 9"/></svg>` });
+  const iconRoot = { id: "icon-root", name: "Chevron", type: "board", x: 0, y: 0, width: 18, height: 18, visible: true, children: [vector("main-path")] } as unknown as PenpotSourceShape;
+  const instance = (id: string) => ({ id, name: "icon / chevron", type: "board", x: 0, y: 0, width: 18, height: 18, visible: true, isComponentInstance: true, componentId: "chevron", children: [vector(`${id}-path`)] }) as unknown as PenpotSourceShape;
+  const result = extractSelection(
+    [{ id: "screen", name: "Screen", type: "board", x: 0, y: 0, width: 160, height: 80, visible: true, children: [instance("a"), instance("b"), instance("c")] }],
+    [{ id: "chevron", libraryScope: "local", name: "Chevron", root: iconRoot }],
+  );
+  assert.equal(result.assetRegistry.filter((asset) => asset.type === "svg").length, 1);
+  assert.equal(result.diagnostics.filter((item) => item.code === "ASSET_NAME_COLLISION").length, 0);
+});
